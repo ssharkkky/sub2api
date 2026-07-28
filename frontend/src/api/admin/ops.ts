@@ -32,6 +32,7 @@ export interface OpsDashboardOverview {
   group_id?: number | null
 
   health_score?: number
+  health_score_breakdown?: OpsHealthScoreBreakdown | null
 
   system_metrics?: OpsSystemMetricsSnapshot | null
   job_heartbeats?: OpsJobHeartbeat[] | null
@@ -42,6 +43,14 @@ export interface OpsDashboardOverview {
   error_count_sla: number
   request_count_total: number
   request_count_sla: number
+  availability_available?: boolean
+  platform_failure_count?: number
+  provider_failure_count?: number
+  unknown_failure_count?: number
+  client_rejected_count?: number
+  cancelled_count?: number
+  security_blocked_count?: number
+  recovered_count?: number
 
   token_consumed: number
 
@@ -65,6 +74,39 @@ export interface OpsDashboardOverview {
 
   duration: OpsPercentiles
   ttft: OpsPercentiles
+}
+
+export type OpsHealthScoreComponentKey =
+  | 'business_quality'
+  | 'business_latency'
+  | 'infrastructure_storage'
+  | 'infrastructure_compute'
+  | 'infrastructure_jobs'
+
+export interface OpsHealthScoreReason {
+  code: string
+  value?: number
+  threshold?: number
+  job_name?: string
+  age_seconds?: number
+  max_age_seconds?: number
+}
+
+export interface OpsHealthScoreComponent {
+  key: OpsHealthScoreComponentKey | string
+  score: number
+  weight: number
+  max_points: number
+  earned_points: number
+  deduction_points: number
+  reasons: OpsHealthScoreReason[]
+}
+
+export interface OpsHealthScoreBreakdown {
+  mode: 'business_and_infrastructure' | 'infrastructure_only' | 'unavailable' | string
+  business_included: boolean
+  score: number
+  components: OpsHealthScoreComponent[]
 }
 
 export interface OpsPercentiles {
@@ -775,6 +817,8 @@ export interface AlertEvent {
   resolved_at?: string | null
   email_sent: boolean
   email_queued: boolean
+  email_delivery_status?: 'pending' | 'processing' | 'retry_wait' | 'sent' | 'failed' | 'suppressed' | string
+  email_delivery_detail?: string
   created_at: string
 }
 
@@ -829,6 +873,10 @@ export interface OpsMonitoringSettings {
   email_behavior: OpsEmailBehaviorSettings
   advanced: OpsAdvancedSettings
   metric_thresholds: OpsMetricThresholds
+  schedule_info?: {
+    timezone: string
+    next_runs: Partial<Record<'daily_summary' | 'weekly_summary' | 'error_digest' | 'account_health', string>>
+  }
 }
 
 export interface OpsMetricThresholds {
@@ -1294,6 +1342,8 @@ export interface AlertEventsQuery {
   limit?: number
   status?: string
   severity?: string
+  // Backwards-compatible query name; the backend filters the durable queued
+  // state rather than the obsolete legacy sent flag.
   email_sent?: boolean
   time_range?: string
   start_time?: string

@@ -4,9 +4,11 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"github.com/Wei-Shaw/sub2api/internal/pkg/logger"
+	"fmt"
 	"strings"
 	"time"
+
+	"github.com/Wei-Shaw/sub2api/internal/pkg/logger"
 )
 
 const (
@@ -217,11 +219,11 @@ func validateOpsEmailNotificationConfig(cfg *OpsEmailNotificationConfig) error {
 		return errors.New("invalid config")
 	}
 
-	if cfg.Alert.RateLimitPerHour < 0 {
-		return errors.New("alert.rate_limit_per_hour must be >= 0")
+	if cfg.Alert.RateLimitPerHour < 0 || cfg.Alert.RateLimitPerHour > 10000 {
+		return errors.New("alert.rate_limit_per_hour must be between 0 and 10000")
 	}
-	if cfg.Alert.BatchingWindowSeconds < 0 {
-		return errors.New("alert.batching_window_seconds must be >= 0")
+	if cfg.Alert.BatchingWindowSeconds < 0 || cfg.Alert.BatchingWindowSeconds > 86400 {
+		return errors.New("alert.batching_window_seconds must be between 0 and 86400")
 	}
 	switch strings.TrimSpace(cfg.Alert.MinSeverity) {
 	case "", "critical", "warning", "info":
@@ -234,6 +236,24 @@ func validateOpsEmailNotificationConfig(cfg *OpsEmailNotificationConfig) error {
 	}
 	if cfg.Report.AccountHealthErrorRateThreshold < 0 || cfg.Report.AccountHealthErrorRateThreshold > 100 {
 		return errors.New("report.account_health_error_rate_threshold must be between 0 and 100")
+	}
+	schedules := []struct {
+		enabled bool
+		name    string
+		spec    string
+	}{
+		{cfg.Report.DailySummaryEnabled, "report.daily_summary_schedule", cfg.Report.DailySummarySchedule},
+		{cfg.Report.WeeklySummaryEnabled, "report.weekly_summary_schedule", cfg.Report.WeeklySummarySchedule},
+		{cfg.Report.ErrorDigestEnabled, "report.error_digest_schedule", cfg.Report.ErrorDigestSchedule},
+		{cfg.Report.AccountHealthEnabled, "report.account_health_schedule", cfg.Report.AccountHealthSchedule},
+	}
+	for _, schedule := range schedules {
+		if !schedule.enabled {
+			continue
+		}
+		if _, err := opsScheduledReportCronParser.Parse(strings.TrimSpace(schedule.spec)); err != nil {
+			return fmt.Errorf("%s is invalid: %w", schedule.name, err)
+		}
 	}
 	return nil
 }
@@ -679,6 +699,7 @@ func (s *OpsService) GetOpsMonitoringSettings(ctx context.Context) (*OpsMonitori
 		EmailBehavior:    opsEmailBehaviorSettings(emailCfg),
 		Advanced:         *advancedCfg,
 		MetricThresholds: *thresholds,
+		ScheduleInfo:     s.opsScheduleInfo(emailCfg, time.Now()),
 	}, nil
 }
 
@@ -762,5 +783,49 @@ func (s *OpsService) UpdateOpsMonitoringSettings(ctx context.Context, req *OpsMo
 		EmailBehavior:    opsEmailBehaviorSettings(emailCfg),
 		Advanced:         advancedCfg,
 		MetricThresholds: thresholds,
+		ScheduleInfo:     s.opsScheduleInfo(emailCfg, time.Now()),
 	}, nil
+}
+
+func (s *OpsService) opsScheduleInfo(cfg *OpsEmailNotificationConfig, now time.Time) OpsScheduleInfo {
+	loc := time.Local
+	timezone := loc.String()
+	if s != nil && s.cfg != nil && strings.TrimSpace(s.cfg.Timezone) != "" {
+		candidate := strings.TrimSpace(s.cfg.Timezone)
+		if parsed, err := time.LoadLocation(candidate); err == nil {
+			timezone = candidate
+			loc = parsed
+		}
+	}
+	if timezone == "" || timezone == "Local" {
+		timezone = loc.String()
+	}
+	info := OpsScheduleInfo{Timezone: timezone, NextRuns: map[string]time.Time{}}
+	if cfg == nil {
+		return info
+	}
+	defs := []struct {
+		enabled bool
+		name    string
+		spec    string
+	}{
+		{cfg.Report.DailySummaryEnabled, "daily_summary", cfg.Report.DailySummarySchedule},
+		{cfg.Report.WeeklySummaryEnabled, "weekly_summary", cfg.Report.WeeklySummarySchedule},
+		{cfg.Report.ErrorDigestEnabled, "error_digest", cfg.Report.ErrorDigestSchedule},
+		{cfg.Report.AccountHealthEnabled, "account_health", cfg.Report.AccountHealthSchedule},
+	}
+	base := now.In(loc)
+	for _, def := range defs {
+		if !def.enabled {
+			continue
+		}
+		schedule, err := opsScheduledReportCronParser.Parse(strings.TrimSpace(def.spec))
+		if err != nil {
+			continue
+		}
+		if next := schedule.Next(base); !next.IsZero() {
+			info.NextRuns[def.name] = next
+		}
+	}
+	return info
 }

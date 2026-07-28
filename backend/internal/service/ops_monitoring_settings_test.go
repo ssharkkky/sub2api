@@ -120,3 +120,23 @@ func TestUpdateOpsMonitoringSettingsRepositoryFailureDoesNotPartiallyWrite(t *te
 		}
 	}
 }
+
+func TestUpdateOpsMonitoringSettingsRejectsInvalidEnabledReportSchedule(t *testing.T) {
+	repo := newRuntimeSettingRepoStub()
+	svc := &OpsService{settingRepo: repo}
+	req := &OpsMonitoringSettings{
+		Runtime:          *defaultOpsAlertRuntimeSettings(),
+		EmailBehavior:    opsEmailBehaviorSettings(defaultOpsEmailNotificationConfig()),
+		Advanced:         *defaultOpsAdvancedSettings(),
+		MetricThresholds: *defaultOpsMetricThresholds(),
+	}
+	req.EmailBehavior.Report.DailySummaryEnabled = true
+	req.EmailBehavior.Report.DailySummarySchedule = "not a schedule"
+
+	if _, err := svc.UpdateOpsMonitoringSettings(context.Background(), req); err == nil {
+		t.Fatal("invalid enabled report schedule was accepted")
+	}
+	if repo.setMultipleCalls != 0 {
+		t.Fatalf("SetMultiple calls = %d, want 0", repo.setMultipleCalls)
+	}
+}

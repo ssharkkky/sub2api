@@ -1,5 +1,7 @@
 package service
 
+import "time"
+
 // Ops settings models stored in DB `settings` table (JSON blobs).
 
 type OpsEmailNotificationConfig struct {
@@ -74,6 +76,15 @@ type OpsMonitoringSettings struct {
 	EmailBehavior    OpsEmailBehaviorSettings `json:"email_behavior"`
 	Advanced         OpsAdvancedSettings      `json:"advanced"`
 	MetricThresholds OpsMetricThresholds      `json:"metric_thresholds"`
+	ScheduleInfo     OpsScheduleInfo          `json:"schedule_info"`
+}
+
+// OpsScheduleInfo makes the scheduling contract observable to the UI. Cron
+// remains the backwards-compatible storage format, while administrators see
+// the server timezone and the next actual execution time.
+type OpsScheduleInfo struct {
+	Timezone string               `json:"timezone"`
+	NextRuns map[string]time.Time `json:"next_runs"`
 }
 
 type OpsDistributedLockSettings struct {

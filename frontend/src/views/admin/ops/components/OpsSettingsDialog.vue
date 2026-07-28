@@ -28,6 +28,10 @@ const emit = defineEmits<{
 
 const loading = ref(false)
 const saving = ref(false)
+const scheduleInfo = ref({
+  timezone: Intl.DateTimeFormat().resolvedOptions().timeZone || 'Local',
+  next_runs: {} as Record<string, string>
+})
 
 // 运行时设置
 const runtimeSettings = ref<OpsAlertRuntimeSettings | null>(null)
@@ -51,6 +55,7 @@ async function loadAllSettings() {
     runtimeSettings.value = settings.runtime
     emailBehavior.value = settings.email_behavior
     advancedSettings.value = settings.advanced
+    scheduleInfo.value = settings.schedule_info || scheduleInfo.value
     // 兼容旧 payload：后端未返回该字段时补默认值，保证表单可绑定
     if (advancedSettings.value && !advancedSettings.value.openai_account_quota_auto_pause) {
       advancedSettings.value.openai_account_quota_auto_pause = { default_threshold_5h: 0, default_threshold_7d: 0 }
@@ -87,6 +92,126 @@ const severityOptions: Array<{ value: AlertSeverity | ''; label: string }> = [
   { value: 'warning', label: t('common.warning') },
   { value: 'info', label: t('common.info') }
 ]
+
+const weekdayOptions = computed(() => [
+  { value: 1, label: t('admin.ops.settings.weekdays.monday') },
+  { value: 2, label: t('admin.ops.settings.weekdays.tuesday') },
+  { value: 3, label: t('admin.ops.settings.weekdays.wednesday') },
+  { value: 4, label: t('admin.ops.settings.weekdays.thursday') },
+  { value: 5, label: t('admin.ops.settings.weekdays.friday') },
+  { value: 6, label: t('admin.ops.settings.weekdays.saturday') },
+  { value: 0, label: t('admin.ops.settings.weekdays.sunday') }
+])
+
+function cronTime(spec: string, fallback = '09:00'): string {
+  const parts = spec.trim().split(/\s+/)
+  if (parts.length !== 5 || !/^\d+$/.test(parts[0]) || !/^\d+$/.test(parts[1])) return fallback
+  const minute = Number(parts[0])
+  const hour = Number(parts[1])
+  if (minute < 0 || minute > 59 || hour < 0 || hour > 23) return fallback
+  return `${String(hour).padStart(2, '0')}:${String(minute).padStart(2, '0')}`
+}
+
+function dailyCron(time: string): string {
+  const match = /^(\d{2}):(\d{2})$/.exec(time)
+  if (!match) return '0 9 * * *'
+  return `${Number(match[2])} ${Number(match[1])} * * *`
+}
+
+function weeklyCron(time: string, weekday: number): string {
+  return `${dailyCron(time).replace(/ \*$/, '')} ${weekday}`
+}
+
+function cronWeekday(spec: string): number {
+  const parts = spec.trim().split(/\s+/)
+  const day = Number(parts[4])
+  return Number.isInteger(day) && day >= 0 && day <= 6 ? day : 1
+}
+
+function isProductDailySchedule(spec: string): boolean {
+  const parts = spec.trim().split(/\s+/)
+  return parts.length === 5 &&
+    /^\d+$/.test(parts[0]) &&
+    /^\d+$/.test(parts[1]) &&
+    parts[2] === '*' &&
+    parts[3] === '*' &&
+    parts[4] === '*'
+}
+
+function isProductWeeklySchedule(spec: string): boolean {
+  const parts = spec.trim().split(/\s+/)
+  return parts.length === 5 &&
+    /^\d+$/.test(parts[0]) &&
+    /^\d+$/.test(parts[1]) &&
+    parts[2] === '*' &&
+    parts[3] === '*' &&
+    /^[0-6]$/.test(parts[4])
+}
+
+type ReportScheduleField =
+  | 'daily_summary_schedule'
+  | 'error_digest_schedule'
+  | 'account_health_schedule'
+
+function reportTime(field: ReportScheduleField) {
+  return computed<string>({
+    get: () => emailBehavior.value ? cronTime(String(emailBehavior.value.report[field] || '')) : '09:00',
+    set: (value) => {
+      if (!emailBehavior.value) return
+      emailBehavior.value.report[field] = dailyCron(value)
+    }
+  })
+}
+
+const dailySummaryTime = reportTime('daily_summary_schedule')
+const errorDigestTime = reportTime('error_digest_schedule')
+const accountHealthTime = reportTime('account_health_schedule')
+const weeklySummaryTime = computed<string>({
+  get: () => emailBehavior.value ? cronTime(emailBehavior.value.report.weekly_summary_schedule) : '09:00',
+  set: (value) => {
+    if (!emailBehavior.value) return
+    emailBehavior.value.report.weekly_summary_schedule = weeklyCron(
+      value,
+      cronWeekday(emailBehavior.value.report.weekly_summary_schedule)
+    )
+  }
+})
+const weeklySummaryWeekday = computed<number>({
+  get: () => emailBehavior.value ? cronWeekday(emailBehavior.value.report.weekly_summary_schedule) : 1,
+  set: (value) => {
+    if (!emailBehavior.value) return
+    emailBehavior.value.report.weekly_summary_schedule = weeklyCron(
+      cronTime(emailBehavior.value.report.weekly_summary_schedule),
+      Number(value)
+    )
+  }
+})
+const dailySummaryHasLegacySchedule = computed(() =>
+  !!emailBehavior.value && !isProductDailySchedule(emailBehavior.value.report.daily_summary_schedule)
+)
+const weeklySummaryHasLegacySchedule = computed(() =>
+  !!emailBehavior.value && !isProductWeeklySchedule(emailBehavior.value.report.weekly_summary_schedule)
+)
+const errorDigestHasLegacySchedule = computed(() =>
+  !!emailBehavior.value && !isProductDailySchedule(emailBehavior.value.report.error_digest_schedule)
+)
+const accountHealthHasLegacySchedule = computed(() =>
+  !!emailBehavior.value && !isProductDailySchedule(emailBehavior.value.report.account_health_schedule)
+)
+
+function nextRunLabel(kind: string): string {
+  const raw = scheduleInfo.value.next_runs?.[kind]
+  if (!raw) return t('admin.ops.settings.nextRunAfterSave')
+  try {
+    return new Intl.DateTimeFormat(undefined, {
+      timeZone: scheduleInfo.value.timezone,
+      dateStyle: 'medium',
+      timeStyle: 'short'
+    }).format(new Date(raw))
+  } catch {
+    return raw
+  }
+}
 
 // OpenAI 账号配额自动暂停：后端按 0~1 分数存储，UI 按百分比(0~100)展示
 const quotaAutoPause5hPercent = computed<number | null>({
@@ -125,7 +250,11 @@ const validation = computed(() => {
   // 运维页只校验告警/报告的细粒度行为；总开关和收件人由邮件设置负责。
   if (emailBehavior.value) {
     const alert = emailBehavior.value.alert
-    if (!Number.isFinite(alert.rate_limit_per_hour) || alert.rate_limit_per_hour < 0) {
+    if (
+      !Number.isFinite(alert.rate_limit_per_hour) ||
+      alert.rate_limit_per_hour < 0 ||
+      alert.rate_limit_per_hour > 10000
+    ) {
       errors.push(t('admin.ops.email.validation.rateLimitRange'))
     }
     if (
@@ -137,15 +266,6 @@ const validation = computed(() => {
     }
 
     const report = emailBehavior.value.report
-    const schedules: Array<[boolean, string]> = [
-      [report.daily_summary_enabled, report.daily_summary_schedule],
-      [report.weekly_summary_enabled, report.weekly_summary_schedule],
-      [report.error_digest_enabled, report.error_digest_schedule],
-      [report.account_health_enabled, report.account_health_schedule]
-    ]
-    if (schedules.some(([enabled, schedule]) => enabled && schedule.trim().split(/\s+/).length < 5)) {
-      errors.push(t('admin.ops.email.validation.cronFormat'))
-    }
     if (!Number.isFinite(report.error_digest_min_count) || report.error_digest_min_count < 0) {
       errors.push(t('admin.ops.email.validation.digestMinCountRange'))
     }
@@ -214,6 +334,7 @@ async function saveAllSettings() {
     emailBehavior.value = updated.email_behavior
     advancedSettings.value = updated.advanced
     metricThresholds.value = updated.metric_thresholds
+    scheduleInfo.value = updated.schedule_info || scheduleInfo.value
     appStore.showSuccess(t('admin.ops.settings.saveSuccess'))
     emit('saved')
     emit('close')
@@ -267,17 +388,23 @@ async function saveAllSettings() {
           <div>
             <label class="input-label">{{ t('admin.ops.settings.minSeverity') }}</label>
             <Select v-model="emailBehavior.alert.min_severity" :options="severityOptions" />
+            <p class="mt-1 text-xs text-gray-500">{{ t('admin.ops.settings.minSeverityHint') }}</p>
           </div>
           <div>
             <label class="input-label">{{ t('admin.ops.email.rateLimitPerHour') }}</label>
-            <input v-model.number="emailBehavior.alert.rate_limit_per_hour" type="number" min="0" class="input" />
+            <input v-model.number="emailBehavior.alert.rate_limit_per_hour" type="number" min="0" max="10000" class="input" />
+            <p class="mt-1 text-xs text-gray-500">{{ t('admin.ops.settings.rateLimitHint') }}</p>
           </div>
           <div>
             <label class="input-label">{{ t('admin.ops.email.batchWindowSeconds') }}</label>
             <input v-model.number="emailBehavior.alert.batching_window_seconds" type="number" min="0" max="86400" class="input" />
+            <p class="mt-1 text-xs text-gray-500">{{ t('admin.ops.settings.batchWindowHint') }}</p>
           </div>
-          <div class="flex items-center justify-between rounded-lg border border-gray-200 px-3 py-2 dark:border-dark-600">
-            <label class="text-sm font-medium text-gray-700 dark:text-gray-300">{{ t('admin.ops.email.includeResolved') }}</label>
+          <div class="flex items-start justify-between gap-3 rounded-lg border border-gray-200 px-3 py-2 dark:border-dark-600">
+            <div>
+              <label class="text-sm font-medium text-gray-700 dark:text-gray-300">{{ t('admin.ops.email.includeResolved') }}</label>
+              <p class="mt-1 text-xs text-gray-500">{{ t('admin.ops.settings.includeResolvedHint') }}</p>
+            </div>
             <Toggle v-model="emailBehavior.alert.include_resolved_alerts" />
           </div>
         </div>
@@ -287,32 +414,47 @@ async function saveAllSettings() {
       <div class="rounded-2xl bg-gray-50 p-4 dark:bg-dark-700/50">
         <h4 class="mb-3 text-sm font-semibold text-gray-900 dark:text-white">{{ t('admin.ops.settings.reportConfig') }}</h4>
         <p class="mb-4 text-xs text-gray-500 dark:text-gray-400">{{ t('admin.ops.settings.reportBehaviorHint') }}</p>
+        <div
+          class="mb-4 rounded-lg bg-slate-100 px-3 py-2 text-xs text-slate-600 dark:bg-dark-600 dark:text-slate-300"
+          data-testid="ops-report-timezone"
+          :data-timezone="scheduleInfo.timezone"
+        >
+          {{ t('admin.ops.settings.serverTimezone', { timezone: scheduleInfo.timezone }) }}
+        </div>
         <div class="grid grid-cols-1 gap-4 md:grid-cols-2">
           <div class="rounded-lg border border-gray-200 p-3 dark:border-dark-600">
             <div class="flex items-center justify-between">
               <label class="text-sm font-medium text-gray-700 dark:text-gray-300">{{ t('admin.ops.email.dailySummary') }}</label>
               <Toggle v-model="emailBehavior.report.daily_summary_enabled" />
             </div>
-            <input
-              v-if="emailBehavior.report.daily_summary_enabled"
-              v-model="emailBehavior.report.daily_summary_schedule"
-              type="text"
-              class="input mt-3"
-              placeholder="0 9 * * *"
-            />
+            <div v-if="emailBehavior.report.daily_summary_enabled" class="mt-3">
+              <label class="input-label">{{ t('admin.ops.settings.sendTime') }}</label>
+              <input v-model="dailySummaryTime" type="time" class="input" />
+              <p v-if="dailySummaryHasLegacySchedule" class="mt-2 text-xs text-amber-600 dark:text-amber-400">
+                {{ t('admin.ops.settings.legacyScheduleHint') }}
+              </p>
+              <p class="mt-2 text-xs text-gray-500">{{ t('admin.ops.settings.nextRun', { time: nextRunLabel('daily_summary') }) }}</p>
+            </div>
           </div>
           <div class="rounded-lg border border-gray-200 p-3 dark:border-dark-600">
             <div class="flex items-center justify-between">
               <label class="text-sm font-medium text-gray-700 dark:text-gray-300">{{ t('admin.ops.email.weeklySummary') }}</label>
               <Toggle v-model="emailBehavior.report.weekly_summary_enabled" />
             </div>
-            <input
-              v-if="emailBehavior.report.weekly_summary_enabled"
-              v-model="emailBehavior.report.weekly_summary_schedule"
-              type="text"
-              class="input mt-3"
-              placeholder="0 9 * * 1"
-            />
+            <div v-if="emailBehavior.report.weekly_summary_enabled" class="mt-3 grid gap-3 sm:grid-cols-2">
+              <div>
+                <label class="input-label">{{ t('admin.ops.settings.weekday') }}</label>
+                <Select v-model="weeklySummaryWeekday" :options="weekdayOptions" />
+              </div>
+              <div>
+                <label class="input-label">{{ t('admin.ops.settings.sendTime') }}</label>
+                <input v-model="weeklySummaryTime" type="time" class="input" />
+              </div>
+              <p v-if="weeklySummaryHasLegacySchedule" class="text-xs text-amber-600 dark:text-amber-400 sm:col-span-2">
+                {{ t('admin.ops.settings.legacyScheduleHint') }}
+              </p>
+              <p class="text-xs text-gray-500 sm:col-span-2">{{ t('admin.ops.settings.nextRun', { time: nextRunLabel('weekly_summary') }) }}</p>
+            </div>
           </div>
           <div class="rounded-lg border border-gray-200 p-3 dark:border-dark-600">
             <div class="flex items-center justify-between">
@@ -320,14 +462,18 @@ async function saveAllSettings() {
               <Toggle v-model="emailBehavior.report.error_digest_enabled" />
             </div>
             <div v-if="emailBehavior.report.error_digest_enabled" class="mt-3 grid gap-3 sm:grid-cols-2">
-              <input v-model="emailBehavior.report.error_digest_schedule" type="text" class="input" placeholder="0 9 * * *" />
-              <input
-                v-model.number="emailBehavior.report.error_digest_min_count"
-                type="number"
-                min="0"
-                class="input"
-                :placeholder="t('admin.ops.email.errorDigestMinCount')"
-              />
+              <div>
+                <label class="input-label">{{ t('admin.ops.settings.sendTime') }}</label>
+                <input v-model="errorDigestTime" type="time" class="input" />
+                <p v-if="errorDigestHasLegacySchedule" class="mt-2 text-xs text-amber-600 dark:text-amber-400">
+                  {{ t('admin.ops.settings.legacyScheduleHint') }}
+                </p>
+              </div>
+              <div>
+                <label class="input-label">{{ t('admin.ops.email.errorDigestMinCount') }}</label>
+                <input v-model.number="emailBehavior.report.error_digest_min_count" type="number" min="0" class="input" />
+              </div>
+              <p class="text-xs text-gray-500 sm:col-span-2">{{ t('admin.ops.settings.nextRun', { time: nextRunLabel('error_digest') }) }}</p>
             </div>
           </div>
           <div class="rounded-lg border border-gray-200 p-3 dark:border-dark-600">
@@ -336,16 +482,25 @@ async function saveAllSettings() {
               <Toggle v-model="emailBehavior.report.account_health_enabled" />
             </div>
             <div v-if="emailBehavior.report.account_health_enabled" class="mt-3 grid gap-3 sm:grid-cols-2">
-              <input v-model="emailBehavior.report.account_health_schedule" type="text" class="input" placeholder="0 9 * * *" />
-              <input
-                v-model.number="emailBehavior.report.account_health_error_rate_threshold"
-                type="number"
-                min="0"
-                max="100"
-                step="0.1"
-                class="input"
-                :placeholder="t('admin.ops.email.accountHealthThreshold')"
-              />
+              <div>
+                <label class="input-label">{{ t('admin.ops.settings.sendTime') }}</label>
+                <input v-model="accountHealthTime" type="time" class="input" />
+                <p v-if="accountHealthHasLegacySchedule" class="mt-2 text-xs text-amber-600 dark:text-amber-400">
+                  {{ t('admin.ops.settings.legacyScheduleHint') }}
+                </p>
+              </div>
+              <div>
+                <label class="input-label">{{ t('admin.ops.email.accountHealthThreshold') }}</label>
+                <input
+                  v-model.number="emailBehavior.report.account_health_error_rate_threshold"
+                  type="number"
+                  min="0"
+                  max="100"
+                  step="0.1"
+                  class="input"
+                />
+              </div>
+              <p class="text-xs text-gray-500 sm:col-span-2">{{ t('admin.ops.settings.nextRun', { time: nextRunLabel('account_health') }) }}</p>
             </div>
           </div>
         </div>

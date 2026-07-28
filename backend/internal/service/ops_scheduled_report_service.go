@@ -350,14 +350,7 @@ func (s *OpsScheduledReportService) runReport(ctx context.Context, report *opsSc
 			recipients = resolved
 		}
 	}
-	if len(recipients) == 0 && s.userService != nil {
-		admin, err := s.userService.GetFirstAdmin(ctx)
-		if err == nil && admin != nil && strings.TrimSpace(admin.Email) != "" {
-			recipients = []string{strings.TrimSpace(admin.Email)}
-		}
-	}
 	if len(recipients) == 0 {
-		s.setLastRunAt(ctx, report.ReportType, now)
 		return 0, errors.New("ops scheduled report has no configured recipients")
 	}
 
@@ -521,9 +514,15 @@ func opsSummaryReportEmailVariables(report *opsScheduledReport, now time.Time, o
 	variables["report_success_count"] = formatOpsReportInteger(overview.SuccessCount)
 	variables["report_sla_error_count"] = formatOpsReportInteger(overview.ErrorCountSLA)
 	variables["report_business_limited_count"] = formatOpsReportInteger(overview.BusinessLimitedCount)
-	variables["report_sla"] = fmt.Sprintf("%.2f%%", overview.SLA*100)
-	variables["report_error_rate"] = fmt.Sprintf("%.2f%%", overview.ErrorRate*100)
-	variables["report_upstream_error_rate"] = fmt.Sprintf("%.2f%%", overview.UpstreamErrorRate*100)
+	if overview.AvailabilityAvailable || overview.RequestCountSLA > 0 {
+		variables["report_sla"] = fmt.Sprintf("%.2f%%", overview.SLA*100)
+		variables["report_error_rate"] = fmt.Sprintf("%.2f%%", overview.ErrorRate*100)
+		variables["report_upstream_error_rate"] = fmt.Sprintf("%.2f%%", overview.UpstreamErrorRate*100)
+	} else {
+		variables["report_sla"] = "N/A"
+		variables["report_error_rate"] = "N/A"
+		variables["report_upstream_error_rate"] = "N/A"
+	}
 	variables["report_upstream_error_count_excl_429_529"] = formatOpsReportInteger(overview.UpstreamErrorCountExcl429529)
 	variables["report_upstream_429_count"] = formatOpsReportInteger(overview.Upstream429Count)
 	variables["report_upstream_529_count"] = formatOpsReportInteger(overview.Upstream529Count)

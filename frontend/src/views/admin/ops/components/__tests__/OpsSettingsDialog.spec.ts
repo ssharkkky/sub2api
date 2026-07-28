@@ -140,4 +140,49 @@ describe('OpsSettingsDialog monitoring contract', () => {
     }))
     expect(wrapper.emitted('saved')).toHaveLength(1)
   })
+
+  it('uses product schedule controls instead of exposing cron expressions', async () => {
+    const configured = structuredClone(settings)
+    configured.email_behavior.report.daily_summary_enabled = true
+    configured.email_behavior.report.weekly_summary_enabled = true
+    getMonitoringSettings.mockResolvedValueOnce({
+      ...configured,
+      schedule_info: {
+        timezone: 'Asia/Shanghai',
+        next_runs: {
+          daily_summary: '2026-07-29T09:00:00+08:00',
+          weekly_summary: '2026-08-03T09:00:00+08:00'
+        }
+      }
+    })
+    const wrapper = mountDialog()
+    await wrapper.setProps({ show: true })
+    await flushPromises()
+
+    expect(wrapper.findAll('input[type="time"]')).toHaveLength(4)
+    expect(wrapper.get('[data-testid="ops-report-timezone"]').attributes('data-timezone')).toBe('Asia/Shanghai')
+    expect(wrapper.find('input[placeholder="0 9 * * *"]').exists()).toBe(false)
+  })
+
+  it('preserves a legacy custom cron until the administrator deliberately selects a product schedule', async () => {
+    const configured = structuredClone(settings)
+    configured.email_behavior.report.daily_summary_schedule = '*/15 8-18 * * 1-5'
+    getMonitoringSettings.mockResolvedValueOnce(configured)
+    const wrapper = mountDialog()
+    await wrapper.setProps({ show: true })
+    await flushPromises()
+
+    expect(wrapper.text()).toContain('admin.ops.settings.legacyScheduleHint')
+    const saveButton = wrapper.findAll('button').find((button) => button.text() === 'common.save')
+    await saveButton!.trigger('click')
+    await flushPromises()
+
+    expect(updateMonitoringSettings).toHaveBeenCalledWith(expect.objectContaining({
+      email_behavior: expect.objectContaining({
+        report: expect.objectContaining({
+          daily_summary_schedule: '*/15 8-18 * * 1-5'
+        })
+      })
+    }))
+  })
 })
