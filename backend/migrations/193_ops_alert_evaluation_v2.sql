@@ -2,12 +2,18 @@
 -- tables remain nullable so old and new application images can write during a
 -- blue-green deployment without a table rewrite or rollback incompatibility.
 ALTER TABLE ops_alert_rules
-    ADD COLUMN IF NOT EXISTS incident_family VARCHAR(64),
-    ADD COLUMN IF NOT EXISTS minimum_samples INTEGER,
-    ADD COLUMN IF NOT EXISTS minimum_bad_count INTEGER,
-    ADD COLUMN IF NOT EXISTS recovery_operator VARCHAR(8),
-    ADD COLUMN IF NOT EXISTS recovery_threshold DOUBLE PRECISION,
-    ADD COLUMN IF NOT EXISTS recovery_sustained_minutes INTEGER,
+    ADD COLUMN IF NOT EXISTS incident_family VARCHAR(64);
+ALTER TABLE ops_alert_rules
+    ADD COLUMN IF NOT EXISTS minimum_samples INTEGER;
+ALTER TABLE ops_alert_rules
+    ADD COLUMN IF NOT EXISTS minimum_bad_count INTEGER;
+ALTER TABLE ops_alert_rules
+    ADD COLUMN IF NOT EXISTS recovery_operator VARCHAR(8);
+ALTER TABLE ops_alert_rules
+    ADD COLUMN IF NOT EXISTS recovery_threshold DOUBLE PRECISION;
+ALTER TABLE ops_alert_rules
+    ADD COLUMN IF NOT EXISTS recovery_sustained_minutes INTEGER;
+ALTER TABLE ops_alert_rules
     ADD COLUMN IF NOT EXISTS shadow_mode BOOLEAN;
 
 ALTER TABLE ops_alert_events
