@@ -1,6 +1,9 @@
 -- Error classification v2 starts with newly written rows. Existing rows stay
 -- nullable and are interpreted conservatively by repository queries, avoiding
 -- a long-running historical rewrite during application startup.
+SET LOCAL lock_timeout = '1s';
+SET LOCAL statement_timeout = '10min';
+
 ALTER TABLE ops_error_logs
     ADD COLUMN IF NOT EXISTS final_outcome VARCHAR(32);
 ALTER TABLE ops_error_logs

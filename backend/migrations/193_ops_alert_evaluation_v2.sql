@@ -1,6 +1,9 @@
 -- Alert-evaluation v2 is rolled out additively. Columns added to existing
 -- tables remain nullable so old and new application images can write during a
 -- blue-green deployment without a table rewrite or rollback incompatibility.
+SET LOCAL lock_timeout = '1s';
+SET LOCAL statement_timeout = '10min';
+
 ALTER TABLE ops_alert_rules
     ADD COLUMN IF NOT EXISTS incident_family VARCHAR(64);
 ALTER TABLE ops_alert_rules

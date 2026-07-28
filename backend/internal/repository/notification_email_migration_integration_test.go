@@ -4,10 +4,14 @@ package repository
 
 import (
 	"context"
+	"errors"
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/Wei-Shaw/sub2api/internal/service"
+	"github.com/Wei-Shaw/sub2api/migrations"
+	"github.com/lib/pq"
 	"github.com/stretchr/testify/require"
 )
 
@@ -122,4 +126,36 @@ func TestOpsV2MigrationsKeepLegacyRowsReadable(t *testing.T) {
 	require.NoError(t, err)
 	require.NotNil(t, event)
 	require.False(t, event.EmailQueued)
+}
+
+func TestOpsV2MigrationLockTimeoutFailsFastWithoutBlockingLegacyWrites(t *testing.T) {
+	ctx := context.Background()
+	lockTx, err := integrationDB.BeginTx(ctx, nil)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = lockTx.Rollback() })
+	_, err = lockTx.ExecContext(ctx, "LOCK TABLE ops_error_logs IN ACCESS SHARE MODE")
+	require.NoError(t, err)
+
+	content, err := migrations.FS.ReadFile("195_ops_error_classification_v2.sql")
+	require.NoError(t, err)
+	fastSQL := strings.Replace(string(content), "SET LOCAL lock_timeout = '1s';", "SET LOCAL lock_timeout = '100ms';", 1)
+	require.NotEqual(t, string(content), fastSQL)
+
+	startedAt := time.Now()
+	_, err = integrationDB.ExecContext(ctx, fastSQL)
+	require.Error(t, err)
+	require.Less(t, time.Since(startedAt), time.Second)
+	var pqErr *pq.Error
+	require.True(t, errors.As(err, &pqErr))
+	require.Equal(t, pq.ErrorCode("55P03"), pqErr.Code)
+
+	platform := "ops-v2-lock-timeout-legacy-write-test"
+	_, err = integrationDB.ExecContext(ctx, `
+		INSERT INTO ops_error_logs (platform, error_phase, error_type, status_code, is_business_limited)
+		VALUES ($1, 'legacy', 'legacy', 500, false)
+	`, platform)
+	require.NoError(t, err)
+	t.Cleanup(func() {
+		_, _ = integrationDB.ExecContext(context.Background(), "DELETE FROM ops_error_logs WHERE platform = $1", platform)
+	})
 }
