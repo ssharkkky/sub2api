@@ -5,12 +5,10 @@ package repository
 import (
 	"context"
 	"errors"
-	"strings"
 	"testing"
 	"time"
 
 	"github.com/Wei-Shaw/sub2api/internal/service"
-	"github.com/Wei-Shaw/sub2api/migrations"
 	"github.com/lib/pq"
 	"github.com/stretchr/testify/require"
 )
@@ -136,15 +134,15 @@ func TestOpsV2MigrationLockTimeoutFailsFastWithoutBlockingLegacyWrites(t *testin
 	_, err = lockTx.ExecContext(ctx, "LOCK TABLE ops_error_logs IN ACCESS SHARE MODE")
 	require.NoError(t, err)
 
-	content, err := migrations.FS.ReadFile("195_ops_error_classification_v2.sql")
+	migrationTx, err := integrationDB.BeginTx(ctx, nil)
 	require.NoError(t, err)
-	fastSQL := strings.Replace(string(content), "SET LOCAL lock_timeout = '1s';", "SET LOCAL lock_timeout = '100ms';", 1)
-	require.NotEqual(t, string(content), fastSQL)
+	t.Cleanup(func() { _ = migrationTx.Rollback() })
+	require.NoError(t, configureMigrationTransaction(ctx, migrationTx))
 
 	startedAt := time.Now()
-	_, err = integrationDB.ExecContext(ctx, fastSQL)
+	_, err = migrationTx.ExecContext(ctx, "ALTER TABLE ops_error_logs ADD COLUMN IF NOT EXISTS classification_version INTEGER")
 	require.Error(t, err)
-	require.Less(t, time.Since(startedAt), time.Second)
+	require.Less(t, time.Since(startedAt), 2*time.Second)
 	var pqErr *pq.Error
 	require.True(t, errors.As(err, &pqErr))
 	require.Equal(t, pq.ErrorCode("55P03"), pqErr.Code)

@@ -23,8 +23,7 @@ func TestOpsV2ReleaseMigrationsRemainBlueGreenCompatible(t *testing.T) {
 	indexSQL := strings.ToLower(string(indexMigration))
 
 	for _, sqlText := range []string{alertSQL, classificationSQL} {
-		require.Contains(t, sqlText, "set local lock_timeout = '1s';")
-		require.Contains(t, sqlText, "set local statement_timeout = '10min';")
+		require.NotContains(t, sqlText, "\nset ", "transaction policy belongs to the migration runner")
 		require.NotContains(t, sqlText, "\nupdate ", "release migrations must not rewrite historical rows")
 		require.NotContains(t, sqlText, "create index concurrently", "concurrent indexes belong in a _notx migration")
 	}
