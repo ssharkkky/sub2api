@@ -28,10 +28,10 @@ func TestOpsV2ReleaseMigrationsRemainBlueGreenCompatible(t *testing.T) {
 	}
 
 	for _, fragment := range []string{
-		"add column if not exists incident_family varchar(64),",
+		"add column if not exists incident_family varchar(64);",
 		"add column if not exists email_queued boolean;",
-		"add column if not exists final_outcome varchar(32),",
-		"add column if not exists counts_toward_sla boolean,",
+		"add column if not exists final_outcome varchar(32);",
+		"add column if not exists counts_toward_sla boolean;",
 		"add column if not exists metric_definition_version integer;",
 	} {
 		require.Contains(t, alertSQL+classificationSQL, fragment)
