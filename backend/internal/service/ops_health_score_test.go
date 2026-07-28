@@ -9,6 +9,24 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+func computeDashboardHealthScore(now time.Time, overview *OpsDashboardOverview) int {
+	return computeDashboardHealthScoreResult(now, overview, nil).Score
+}
+
+func computeDashboardHealthScoreWithThresholds(now time.Time, overview *OpsDashboardOverview, thresholds *OpsMetricThresholds) int {
+	return computeDashboardHealthScoreResult(now, overview, thresholds).Score
+}
+
+func computeBusinessHealth(overview *OpsDashboardOverview) float64 {
+	quality, latency := computeBusinessHealthComponents(overview, nil)
+	return quality.score*0.5 + latency.score*0.5
+}
+
+func computeInfraHealth(now time.Time, overview *OpsDashboardOverview) float64 {
+	storage, compute, jobs := computeInfraHealthComponents(now, overview)
+	return storage.score*0.4 + compute.score*0.3 + jobs.score*0.3
+}
+
 func TestComputeDashboardHealthScore_IdleReturns100(t *testing.T) {
 	t.Parallel()
 

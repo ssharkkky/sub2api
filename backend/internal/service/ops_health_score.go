@@ -30,21 +30,14 @@ type opsHealthScoreResult struct {
 	Breakdown *OpsHealthScoreBreakdown
 }
 
-// computeDashboardHealthScore computes a 0-100 health score from the metrics returned by the dashboard overview.
+// computeDashboardHealthScoreResult computes a 0-100 health score and the
+// deductions that explain it from the dashboard overview.
 //
 // Design goals:
 // - Backend-owned scoring (UI only displays).
 // - Layered scoring: Business Health (70%) + Infrastructure Health (30%)
 // - Avoids double-counting (e.g., DB failure affects both infra and business metrics)
 // - Conservative + stable: penalize clear degradations; avoid overreacting to missing/idle data.
-func computeDashboardHealthScore(now time.Time, overview *OpsDashboardOverview) int {
-	return computeDashboardHealthScoreWithThresholds(now, overview, nil)
-}
-
-func computeDashboardHealthScoreWithThresholds(now time.Time, overview *OpsDashboardOverview, thresholds *OpsMetricThresholds) int {
-	return computeDashboardHealthScoreResult(now, overview, thresholds).Score
-}
-
 func computeDashboardHealthScoreResult(now time.Time, overview *OpsDashboardOverview, thresholds *OpsMetricThresholds) opsHealthScoreResult {
 	if overview == nil {
 		return opsHealthScoreResult{
@@ -59,7 +52,7 @@ func computeDashboardHealthScoreResult(now time.Time, overview *OpsDashboardOver
 
 	businessQuality, businessLatency := computeBusinessHealthComponents(overview, thresholds)
 	storage, compute, jobs := computeInfraHealthComponents(now, overview)
-	businessIncluded := !(overview.RequestCountSLA <= 0 && overview.RequestCountTotal <= 0 && overview.ErrorCountTotal <= 0)
+	businessIncluded := overview.RequestCountSLA > 0 || overview.RequestCountTotal > 0 || overview.ErrorCountTotal > 0
 
 	type weightedComponent struct {
 		calculation opsHealthComponentCalculation
@@ -125,11 +118,6 @@ func roundHealthScoreValue(value float64) float64 {
 
 func healthScoreValuePtr(value float64) *float64 {
 	return &value
-}
-
-func computeBusinessHealthWithThresholds(overview *OpsDashboardOverview, thresholds *OpsMetricThresholds) float64 {
-	quality, latency := computeBusinessHealthComponents(overview, thresholds)
-	return quality.score*0.5 + latency.score*0.5
 }
 
 func computeBusinessHealthComponents(overview *OpsDashboardOverview, thresholds *OpsMetricThresholds) (opsHealthComponentCalculation, opsHealthComponentCalculation) {
@@ -245,19 +233,6 @@ func thresholdHealthScore(value, criticalThreshold float64) float64 {
 		return 0
 	}
 	return (zeroThreshold - value) / (zeroThreshold - warningThreshold) * 100
-}
-
-// computeBusinessHealth calculates business health score (0-100)
-// Components: Error Rate (50%) + TTFT (50%)
-func computeBusinessHealth(overview *OpsDashboardOverview) float64 {
-	return computeBusinessHealthWithThresholds(overview, nil)
-}
-
-// computeInfraHealth calculates infrastructure health score (0-100)
-// Components: Storage (40%) + Compute Resources (30%) + Background Jobs (30%)
-func computeInfraHealth(now time.Time, overview *OpsDashboardOverview) float64 {
-	storage, compute, jobs := computeInfraHealthComponents(now, overview)
-	return storage.score*0.4 + compute.score*0.3 + jobs.score*0.3
 }
 
 func computeInfraHealthComponents(now time.Time, overview *OpsDashboardOverview) (opsHealthComponentCalculation, opsHealthComponentCalculation, opsHealthComponentCalculation) {
