@@ -298,16 +298,16 @@ const validation = computed(() => {
   }
 
   // 验证指标阈值
-  if (metricThresholds.value.sla_percent_min != null && (metricThresholds.value.sla_percent_min < 0 || metricThresholds.value.sla_percent_min > 100)) {
+  if (metricThresholds.value.sla_percent_min != null && (metricThresholds.value.sla_percent_min <= 0 || metricThresholds.value.sla_percent_min > 100)) {
     errors.push(t('admin.ops.settings.validation.slaMinPercentRange'))
   }
-  if (metricThresholds.value.ttft_p99_ms_max != null && metricThresholds.value.ttft_p99_ms_max < 0) {
+  if (metricThresholds.value.ttft_p99_ms_max != null && metricThresholds.value.ttft_p99_ms_max <= 0) {
     errors.push(t('admin.ops.settings.validation.ttftP99MaxRange'))
   }
-  if (metricThresholds.value.request_error_rate_percent_max != null && (metricThresholds.value.request_error_rate_percent_max < 0 || metricThresholds.value.request_error_rate_percent_max > 100)) {
+  if (metricThresholds.value.request_error_rate_percent_max != null && (metricThresholds.value.request_error_rate_percent_max <= 0 || metricThresholds.value.request_error_rate_percent_max > 100)) {
     errors.push(t('admin.ops.settings.validation.requestErrorRateMaxRange'))
   }
-  if (metricThresholds.value.upstream_error_rate_percent_max != null && (metricThresholds.value.upstream_error_rate_percent_max < 0 || metricThresholds.value.upstream_error_rate_percent_max > 100)) {
+  if (metricThresholds.value.upstream_error_rate_percent_max != null && (metricThresholds.value.upstream_error_rate_percent_max <= 0 || metricThresholds.value.upstream_error_rate_percent_max > 100)) {
     errors.push(t('admin.ops.settings.validation.upstreamErrorRateMaxRange'))
   }
 
@@ -517,7 +517,7 @@ async function saveAllSettings() {
             <input
               v-model.number="metricThresholds.sla_percent_min"
               type="number"
-              min="0"
+              min="0.1"
               max="100"
               step="0.1"
               class="input"
@@ -531,7 +531,7 @@ async function saveAllSettings() {
             <input
               v-model.number="metricThresholds.ttft_p99_ms_max"
               type="number"
-              min="0"
+              min="1"
               step="50"
               class="input"
             />
@@ -543,7 +543,7 @@ async function saveAllSettings() {
             <input
               v-model.number="metricThresholds.request_error_rate_percent_max"
               type="number"
-              min="0"
+              min="0.1"
               max="100"
               step="0.1"
               class="input"
@@ -556,7 +556,7 @@ async function saveAllSettings() {
             <input
               v-model.number="metricThresholds.upstream_error_rate_percent_max"
               type="number"
-              min="0"
+              min="0.1"
               max="100"
               step="0.1"
               class="input"

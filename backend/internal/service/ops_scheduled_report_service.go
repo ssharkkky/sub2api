@@ -376,7 +376,7 @@ func (s *OpsScheduledReportService) runReport(ctx context.Context, report *opsSc
 			RecipientName:    emailRecipientName(addr),
 			SourceType:       "ops_scheduled_report",
 			SourceID:         opsScheduledReportDeliverySourceID(report),
-			ReminderKey:      now.UTC().Format("2006-01-02T15:04"),
+			ReminderKey:      opsScheduledReportOccurrenceKey(report, now),
 			Variables:        templateVariables,
 			RawHTMLVariables: rawHTMLVariables,
 		})
@@ -389,6 +389,14 @@ func (s *OpsScheduledReportService) runReport(ctx context.Context, report *opsSc
 	}
 	s.setLastRunAt(ctx, report.ReportType, now)
 	return enqueued, nil
+}
+
+func opsScheduledReportOccurrenceKey(report *opsScheduledReport, fallback time.Time) string {
+	occurrence := fallback
+	if report != nil && !report.NextRunAt.IsZero() {
+		occurrence = report.NextRunAt
+	}
+	return occurrence.UTC().Format("2006-01-02T15:04")
 }
 
 func (s *OpsScheduledReportService) notificationEmailService() *NotificationEmailService {

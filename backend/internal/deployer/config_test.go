@@ -69,6 +69,7 @@ func TestConfigRequiresCompleteControlPlaneUpgradeConfiguration(t *testing.T) {
 	cfg := testConfig(t, 19081)
 	cfg.HealthTimeout = Duration{Duration: 12 * time.Minute}
 	cfg.ControlPlaneUpgradePath = filepath.Join(t.TempDir(), "upgrade.json")
+	cfg.ControlPlaneUpgradeCommand = nil
 	if err := cfg.validate(); err == nil {
 		t.Fatal("upgrade request path without command unexpectedly passed validation")
 	}

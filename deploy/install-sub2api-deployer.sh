@@ -811,6 +811,7 @@ EOF
   if (( SERVICE_WAS_ACTIVE == 1 )); then
     jq -e \
       --arg container "$ACTIVE_CONTAINER" \
+      --arg container_id "$INSPECTED_CONTAINER_ID" \
       --arg version "$CURRENT_VERSION" \
       --argjson port "$ACTIVE_PORT" \
       '.active_container == $container and .active_port == $port and .active_version == $version' \
@@ -1117,8 +1118,10 @@ for ((attempt=0; attempt<40; attempt++)); do
        and .degraded == false
        and .job_running == false
        and .active_container == $container
+       and .active_container_id == $container_id
        and .active_port == $port
-       and .active_version == $version' \
+       and .active_version == $version
+       and .control_plane_upgrade_ready == true' \
       <<<"$DEPLOYER_HEALTH" >/dev/null 2>&1; then
     DEPLOYER_READY=1
     break

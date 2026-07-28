@@ -386,13 +386,15 @@ func testConfig(t *testing.T, candidatePort int) Config {
 		NginxReloadCommand: []string{
 			"/usr/bin/systemctl", "reload", "nginx",
 		},
-		RouteConfirmationTimeout: Duration{Duration: time.Second},
-		HealthPath:               "/health",
-		HealthTimeout:            Duration{Duration: time.Second},
-		StabilizeDuration:        Duration{Duration: 10 * time.Millisecond},
-		DrainDuration:            Duration{Duration: time.Millisecond},
-		DrainTimeout:             Duration{Duration: time.Second},
-		StopTimeout:              Duration{Duration: time.Second},
+		RouteConfirmationTimeout:   Duration{Duration: time.Second},
+		HealthPath:                 "/health",
+		HealthTimeout:              Duration{Duration: time.Second},
+		StabilizeDuration:          Duration{Duration: 10 * time.Millisecond},
+		DrainDuration:              Duration{Duration: time.Millisecond},
+		DrainTimeout:               Duration{Duration: time.Second},
+		StopTimeout:                Duration{Duration: time.Second},
+		ControlPlaneUpgradePath:    filepath.Join(dir, "control-plane-upgrade.json"),
+		ControlPlaneUpgradeCommand: []string{"/bin/systemctl", "start", "--no-block", "sub2api-deployer-upgrade.service"},
 	}
 }
 
@@ -2664,12 +2666,12 @@ func TestInactiveSlotCleanupIgnoresSupersededHistoryContainerIDs(t *testing.T) {
 	}
 }
 
-func TestScheduleControlPlaneUpgradePersistsImmutableCandidateIdentity(t *testing.T) {
+func TestPrepareControlPlaneUpgradePersistsImmutableCandidateIdentity(t *testing.T) {
 	cfg := testConfig(t, 18081)
 	cfg.ControlPlaneUpgradePath = filepath.Join(t.TempDir(), "control-plane-upgrade.json")
 	cfg.ControlPlaneUpgradeCommand = []string{"/bin/systemctl", "start", "--no-block", "sub2api-deployer-upgrade.service"}
 	runner := &fakeRunner{}
-	manager := &Manager{cfg: cfg, runner: runner}
+	manager := &Manager{cfg: cfg, runner: runner, now: time.Now}
 	job := &Job{
 		ID:                   "control-plane-upgrade-0001",
 		Action:               "update",
@@ -2678,9 +2680,19 @@ func TestScheduleControlPlaneUpgradePersistsImmutableCandidateIdentity(t *testin
 		TargetDigest:         "sha256:" + strings.Repeat("a", 64),
 		CandidateContainer:   "sub2api-green",
 		CandidateContainerID: fakeContainerID("sub2api-green-current"),
+		Status:               JobStatusRunning,
+		Stage:                StageActivating,
 	}
+	manager.state = State{Job: job}
 
-	if err := manager.scheduleControlPlaneUpgrade(job); err != nil {
+	prepared, err := manager.prepareControlPlaneUpgrade(job)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !prepared {
+		t.Fatal("control-plane upgrade was not prepared")
+	}
+	if err := manager.startControlPlaneUpgrade(job); err != nil {
 		t.Fatal(err)
 	}
 	data, err := os.ReadFile(cfg.ControlPlaneUpgradePath)
@@ -2691,7 +2703,7 @@ func TestScheduleControlPlaneUpgradePersistsImmutableCandidateIdentity(t *testin
 	if err := json.Unmarshal(data, &request); err != nil {
 		t.Fatal(err)
 	}
-	if request.ContainerID != job.CandidateContainerID ||
+	if request.JobID != job.ID || request.ContainerID != job.CandidateContainerID ||
 		request.TargetVersion != job.TargetVersion ||
 		request.ExpectedImage != job.TargetImage ||
 		request.ExpectedImageHash != job.TargetDigest {
@@ -2705,15 +2717,19 @@ func TestScheduleControlPlaneUpgradePersistsImmutableCandidateIdentity(t *testin
 	}
 }
 
-func TestScheduleControlPlaneUpgradeDoesNotDowngradeOnRollback(t *testing.T) {
+func TestPrepareControlPlaneUpgradeDoesNotDowngradeOnRollback(t *testing.T) {
 	cfg := testConfig(t, 18081)
 	cfg.ControlPlaneUpgradePath = filepath.Join(t.TempDir(), "control-plane-upgrade.json")
 	cfg.ControlPlaneUpgradeCommand = []string{"/bin/systemctl", "start", "--no-block", "sub2api-deployer-upgrade.service"}
 	runner := &fakeRunner{}
 	manager := &Manager{cfg: cfg, runner: runner}
 
-	if err := manager.scheduleControlPlaneUpgrade(&Job{Action: "rollback"}); err != nil {
+	prepared, err := manager.prepareControlPlaneUpgrade(&Job{Action: "rollback"})
+	if err != nil {
 		t.Fatal(err)
+	}
+	if prepared {
+		t.Fatal("rollback unexpectedly prepared a control-plane downgrade")
 	}
 	if _, err := os.Stat(cfg.ControlPlaneUpgradePath); !os.IsNotExist(err) {
 		t.Fatalf("rollback unexpectedly created a control-plane downgrade request: %v", err)
@@ -2722,6 +2738,42 @@ func TestScheduleControlPlaneUpgradeDoesNotDowngradeOnRollback(t *testing.T) {
 	defer runner.mu.Unlock()
 	if len(runner.commands) != 0 {
 		t.Fatalf("rollback unexpectedly scheduled a control-plane downgrade: %v", runner.commands)
+	}
+}
+
+func TestJobReportsControlPlaneUpgradeFailureFromSidecar(t *testing.T) {
+	cfg := testConfig(t, 18081)
+	job := &Job{
+		ID: "control-plane-status-0001", Action: "update", Status: JobStatusSucceeded,
+		TargetVersion: "0.1.166-ts.3", CandidateContainerID: fakeContainerID("sub2api-green"),
+	}
+	manager := &Manager{cfg: cfg, state: State{Job: job}}
+	if err := manager.writeControlPlaneUpgradeStatus(job, "failed", "health verification failed"); err != nil {
+		t.Fatal(err)
+	}
+
+	got, err := manager.Job(job.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.ControlPlaneUpgradeStatus != "failed" || got.ControlPlaneUpgradeError != "health verification failed" {
+		t.Fatalf("unexpected control-plane status: %+v", got)
+	}
+	if !strings.Contains(got.CleanupWarning, "health verification failed") {
+		t.Fatalf("cleanup warning did not expose control-plane failure: %q", got.CleanupWarning)
+	}
+}
+
+func TestUpdateRequiresControlPlaneUpgradeBootstrap(t *testing.T) {
+	cfg := testConfig(t, 18081)
+	cfg.ControlPlaneUpgradePath = ""
+	cfg.ControlPlaneUpgradeCommand = nil
+	manager := &Manager{cfg: cfg}
+	_, err := manager.Start(DeployRequest{
+		Action: "update", TargetVersion: "0.1.2-ts.1", RequestID: "bootstrap-required-0001",
+	})
+	if !errors.Is(err, ErrControlPlaneUpgradeUnavailable) {
+		t.Fatalf("Start error=%v, want ErrControlPlaneUpgradeUnavailable", err)
 	}
 }
 

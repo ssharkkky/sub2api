@@ -79,34 +79,14 @@ func applyLegacyOpsAlertRuleCompatibility(rule *service.OpsAlertRule) {
 		rule, "错误率过高", "当错误率超过 5% 且持续 5 分钟时触发告警",
 		"error_rate", ">", "P1", 5, 5, 5, 20,
 	):
-		rule.Name = "基础设施可用性缓慢下降"
-		rule.Description = "30 分钟 SLA 合格请求失败率达到 5%，失败至少 10 次且样本至少 100；持续 10 分钟后触发"
-		rule.MetricType = "availability_failure_rate"
-		rule.Operator = ">="
-		rule.WindowMinutes = 30
-		rule.SustainedMinutes = 10
-		rule.IncidentFamily = "availability"
-		rule.MinimumSamples = 100
-		rule.MinimumBadCount = 10
-		rule.RecoveryOperator = "<"
-		rule.RecoveryThreshold = float64PtrRepository(2.5)
-		rule.RecoverySustainedMinutes = 10
+		rule.Enabled = false
+		rule.Description += " [disabled: replaced by availability failure rules]"
 	case matchesLegacyOpsAlertRuleDefault(
 		rule, "错误率极高", "当错误率超过 20% 且持续 1 分钟时触发告警（服务严重异常）",
 		"error_rate", ">", "P0", 20, 1, 1, 15,
 	):
-		rule.Name = "基础设施可用性快速下降"
-		rule.Description = "5 分钟 SLA 合格请求失败率达到 20%，失败至少 10 次且样本至少 30；持续 3 分钟后触发"
-		rule.MetricType = "availability_failure_rate"
-		rule.Operator = ">="
-		rule.WindowMinutes = 5
-		rule.SustainedMinutes = 3
-		rule.IncidentFamily = "availability"
-		rule.MinimumSamples = 30
-		rule.MinimumBadCount = 10
-		rule.RecoveryOperator = "<"
-		rule.RecoveryThreshold = float64PtrRepository(10)
-		rule.RecoverySustainedMinutes = 5
+		rule.Enabled = false
+		rule.Description += " [disabled: replaced by availability failure rules]"
 	case matchesLegacyOpsAlertRuleDefault(
 		rule, "CPU使用率过高", "当 CPU 使用率超过 85% 且持续 10 分钟时触发告警",
 		"cpu_usage_percent", ">", "P2", 85, 5, 10, 30,

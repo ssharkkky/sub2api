@@ -757,10 +757,10 @@ export default {
           lockKeyPrefix: '分布式锁 Key 必须以「{prefix}」开头',
           lockKeyHint: '建议以「{prefix}」开头以避免冲突',
           lockTtlRange: '分布式锁 TTL 必须在 1 到 86400 秒之间',
-          slaMinPercentRange: 'SLA 最低值必须在 0-100 之间',
-          ttftP99MaxRange: 'TTFT P99 最大值必须大于或等于 0',
-          requestErrorRateMaxRange: '请求错误率最大值必须在 0-100 之间',
-          upstreamErrorRateMaxRange: '上游错误率最大值必须在 0-100 之间'
+          slaMinPercentRange: 'SLA 最低值必须大于 0 且不超过 100',
+          ttftP99MaxRange: 'TTFT P99 最大值必须大于 0',
+          requestErrorRateMaxRange: '请求错误率最大值必须大于 0 且不超过 100',
+          upstreamErrorRateMaxRange: '上游错误率最大值必须大于 0 且不超过 100'
         }
       },
       email: {
@@ -895,10 +895,10 @@ export default {
         validation: {
           title: '请先修正以下问题',
           retentionDaysRange: '保留天数必须在 0-365 天之间（0 = 每次清理时清空所有）',
-          slaMinPercentRange: 'SLA最低百分比必须在0-100之间',
-          ttftP99MaxRange: 'TTFT P99最大值必须大于等于0',
-          requestErrorRateMaxRange: '请求错误率最大值必须在0-100之间',
-          upstreamErrorRateMaxRange: '上游错误率最大值必须在0-100之间',
+          slaMinPercentRange: 'SLA最低百分比必须大于0且不超过100',
+          ttftP99MaxRange: 'TTFT P99最大值必须大于0',
+          requestErrorRateMaxRange: '请求错误率最大值必须大于0且不超过100',
+          upstreamErrorRateMaxRange: '上游错误率最大值必须大于0且不超过100',
           openaiQuotaAutoPauseRange: 'OpenAI 配额自动暂停阈值必须在 0-100 之间'
         }
       },

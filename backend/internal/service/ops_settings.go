@@ -623,6 +623,9 @@ func (s *OpsService) GetMetricThresholds(ctx context.Context) (*OpsMetricThresho
 	if err := json.Unmarshal([]byte(raw), cfg); err != nil {
 		return defaultCfg, nil
 	}
+	if err := validateOpsMetricThresholds(cfg); err != nil {
+		return defaultCfg, nil
+	}
 
 	return cfg, nil
 }
@@ -659,17 +662,17 @@ func validateOpsMetricThresholds(cfg *OpsMetricThresholds) error {
 	if cfg == nil {
 		return errors.New("invalid config")
 	}
-	if cfg.SLAPercentMin != nil && (*cfg.SLAPercentMin < 0 || *cfg.SLAPercentMin > 100) {
-		return errors.New("sla_percent_min must be between 0 and 100")
+	if cfg.SLAPercentMin != nil && (*cfg.SLAPercentMin <= 0 || *cfg.SLAPercentMin > 100) {
+		return errors.New("sla_percent_min must be greater than 0 and at most 100")
 	}
-	if cfg.TTFTp99MsMax != nil && *cfg.TTFTp99MsMax < 0 {
-		return errors.New("ttft_p99_ms_max must be >= 0")
+	if cfg.TTFTp99MsMax != nil && *cfg.TTFTp99MsMax <= 0 {
+		return errors.New("ttft_p99_ms_max must be greater than 0")
 	}
-	if cfg.RequestErrorRatePercentMax != nil && (*cfg.RequestErrorRatePercentMax < 0 || *cfg.RequestErrorRatePercentMax > 100) {
-		return errors.New("request_error_rate_percent_max must be between 0 and 100")
+	if cfg.RequestErrorRatePercentMax != nil && (*cfg.RequestErrorRatePercentMax <= 0 || *cfg.RequestErrorRatePercentMax > 100) {
+		return errors.New("request_error_rate_percent_max must be greater than 0 and at most 100")
 	}
-	if cfg.UpstreamErrorRatePercentMax != nil && (*cfg.UpstreamErrorRatePercentMax < 0 || *cfg.UpstreamErrorRatePercentMax > 100) {
-		return errors.New("upstream_error_rate_percent_max must be between 0 and 100")
+	if cfg.UpstreamErrorRatePercentMax != nil && (*cfg.UpstreamErrorRatePercentMax <= 0 || *cfg.UpstreamErrorRatePercentMax > 100) {
+		return errors.New("upstream_error_rate_percent_max must be greater than 0 and at most 100")
 	}
 	return nil
 }

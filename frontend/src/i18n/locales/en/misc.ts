@@ -40,6 +40,8 @@ export default {
     deploymentRolledBack: 'The new deployment failed and traffic was restored to the previous version',
     deploymentRollbackFailed: 'Automatic rollback failed; immediate operator action is required',
     deploymentDegraded: 'Deployment state is degraded; operator reconciliation is required',
+    controlPlaneUpgradeFailed: 'The application was updated, but the host deployer upgrade failed',
+    updateCompletedWithWarning: 'Update completed with an operations warning',
     deploymentStages: {
       pulling: 'Pulling and verifying image',
       preparing: 'Preparing inactive slot',

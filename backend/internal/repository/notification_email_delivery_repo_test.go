@@ -191,19 +191,21 @@ func TestOpsAlertEvaluationMigrationIsForwardOnlyAndAdditive(t *testing.T) {
 	require.NotContains(t, sqlText, "-- +goose Down")
 }
 
-func TestOpsAlertRuleDefaultsMigrationOnlyTargetsExactLegacyDefaults(t *testing.T) {
-	content, err := migrations.FS.ReadFile("197_persist_ops_alert_rule_v2_defaults.sql")
+func TestOpsAlertRuleDefaultsMigrationOnlyAddsV2AvailabilityRules(t *testing.T) {
+	content, err := migrations.FS.ReadFile("197_add_ops_alert_rule_v2_defaults.sql")
 	require.NoError(t, err)
 	sqlText := string(content)
 	for _, required := range []string{
-		"description = '当错误率超过 5% 且持续 5 分钟时触发告警'",
-		"description = '当错误率超过 20% 且持续 1 分钟时触发告警（服务严重异常）'",
-		"COALESCE(incident_family, 'custom') = 'custom'",
-		"recovery_threshold IS NULL",
-		"NOT EXISTS",
+		"'基础设施可用性缓慢下降'",
+		"'基础设施可用性快速下降'",
+		"'availability_failure_rate'",
+		"ON CONFLICT (name) DO NOTHING",
 	} {
 		require.Contains(t, sqlText, required)
 	}
+	require.Equal(t, 2, strings.Count(sqlText, "INSERT INTO ops_alert_rules"))
+	require.NotContains(t, sqlText, "UPDATE ")
+	require.NotContains(t, sqlText, "DELETE ")
 	require.NotContains(t, sqlText, "DROP TABLE")
 	require.NotContains(t, sqlText, "DROP COLUMN")
 	require.NotContains(t, sqlText, "-- +goose Down")

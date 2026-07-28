@@ -2,6 +2,7 @@ package service
 
 import (
 	"context"
+	"errors"
 	"testing"
 	"time"
 
@@ -11,6 +12,34 @@ import (
 type opsScheduledReportDeliveryRepo struct {
 	NotificationEmailDeliveryRepository
 	items []NotificationEmailDelivery
+}
+
+type flakyOpsScheduledReportDeliveryRepo struct {
+	NotificationEmailDeliveryRepository
+	items         map[string]NotificationEmailDelivery
+	attempts      map[string]int
+	failRecipient string
+	failedOnce    bool
+}
+
+func (r *flakyOpsScheduledReportDeliveryRepo) Enqueue(_ context.Context, delivery NotificationEmailDelivery) (int64, bool, error) {
+	if r.items == nil {
+		r.items = make(map[string]NotificationEmailDelivery)
+	}
+	if r.attempts == nil {
+		r.attempts = make(map[string]int)
+	}
+	r.attempts[delivery.RecipientEmail]++
+	if delivery.RecipientEmail == r.failRecipient && !r.failedOnce {
+		r.failedOnce = true
+		return 0, false, errors.New("injected enqueue failure")
+	}
+	if existing, ok := r.items[delivery.DedupKey]; ok {
+		return existing.ID, false, nil
+	}
+	delivery.ID = int64(len(r.items) + 1)
+	r.items[delivery.DedupKey] = delivery
+	return delivery.ID, true, nil
 }
 
 func (r *opsScheduledReportDeliveryRepo) Enqueue(_ context.Context, delivery NotificationEmailDelivery) (int64, bool, error) {
@@ -185,6 +214,50 @@ func TestOpsScheduledReportDoesNotFallbackToFirstAdmin(t *testing.T) {
 
 	_, err = svc.runReport(ctx, report, time.Now())
 	require.ErrorContains(t, err, "no configured recipients")
+}
+
+func TestOpsScheduledReportPartialRetryDoesNotDuplicateSuccessfulRecipient(t *testing.T) {
+	ctx := context.Background()
+	settings := newNotificationEmailMemorySettingRepo()
+	notificationService := NewNotificationEmailService(settings, nil)
+	_, err := notificationService.UpdatePolicy(ctx, NotificationEmailPolicyUpdate{
+		Channels: []NotificationEmailChannelPolicy{{
+			ID: NotificationEmailChannelOpsReport, Enabled: true,
+			RecipientGroup: NotificationEmailRecipientGroupOpsReport,
+		}},
+		RecipientGroups: []NotificationEmailRecipientGroup{{
+			ID: NotificationEmailRecipientGroupOpsReport,
+			Members: []NotificationEmailRecipientMember{
+				{Email: "a@example.com", Enabled: true},
+				{Email: "b@example.com", Enabled: true},
+			},
+		}},
+	})
+	require.NoError(t, err)
+
+	deliveryRepo := &flakyOpsScheduledReportDeliveryRepo{failRecipient: "b@example.com"}
+	svc := &OpsScheduledReportService{
+		opsService:             &OpsService{opsRepo: &opsRepoMock{}},
+		notificationDispatcher: NewNotificationEmailDispatcher(deliveryRepo, notificationService),
+	}
+	scheduledAt := time.Date(2026, time.July, 19, 1, 0, 0, 0, time.UTC)
+	report := &opsScheduledReport{
+		Name: "日报", ReportType: "daily_summary", TimeRange: 24 * time.Hour,
+		NextRunAt: scheduledAt,
+	}
+
+	enqueued, err := svc.runReport(ctx, report, scheduledAt.Add(20*time.Second))
+	require.ErrorContains(t, err, "injected enqueue failure")
+	require.Equal(t, 1, enqueued)
+
+	enqueued, err = svc.runReport(ctx, report, scheduledAt.Add(80*time.Second))
+	require.NoError(t, err)
+	require.Equal(t, 1, enqueued)
+	require.Len(t, deliveryRepo.items, 2)
+	require.Equal(t, 2, deliveryRepo.attempts["a@example.com"])
+	for _, delivery := range deliveryRepo.items {
+		require.Equal(t, "2026-07-19T01:00", delivery.ReminderKey)
+	}
 }
 
 func TestFormatOpsReportIntegerGroupsDigits(t *testing.T) {

@@ -342,7 +342,7 @@ run_installer() {
   FAKE_CURRENT_IMAGE="$CURRENT_IMAGE" \
   FAKE_CURRENT_VERSION="$CURRENT_VERSION" \
   FAKE_DOCKER_PORT_OUTPUT="127.0.0.1:$CURRENT_PORT" \
-  FAKE_DEPLOYER_HEALTH="{\"status\":\"ok\",\"degraded\":false,\"job_running\":false,\"active_container\":\"sub2api\",\"active_port\":$CURRENT_PORT,\"active_version\":\"$CURRENT_VERSION\"}" \
+  FAKE_DEPLOYER_HEALTH="{\"status\":\"ok\",\"degraded\":false,\"job_running\":false,\"active_container\":\"sub2api\",\"active_container_id\":\"$CONTAINER_ID\",\"active_port\":$CURRENT_PORT,\"active_version\":\"$CURRENT_VERSION\",\"control_plane_upgrade_ready\":true}" \
   FAKE_CONTROL_DIR="$root/control" \
   FAKE_DOCKER_LOG="$root/docker.log" \
   FAKE_SYSTEMCTL_LOG="$root/systemctl.log" \

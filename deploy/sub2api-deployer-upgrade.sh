@@ -4,15 +4,49 @@ set -euo pipefail
 umask 077
 
 REQUEST=/var/lib/sub2api-deployer/control-plane-upgrade.json
+STATUS="$REQUEST.status"
 STATE=/var/lib/sub2api-deployer/state.json
 CONFIG=/etc/sub2api-deployer/config.json
 BINARY=/usr/local/sbin/sub2api-deployer
 LOCK=/run/sub2api-deployer-install.lock
 SOCKET=/run/sub2api-deployer/deployer.sock
 NEXT_BINARY=/usr/local/sbin/.sub2api-deployer.next
+JOB_ID=""
+CONTAINER_ID=""
+TARGET_VERSION=""
+
+write_status() {
+  local state="$1"
+  local message="${2:-}"
+  local temp_status="$STATUS.tmp.$$"
+  [[ -n "$JOB_ID" && -n "$CONTAINER_ID" && -n "$TARGET_VERSION" ]] || return 0
+  jq -n \
+    --arg job_id "$JOB_ID" \
+    --arg container_id "$CONTAINER_ID" \
+    --arg target_version "$TARGET_VERSION" \
+    --arg status "$state" \
+    --arg error "$message" \
+    '{schema: 1, job_id: $job_id, container_id: $container_id, target_version: $target_version, status: $status}
+     | if $error == "" then . else .error = $error end' > "$temp_status"
+  chmod 0600 "$temp_status"
+  mv -f -- "$temp_status" "$STATUS"
+}
+
+record_unexpected_failure() {
+  local line="$1"
+  local exit_status="$2"
+  trap - ERR
+  set +e
+  write_status failed "upgrade helper exited unexpectedly at line $line (status $exit_status)"
+  exit "$exit_status"
+}
+
+trap 'record_unexpected_failure "$LINENO" "$?"' ERR
 
 fail() {
-  echo "sub2api-deployer control-plane upgrade: $*" >&2
+  local message="$*"
+  write_status failed "$message" || true
+  echo "sub2api-deployer control-plane upgrade: $message" >&2
   exit 1
 }
 
@@ -29,6 +63,7 @@ exec 9<>"$LOCK"
 chmod 0600 "$LOCK"
 flock -n 9 || fail "another deployer installation or upgrade is active"
 
+JOB_ID=$(jq -er '.job_id | strings | select(test("^[0-9A-Za-z._:-]{8,128}$"))' "$REQUEST")
 CONTAINER_ID=$(jq -er '.container_id | strings | select(test("^[0-9a-f]{64}$"))' "$REQUEST")
 CONTAINER_NAME=$(jq -er '.container_name | strings | select(test("^[A-Za-z0-9][A-Za-z0-9_.-]+$"))' "$REQUEST")
 TARGET_VERSION=$(jq -er '.target_version | strings | select(test("^[0-9][0-9A-Za-z.-]{0,63}$"))' "$REQUEST")
@@ -57,7 +92,7 @@ ACTUAL_IMAGE=$(docker inspect "$CONTAINER_ID" --format '{{.Config.Image}}')
 [[ "$EXPECTED_IMAGE" == *"@$EXPECTED_DIGEST" ]] || fail "requested immutable image does not contain expected digest"
 [[ "$ACTUAL_IMAGE" == "$EXPECTED_IMAGE" ]] || fail "running container immutable image does not match request"
 
-STAGE=$(mktemp -d /var/lib/sub2api-deployer/control-plane-upgrade.XXXXXX)
+STAGE=$(mktemp -d "$(dirname -- "$REQUEST")/control-plane-upgrade.XXXXXX")
 cleanup() {
   rm -f -- "$NEXT_BINARY"
   rm -rf -- "$STAGE"
@@ -72,6 +107,7 @@ CURRENT_SHA=$(sha256sum "$BINARY" | awk '{print $1}')
 TARGET_SHA=$(sha256sum "$STAGE/sub2api-deployer" | awk '{print $1}')
 if [[ "$CURRENT_SHA" == "$TARGET_SHA" ]]; then
   rm -f -- "$REQUEST"
+  write_status succeeded
   exit 0
 fi
 
@@ -87,9 +123,12 @@ if systemctl restart sub2api-deployer.service; then
           .status == "ok"
           and .degraded == false
           and .job_running == false
+          and .active_container_id == $id
           and .active_version == $version
+          and .control_plane_upgrade_ready == true
         ' <<<"$HEALTH" >/dev/null; then
       rm -f -- "$REQUEST"
+      write_status succeeded
       exit 0
     fi
     sleep 0.25

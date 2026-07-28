@@ -185,4 +185,17 @@ describe('OpsSettingsDialog monitoring contract', () => {
       })
     }))
   })
+
+  it('rejects zero metric thresholds instead of displaying semantics different from the backend score', async () => {
+    const wrapper = mountDialog()
+    await wrapper.setProps({ show: true })
+    await flushPromises()
+
+    await wrapper.get('input[min="0.1"]').setValue('0')
+    const saveButton = wrapper.findAll('button').find((button) => button.text() === 'common.save')
+    await saveButton!.trigger('click')
+    await flushPromises()
+
+    expect(updateMonitoringSettings).not.toHaveBeenCalled()
+  })
 })

@@ -96,6 +96,35 @@ func TestUpdateOpsMonitoringSettingsRejectsBeforeAtomicWrite(t *testing.T) {
 	}
 }
 
+func TestMetricThresholdsRejectZeroAndNormalizePreviouslyStoredZero(t *testing.T) {
+	repo := newRuntimeSettingRepoStub()
+	svc := &OpsService{settingRepo: repo}
+	req := &OpsMonitoringSettings{
+		Runtime:          *defaultOpsAlertRuntimeSettings(),
+		EmailBehavior:    opsEmailBehaviorSettings(defaultOpsEmailNotificationConfig()),
+		Advanced:         *defaultOpsAdvancedSettings(),
+		MetricThresholds: *defaultOpsMetricThresholds(),
+	}
+	req.MetricThresholds.RequestErrorRatePercentMax = float64Ptr(0)
+
+	if _, err := svc.UpdateOpsMonitoringSettings(context.Background(), req); err == nil {
+		t.Fatal("zero request error threshold was accepted")
+	}
+	if repo.setMultipleCalls != 0 {
+		t.Fatalf("SetMultiple calls = %d, want 0", repo.setMultipleCalls)
+	}
+
+	repo.values[SettingKeyOpsMetricThresholds] = `{"request_error_rate_percent_max":0}`
+	got, err := svc.GetMetricThresholds(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := defaultOpsMetricThresholds()
+	if got.RequestErrorRatePercentMax == nil || want.RequestErrorRatePercentMax == nil || *got.RequestErrorRatePercentMax != *want.RequestErrorRatePercentMax {
+		t.Fatalf("stored zero was not normalized to defaults: got=%+v want=%+v", got, want)
+	}
+}
+
 func TestUpdateOpsMonitoringSettingsRepositoryFailureDoesNotPartiallyWrite(t *testing.T) {
 	repo := newRuntimeSettingRepoStub()
 	repo.setMultipleFn = func(map[string]string) error { return errors.New("write failed") }
