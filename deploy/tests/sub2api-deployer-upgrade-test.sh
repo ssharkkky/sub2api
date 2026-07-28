@@ -142,4 +142,13 @@ cmp -s "$TEST_DIR/expected-restored" "$ROOT/usr/local/sbin/sub2api-deployer"
 jq -e '.status == "failed" and (.error | contains("health verification"))' \
   "$ROOT/var/lib/sub2api-deployer/control-plane-upgrade.json.status" >/dev/null
 
+write_fixture missing-state
+rm -f -- "$ROOT/var/lib/sub2api-deployer/state.json"
+if run_helper "$SUCCESS_HEALTH" >"$TEST_DIR/missing-state.log" 2>&1; then
+  echo "missing state unexpectedly passed" >&2
+  exit 1
+fi
+jq -e '.status == "failed" and (.error | contains("state file is missing"))' \
+  "$ROOT/var/lib/sub2api-deployer/control-plane-upgrade.json.status" >/dev/null
+
 echo "sub2api deployer control-plane upgrade tests passed"

@@ -55,6 +55,12 @@ for command in docker flock install jq systemctl curl mktemp sha256sum; do
 done
 
 [[ -f "$REQUEST" && ! -L "$REQUEST" ]] || exit 0
+
+# Load enough identity before strict validation so failures in the validation
+# path can still be associated with the pending application deployment.
+JOB_ID=$(jq -r '.job_id // empty' "$REQUEST" 2>/dev/null || true)
+CONTAINER_ID=$(jq -r '.container_id // empty' "$REQUEST" 2>/dev/null || true)
+TARGET_VERSION=$(jq -r '.target_version // empty' "$REQUEST" 2>/dev/null || true)
 [[ -f "$STATE" && ! -L "$STATE" ]] || fail "state file is missing or unsafe"
 [[ -f "$CONFIG" && ! -L "$CONFIG" ]] || fail "config file is missing or unsafe"
 [[ -x "$BINARY" && ! -L "$BINARY" ]] || fail "installed deployer binary is missing or unsafe"

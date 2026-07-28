@@ -813,6 +813,7 @@ import Icon from '@/components/icons/Icon.vue'
 const GITHUB_REPO = 'ssharkkky/sub2api'
 // Fork releases are published to GHCR without the leading "v" in image tags.
 const DOCKER_IMAGE = 'ghcr.io/ssharkkky/sub2api'
+const CONTROL_PLANE_UPGRADE_TIMEOUT_MS = 5 * 60 * 1000
 
 const { t } = useI18n()
 
@@ -1155,15 +1156,29 @@ function trackDeployment(job: DeploymentJob, kind: 'update' | 'rollback') {
 
 async function pollDeployment(jobID: string, token: number) {
   let transientFailures = 0
+  let controlPlanePendingSince: number | null = null
   while (token === deploymentPollToken) {
     try {
       const job = await getDeploymentJob(jobID)
       if (token !== deploymentPollToken) return
       deploymentJob.value = job
       transientFailures = 0
+      const controlPlanePending =
+        job.status === 'succeeded' && job.control_plane_upgrade_status === 'pending'
+      if (controlPlanePending) {
+        controlPlanePendingSince ??= Date.now()
+        if (Date.now() - controlPlanePendingSince >= CONTROL_PLANE_UPGRADE_TIMEOUT_MS) {
+          updating.value = false
+          rollingBack.value = false
+          updateError.value = t('version.controlPlaneUpgradeTimeout')
+          return
+        }
+      } else {
+        controlPlanePendingSince = null
+      }
       if (
         job.status === 'running' ||
-        (job.status === 'succeeded' && job.control_plane_upgrade_status === 'pending')
+        controlPlanePending
       ) {
         await new Promise((resolve) => setTimeout(resolve, 1500))
         continue

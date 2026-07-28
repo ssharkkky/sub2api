@@ -1254,7 +1254,7 @@ func buildOpsAlertEventsWhere(filter *service.OpsAlertEventFilter) (string, []an
 	}
 	if filter.EmailSent != nil {
 		args = append(args, *filter.EmailSent)
-		clauses = append(clauses, "e.email_queued = $"+itoa(len(args)))
+		clauses = append(clauses, "e.email_sent = $"+itoa(len(args)))
 	}
 	if filter.StartTime != nil && !filter.StartTime.IsZero() {
 		args = append(args, *filter.StartTime)
