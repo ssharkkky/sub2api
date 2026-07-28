@@ -1112,6 +1112,7 @@ for ((attempt=0; attempt<40; attempt++)); do
   if DEPLOYER_HEALTH=$(curl --fail --silent --max-time 2 --unix-socket /run/sub2api-deployer/deployer.sock http://localhost/v1/health 2>/dev/null) && \
     jq -e \
       --arg container "$ACTIVE_CONTAINER" \
+      --arg container_id "$INSPECTED_CONTAINER_ID" \
       --arg version "$CURRENT_VERSION" \
       --argjson port "$ACTIVE_PORT" \
       '.status == "ok"
