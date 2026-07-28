@@ -451,7 +451,7 @@ SELECT
   fired_at,
   resolved_at,
   email_sent,
-  email_queued,
+  COALESCE(email_queued, false),
   created_at
 FROM ops_alert_events
 ` + where + `
@@ -537,7 +537,7 @@ SELECT
   fired_at,
   resolved_at,
   email_sent,
-  email_queued,
+  COALESCE(email_queued, false),
   created_at
 FROM ops_alert_events
 WHERE id = $1`
@@ -575,7 +575,7 @@ SELECT
   fired_at,
   resolved_at,
   email_sent,
-  email_queued,
+  COALESCE(email_queued, false),
   created_at
 FROM ops_alert_events
 WHERE rule_id = $1 AND status = $2
@@ -615,7 +615,7 @@ SELECT
   fired_at,
   resolved_at,
   email_sent,
-  email_queued,
+  COALESCE(email_queued, false),
   created_at
 FROM ops_alert_events
 WHERE rule_id = $1
@@ -677,7 +677,7 @@ RETURNING
   fired_at,
   resolved_at,
   email_sent,
-  email_queued,
+  COALESCE(email_queued, false),
   created_at`
 
 	row := r.db.QueryRowContext(
