@@ -859,6 +859,56 @@ func (m *Manager) finishCandidateDeployment(ctx context.Context, jobID string, c
 	if err := m.complete(jobID, "Deployment completed", ""); err != nil {
 		return
 	}
+	if err := m.scheduleControlPlaneUpgrade(job); err != nil {
+		_ = m.appendCleanupWarning(jobID, "application update succeeded, but the deployer control-plane upgrade was not scheduled: "+err.Error())
+	}
+}
+
+type controlPlaneUpgradeRequest struct {
+	Schema            int    `json:"schema"`
+	ContainerID       string `json:"container_id"`
+	ContainerName     string `json:"container_name"`
+	TargetVersion     string `json:"target_version"`
+	ExpectedImage     string `json:"expected_image"`
+	ExpectedImageHash string `json:"expected_image_digest"`
+}
+
+func (m *Manager) scheduleControlPlaneUpgrade(job *Job) error {
+	if m.cfg.ControlPlaneUpgradePath == "" || len(m.cfg.ControlPlaneUpgradeCommand) == 0 {
+		return nil
+	}
+	// Application rollback must not downgrade the host control plane to an
+	// older binary that may contain already-fixed deployment bugs.
+	if job != nil && job.Action != "update" {
+		return nil
+	}
+	if job == nil || job.CandidateContainerID == "" || job.TargetVersion == "" || job.TargetDigest == "" {
+		return errors.New("successful deployment is missing immutable control-plane upgrade identity")
+	}
+	request := controlPlaneUpgradeRequest{
+		Schema:            1,
+		ContainerID:       job.CandidateContainerID,
+		ContainerName:     job.CandidateContainer,
+		TargetVersion:     job.TargetVersion,
+		ExpectedImage:     job.TargetImage,
+		ExpectedImageHash: job.TargetDigest,
+	}
+	data, err := json.Marshal(request)
+	if err != nil {
+		return fmt.Errorf("encode control-plane upgrade request: %w", err)
+	}
+	data = append(data, '\n')
+	if err := atomicWrite(m.cfg.ControlPlaneUpgradePath, data, 0600); err != nil {
+		return fmt.Errorf("persist control-plane upgrade request: %w", err)
+	}
+	command := m.cfg.ControlPlaneUpgradeCommand
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if _, err := m.runner.Run(ctx, nil, command[0], command[1:]...); err != nil {
+		return fmt.Errorf("start control-plane upgrade helper: %w", err)
+	}
+	log.Printf("sub2api-deployer job_id=%q control_plane_upgrade_scheduled=true target_version=%q candidate_container_id=%q", job.ID, job.TargetVersion, job.CandidateContainerID)
+	return nil
 }
 
 func (m *Manager) fail(jobID string, cause error) error {
@@ -2139,8 +2189,14 @@ func (m *Manager) knownContainersForSlot(slotName string, excluded ...string) []
 		if _, skip := excludedSet[container]; skip {
 			return
 		}
-		if existing, ok := seen[container]; ok && existing.ID != "" && id == "" {
-			return
+		if existing, ok := seen[container]; ok {
+			// References are added from the authoritative current state toward
+			// progressively older job history. Once an immutable ID is known,
+			// an older history entry must never replace it. A later ID may only
+			// fill a legacy name-only reference.
+			if existing.ID != "" || id == "" {
+				return
+			}
 		}
 		seen[container] = containerRef{Name: container, ID: id}
 	}

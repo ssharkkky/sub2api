@@ -3,6 +3,7 @@ package deployer
 import (
 	"context"
 	"crypto/sha256"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -2622,6 +2623,105 @@ func TestSecondDeploymentPreparationKeepsPersistedCanonicalCandidateID(t *testin
 	runner.mu.Unlock()
 	if !strings.Contains(commands, "docker rm -f "+fakeContainerID("sub2api-blue")) {
 		t.Fatalf("persisted canonical candidate ID was not used for cleanup:\n%s", commands)
+	}
+}
+
+func TestInactiveSlotCleanupIgnoresSupersededHistoryContainerIDs(t *testing.T) {
+	cfg := testConfig(t, 18081)
+	currentID := fakeContainerID("sub2api-green-current")
+	olderID := fakeContainerID("sub2api-green-older")
+	oldestID := fakeContainerID("sub2api-green-oldest")
+	manager := &Manager{
+		cfg: cfg,
+		state: State{
+			ActiveSlot:          "sub2api-blue",
+			ActiveContainer:     "sub2api-blue",
+			ActiveContainerID:   fakeContainerID("sub2api-blue"),
+			PreviousSlot:        "sub2api-green",
+			PreviousContainer:   "sub2api-green",
+			PreviousContainerID: currentID,
+			JobHistory: []Job{
+				{
+					CandidateSlot:        "sub2api-green",
+					CandidateContainer:   "sub2api-green",
+					CandidateContainerID: olderID,
+				},
+				{
+					OldSlot:        "sub2api-green",
+					OldContainer:   "sub2api-green",
+					OldContainerID: oldestID,
+				},
+			},
+		},
+	}
+
+	containers := manager.knownContainersForSlot("sub2api-green")
+	if len(containers) != 1 {
+		t.Fatalf("expected one canonical container reference, got %+v", containers)
+	}
+	if containers[0].Name != "sub2api-green" || containers[0].ID != currentID {
+		t.Fatalf("old job history replaced the current immutable ID: %+v", containers[0])
+	}
+}
+
+func TestScheduleControlPlaneUpgradePersistsImmutableCandidateIdentity(t *testing.T) {
+	cfg := testConfig(t, 18081)
+	cfg.ControlPlaneUpgradePath = filepath.Join(t.TempDir(), "control-plane-upgrade.json")
+	cfg.ControlPlaneUpgradeCommand = []string{"/bin/systemctl", "start", "--no-block", "sub2api-deployer-upgrade.service"}
+	runner := &fakeRunner{}
+	manager := &Manager{cfg: cfg, runner: runner}
+	job := &Job{
+		ID:                   "control-plane-upgrade-0001",
+		Action:               "update",
+		TargetVersion:        "0.1.166-ts.3",
+		TargetImage:          cfg.ImageRepository + "@sha256:" + strings.Repeat("a", 64),
+		TargetDigest:         "sha256:" + strings.Repeat("a", 64),
+		CandidateContainer:   "sub2api-green",
+		CandidateContainerID: fakeContainerID("sub2api-green-current"),
+	}
+
+	if err := manager.scheduleControlPlaneUpgrade(job); err != nil {
+		t.Fatal(err)
+	}
+	data, err := os.ReadFile(cfg.ControlPlaneUpgradePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var request controlPlaneUpgradeRequest
+	if err := json.Unmarshal(data, &request); err != nil {
+		t.Fatal(err)
+	}
+	if request.ContainerID != job.CandidateContainerID ||
+		request.TargetVersion != job.TargetVersion ||
+		request.ExpectedImage != job.TargetImage ||
+		request.ExpectedImageHash != job.TargetDigest {
+		t.Fatalf("unexpected upgrade request: %+v", request)
+	}
+	runner.mu.Lock()
+	commands := strings.Join(runner.commands, "\n")
+	runner.mu.Unlock()
+	if !strings.Contains(commands, strings.Join(cfg.ControlPlaneUpgradeCommand, " ")) {
+		t.Fatalf("control-plane helper was not scheduled:\n%s", commands)
+	}
+}
+
+func TestScheduleControlPlaneUpgradeDoesNotDowngradeOnRollback(t *testing.T) {
+	cfg := testConfig(t, 18081)
+	cfg.ControlPlaneUpgradePath = filepath.Join(t.TempDir(), "control-plane-upgrade.json")
+	cfg.ControlPlaneUpgradeCommand = []string{"/bin/systemctl", "start", "--no-block", "sub2api-deployer-upgrade.service"}
+	runner := &fakeRunner{}
+	manager := &Manager{cfg: cfg, runner: runner}
+
+	if err := manager.scheduleControlPlaneUpgrade(&Job{Action: "rollback"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(cfg.ControlPlaneUpgradePath); !os.IsNotExist(err) {
+		t.Fatalf("rollback unexpectedly created a control-plane downgrade request: %v", err)
+	}
+	runner.mu.Lock()
+	defer runner.mu.Unlock()
+	if len(runner.commands) != 0 {
+		t.Fatalf("rollback unexpectedly scheduled a control-plane downgrade: %v", runner.commands)
 	}
 }
 

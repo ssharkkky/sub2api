@@ -803,6 +803,34 @@ export interface EmailNotificationConfig {
   }
 }
 
+export interface OpsEmailBehaviorSettings {
+  alert: {
+    min_severity: AlertSeverity | ''
+    rate_limit_per_hour: number
+    batching_window_seconds: number
+    include_resolved_alerts: boolean
+  }
+  report: {
+    daily_summary_enabled: boolean
+    daily_summary_schedule: string
+    weekly_summary_enabled: boolean
+    weekly_summary_schedule: string
+    error_digest_enabled: boolean
+    error_digest_schedule: string
+    error_digest_min_count: number
+    account_health_enabled: boolean
+    account_health_schedule: string
+    account_health_error_rate_threshold: number
+  }
+}
+
+export interface OpsMonitoringSettings {
+  runtime: OpsAlertRuntimeSettings
+  email_behavior: OpsEmailBehaviorSettings
+  advanced: OpsAdvancedSettings
+  metric_thresholds: OpsMetricThresholds
+}
+
 export interface OpsMetricThresholds {
   sla_percent_min?: number | null                 // SLA低于此值变红
   ttft_p99_ms_max?: number | null                 // TTFT P99高于此值变红
@@ -1312,6 +1340,16 @@ export async function updateEmailNotificationConfig(config: EmailNotificationCon
   return data
 }
 
+export async function getMonitoringSettings(): Promise<OpsMonitoringSettings> {
+  const { data } = await apiClient.get<OpsMonitoringSettings>('/admin/ops/monitoring-settings')
+  return data
+}
+
+export async function updateMonitoringSettings(config: OpsMonitoringSettings): Promise<OpsMonitoringSettings> {
+  const { data } = await apiClient.put<OpsMonitoringSettings>('/admin/ops/monitoring-settings', config)
+  return data
+}
+
 // Runtime settings (DB-backed)
 export async function getAlertRuntimeSettings(): Promise<OpsAlertRuntimeSettings> {
   const { data } = await apiClient.get<OpsAlertRuntimeSettings>('/admin/ops/runtime/alert')
@@ -1416,6 +1454,8 @@ export const opsAPI = {
   createAlertSilence,
   getEmailNotificationConfig,
   updateEmailNotificationConfig,
+  getMonitoringSettings,
+  updateMonitoringSettings,
   getAlertRuntimeSettings,
   updateAlertRuntimeSettings,
   getRuntimeLogConfig,

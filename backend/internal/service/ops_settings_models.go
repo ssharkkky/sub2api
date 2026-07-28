@@ -38,6 +38,44 @@ type OpsEmailNotificationConfigUpdateRequest struct {
 	Report *OpsEmailReportConfig `json:"report"`
 }
 
+// OpsEmailBehaviorSettings deliberately excludes channel-level enable switches
+// and recipient routing. Those are owned by NotificationEmailPolicy and edited
+// only from the global Email settings page.
+type OpsEmailBehaviorSettings struct {
+	Alert  OpsEmailAlertBehaviorSettings  `json:"alert"`
+	Report OpsEmailReportBehaviorSettings `json:"report"`
+}
+
+type OpsEmailAlertBehaviorSettings struct {
+	MinSeverity           string `json:"min_severity"`
+	RateLimitPerHour      int    `json:"rate_limit_per_hour"`
+	BatchingWindowSeconds int    `json:"batching_window_seconds"`
+	IncludeResolvedAlerts bool   `json:"include_resolved_alerts"`
+}
+
+type OpsEmailReportBehaviorSettings struct {
+	DailySummaryEnabled             bool    `json:"daily_summary_enabled"`
+	DailySummarySchedule            string  `json:"daily_summary_schedule"`
+	WeeklySummaryEnabled            bool    `json:"weekly_summary_enabled"`
+	WeeklySummarySchedule           string  `json:"weekly_summary_schedule"`
+	ErrorDigestEnabled              bool    `json:"error_digest_enabled"`
+	ErrorDigestSchedule             string  `json:"error_digest_schedule"`
+	ErrorDigestMinCount             int     `json:"error_digest_min_count"`
+	AccountHealthEnabled            bool    `json:"account_health_enabled"`
+	AccountHealthSchedule           string  `json:"account_health_schedule"`
+	AccountHealthErrorRateThreshold float64 `json:"account_health_error_rate_threshold"`
+}
+
+// OpsMonitoringSettings is the atomic configuration contract used by the Ops
+// settings dialog. All four DB-backed sections are validated before one
+// SetMultiple write, preventing misleading partial-save success.
+type OpsMonitoringSettings struct {
+	Runtime          OpsAlertRuntimeSettings  `json:"runtime"`
+	EmailBehavior    OpsEmailBehaviorSettings `json:"email_behavior"`
+	Advanced         OpsAdvancedSettings      `json:"advanced"`
+	MetricThresholds OpsMetricThresholds      `json:"metric_thresholds"`
+}
+
 type OpsDistributedLockSettings struct {
 	Enabled    bool   `json:"enabled"`
 	Key        string `json:"key"`
