@@ -104,11 +104,41 @@ func TestApplyLegacyOpsAlertRuleCompatibility(t *testing.T) {
 }
 
 func TestApplyLegacyOpsAlertRuleCompatibilityPreservesOperatorChanges(t *testing.T) {
-	rule := legacyOpsAlertRule("错误率过高", "operator changed this description",
-		"error_rate", ">", "P1", 5, 5, 5, 20)
-	want := *rule
+	mutations := []struct {
+		name   string
+		mutate func(*service.OpsAlertRule)
+	}{
+		{name: "name", mutate: func(rule *service.OpsAlertRule) { rule.Name += " custom" }},
+		{name: "description", mutate: func(rule *service.OpsAlertRule) { rule.Description += " custom" }},
+		{name: "enabled", mutate: func(rule *service.OpsAlertRule) { rule.Enabled = false }},
+		{name: "notify email", mutate: func(rule *service.OpsAlertRule) { rule.NotifyEmail = false }},
+		{name: "metric", mutate: func(rule *service.OpsAlertRule) { rule.MetricType = "provider_failure_rate" }},
+		{name: "operator", mutate: func(rule *service.OpsAlertRule) { rule.Operator = ">=" }},
+		{name: "severity", mutate: func(rule *service.OpsAlertRule) { rule.Severity = "P2" }},
+		{name: "threshold", mutate: func(rule *service.OpsAlertRule) { rule.Threshold = 6 }},
+		{name: "window", mutate: func(rule *service.OpsAlertRule) { rule.WindowMinutes = 10 }},
+		{name: "sustained", mutate: func(rule *service.OpsAlertRule) { rule.SustainedMinutes = 10 }},
+		{name: "cooldown", mutate: func(rule *service.OpsAlertRule) { rule.CooldownMinutes = 30 }},
+		{name: "incident family", mutate: func(rule *service.OpsAlertRule) { rule.IncidentFamily = "customized" }},
+		{name: "minimum samples", mutate: func(rule *service.OpsAlertRule) { rule.MinimumSamples = 10 }},
+		{name: "minimum bad count", mutate: func(rule *service.OpsAlertRule) { rule.MinimumBadCount = 2 }},
+		{name: "recovery operator", mutate: func(rule *service.OpsAlertRule) { rule.RecoveryOperator = "<" }},
+		{name: "recovery threshold", mutate: func(rule *service.OpsAlertRule) { rule.RecoveryThreshold = float64PtrRepository(2.5) }},
+		{name: "recovery sustained", mutate: func(rule *service.OpsAlertRule) { rule.RecoverySustainedMinutes = 5 }},
+		{name: "shadow mode", mutate: func(rule *service.OpsAlertRule) { rule.ShadowMode = true }},
+		{name: "filters", mutate: func(rule *service.OpsAlertRule) { rule.Filters = map[string]any{"group_id": float64(42)} }},
+	}
 
-	applyLegacyOpsAlertRuleCompatibility(rule)
+	for _, tt := range mutations {
+		t.Run(tt.name, func(t *testing.T) {
+			rule := legacyOpsAlertRule("错误率过高", "当错误率超过 5% 且持续 5 分钟时触发告警",
+				"error_rate", ">", "P1", 5, 5, 5, 20)
+			tt.mutate(rule)
+			want := *rule
 
-	require.Equal(t, want, *rule)
+			applyLegacyOpsAlertRuleCompatibility(rule)
+
+			require.Equal(t, want, *rule)
+		})
+	}
 }

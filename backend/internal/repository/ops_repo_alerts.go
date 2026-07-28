@@ -50,7 +50,8 @@ func matchesLegacyOpsAlertRuleDefault(
 		rule.RecoveryOperator == "" &&
 		rule.RecoveryThreshold == nil &&
 		rule.RecoverySustainedMinutes == 1 &&
-		!rule.ShadowMode
+		!rule.ShadowMode &&
+		len(rule.Filters) == 0
 }
 
 func applyLegacyOpsAlertRuleCompatibility(rule *service.OpsAlertRule) {
