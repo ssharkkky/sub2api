@@ -147,7 +147,7 @@ func TestOpsV2MigrationLockTimeoutFailsFastWithoutBlockingLegacyWrites(t *testin
 	require.True(t, errors.As(err, &pqErr))
 	require.Equal(t, pq.ErrorCode("55P03"), pqErr.Code)
 
-	platform := "ops-v2-lock-timeout-legacy-write-test"
+	platform := "ops-v2-lock-timeout-test"
 	_, err = integrationDB.ExecContext(ctx, `
 		INSERT INTO ops_error_logs (platform, error_phase, error_type, status_code, is_business_limited)
 		VALUES ($1, 'legacy', 'legacy', 500, false)
