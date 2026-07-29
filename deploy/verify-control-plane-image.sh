@@ -56,14 +56,19 @@ for arch in amd64 arm64; do
   extracted="$work_root/$arch"
   mkdir -p "$extracted"
   docker cp "$container:/opt/sub2api-control-plane/." "$extracted/"
+  docker run --rm --platform "linux/$arch" --network none \
+    --entrypoint /bin/sh "$IMMUTABLE_IMAGE" -eu -c '
+      test "$(stat -c %u /opt/sub2api-control-plane/sub2api-deployer)" = 0
+      test "$(stat -c %u /opt/sub2api-control-plane/CONTROL-PLANE-MANIFEST.json)" = 0
+      test "$(stat -c %a /opt/sub2api-control-plane/sub2api-deployer)" = 755
+      test "$(stat -c %a /opt/sub2api-control-plane/CONTROL-PLANE-MANIFEST.json)" = 644
+    ' || {
+      echo "control-plane payload ownership or modes are invalid in the image for $arch" >&2
+      exit 1
+    }
 
   [[ -x "$extracted/sub2api-deployer" && -f "$extracted/CONTROL-PLANE-MANIFEST.json" ]] || {
     echo "control-plane payload is incomplete for $arch" >&2
-    exit 1
-  }
-  [[ "$(stat -c %u "$extracted/sub2api-deployer")" == 0 && \
-      "$(stat -c %u "$extracted/CONTROL-PLANE-MANIFEST.json")" == 0 ]] || {
-    echo "control-plane payload is not root-owned for $arch" >&2
     exit 1
   }
   [[ "$(stat -c %a "$extracted/sub2api-deployer")" == 755 && \

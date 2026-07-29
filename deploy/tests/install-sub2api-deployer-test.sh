@@ -91,12 +91,20 @@ cat > "$FAKE_BIN/systemctl" <<'EOF'
 set -euo pipefail
 printf '%s\n' "$*" >> "$FAKE_SYSTEMCTL_LOG"
 command_name="${1:-}"
+unit="${!#}"
+if [[ "$unit" == "sub2api-deployer-upgrade.timer" ]]; then
+  enabled_state="$FAKE_CONTROL_DIR/timer-enabled"
+  active_state="$FAKE_CONTROL_DIR/timer-active"
+else
+  enabled_state="$FAKE_CONTROL_DIR/enabled"
+  active_state="$FAKE_CONTROL_DIR/active"
+fi
 case "$command_name" in
   is-enabled)
-    [[ -f "$FAKE_CONTROL_DIR/enabled" ]]
+    [[ -f "$enabled_state" ]]
     ;;
   is-active)
-    [[ -f "$FAKE_CONTROL_DIR/active" ]]
+    [[ -f "$active_state" ]]
     ;;
   show)
     if [[ " $* " == *" --property=ActiveState "* ]]; then
@@ -115,26 +123,27 @@ case "$command_name" in
     fi
     ;;
   enable)
-    : > "$FAKE_CONTROL_DIR/enabled"
+    : > "$enabled_state"
+    [[ " $* " != *" --now "* ]] || : > "$active_state"
     ;;
   disable)
-    rm -f -- "$FAKE_CONTROL_DIR/enabled"
+    rm -f -- "$enabled_state"
     ;;
   stop)
-    if [[ "${FAKE_FAIL_ROLLBACK_STOP:-0}" == 1 && -f "$FAKE_CONTROL_DIR/restart-failed" ]]; then
+    if [[ "${FAKE_FAIL_ROLLBACK_STOP:-0}" == 1 && "$unit" == "sub2api-deployer.service" && -f "$FAKE_CONTROL_DIR/restart-failed" ]]; then
       exit 1
     fi
-    rm -f -- "$FAKE_CONTROL_DIR/active"
+    rm -f -- "$active_state"
     ;;
   start)
-    : > "$FAKE_CONTROL_DIR/active"
+    : > "$active_state"
     ;;
   restart)
     if [[ "${FAKE_FAIL_RESTART:-0}" == 1 ]]; then
       : > "$FAKE_CONTROL_DIR/restart-failed"
       exit 1
     fi
-    : > "$FAKE_CONTROL_DIR/active"
+    : > "$active_state"
     ;;
   reload)
     if [[ "${2:-}" == nginx && "${FAKE_FAIL_NGINX_RELOAD_ONCE:-0}" == 1 && ! -f "$FAKE_CONTROL_DIR/nginx-reload-failed" ]]; then
@@ -416,6 +425,8 @@ fi
 [[ -f "$UPGRADE_ROOT/control/socket-group" ]]
 [[ -x "$UPGRADE_ROOT/usr/local/sbin/sub2api-deployer-upgrade" ]]
 [[ -f "$UPGRADE_ROOT/etc/systemd/system/sub2api-deployer-upgrade.service" ]]
+[[ -f "$UPGRADE_ROOT/control/timer-enabled" ]]
+[[ -f "$UPGRADE_ROOT/control/timer-active" ]]
 mkdir -p "$UPGRADE_ROOT/var/lib/sub2api-deployer"
 jq -n \
   --arg id "$CONTAINER_ID" \
@@ -439,6 +450,10 @@ cp -a -- "$UPGRADE_ROOT/app/compose.deployer.yml" "$UPGRADE_ROOT/original-compos
 cp -a -- "$UPGRADE_ROOT/usr/local/sbin/sub2api-deployer" "$UPGRADE_ROOT/original-deployer"
 make_deployer_binary "$UPGRADE_ROOT/deployer-v2" v2
 
+# Enabled and active are independent systemd dimensions. Simulate an
+# operator-stopped timer and require rollback to preserve that exact state.
+rm -f -- "$UPGRADE_ROOT/control/timer-active"
+
 if FAKE_FAIL_RESTART=1 run_installer "$UPGRADE_ROOT" "$UPGRADE_ROOT/deployer-v2" >"$UPGRADE_ROOT/upgrade.log" 2>&1; then
   echo "upgrade restart failure unexpectedly succeeded" >&2
   exit 1
@@ -449,8 +464,11 @@ cmp -s "$UPGRADE_ROOT/original-compose.deployer.yml" "$UPGRADE_ROOT/app/compose.
 cmp -s "$UPGRADE_ROOT/original-deployer" "$UPGRADE_ROOT/usr/local/sbin/sub2api-deployer"
 [[ -f "$UPGRADE_ROOT/control/active" ]]
 [[ -f "$UPGRADE_ROOT/control/enabled" ]]
+[[ -f "$UPGRADE_ROOT/control/timer-enabled" ]]
+[[ ! -e "$UPGRADE_ROOT/control/timer-active" ]]
 grep -Fq 'restart sub2api-deployer.service' "$UPGRADE_ROOT/systemctl.log"
 grep -Fq 'start sub2api-deployer.service' "$UPGRADE_ROOT/systemctl.log"
+grep -Fq 'stop sub2api-deployer-upgrade.timer' "$UPGRADE_ROOT/systemctl.log"
 grep -Fq -- "--env-file $UPGRADE_ROOT/var/lib/sub2api-deployer/image.env" "$UPGRADE_ROOT/docker.log"
 grep -Fq -- "-f $NORMALIZED_UPGRADE_APP/compose.deployer.yml" "$UPGRADE_ROOT/docker.log"
 grep -Fq "port $CONTAINER_ID 8080/tcp" "$UPGRADE_ROOT/docker.log"

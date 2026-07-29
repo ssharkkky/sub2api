@@ -53,4 +53,3 @@ func TestRealDockerControlPlaneStaging(t *testing.T) {
 		t.Fatalf("real Docker idempotent stage changed: first=%+v second=%+v", first, second)
 	}
 }
-

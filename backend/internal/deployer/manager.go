@@ -44,6 +44,7 @@ var (
 	ErrJobNotFound                    = errors.New("deployment job not found")
 	ErrDeployerDegraded               = errors.New("deployer is degraded and requires operator reconciliation")
 	ErrControlPlaneUpgradeUnavailable = errors.New("deployer control-plane upgrade is not configured; run the one-time host bootstrap before application updates")
+	ErrControlPlaneUpgradePending     = errors.New("a deployer control-plane upgrade is still pending; wait for activation or resolve it before starting another deployment")
 	ErrDrainUnobservable              = errors.New("previous application does not expose drain blockers")
 	ErrDrainTimeout                   = errors.New("previous application drain timed out")
 )
@@ -392,6 +393,13 @@ func (m *Manager) Start(req DeployRequest) (*Job, error) {
 	}
 	activeImage := m.state.ActiveImage
 	m.mu.RUnlock()
+	if m.cfg.ControlPlaneUpgradePath != "" {
+		if _, err := os.Lstat(m.cfg.ControlPlaneUpgradePath); err == nil {
+			return nil, ErrControlPlaneUpgradePending
+		} else if !errors.Is(err, os.ErrNotExist) {
+			return nil, fmt.Errorf("inspect pending control-plane upgrade request: %w", err)
+		}
+	}
 	if req.Action == "update" && req.ExpectedTargetDigest == "" {
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		labels, err := m.imageLabels(ctx, activeImage)
@@ -657,14 +665,7 @@ func (m *Manager) recoverInterruptedJob() error {
 			}
 		}
 		if recoveryErr == nil {
-			current, err := m.Job(job.ID)
-			if err != nil {
-				return err
-			}
-			recoveryErr = m.persistSuccessfulDeployment(current)
-		}
-		if recoveryErr == nil {
-			return m.finishRecoveredJob(job, JobStatusSucceeded, "Recovered deployment after deployer restart", "")
+			return m.completeRecoveredDeployment(job.ID)
 		}
 	}
 
@@ -681,6 +682,38 @@ func (m *Manager) recoverInterruptedJob() error {
 		jobError += "; candidate recovery failed: " + recoveryErr.Error()
 	}
 	return m.finishRecoveredJob(job, JobStatusFailed, "Interrupted deployment was rolled back", jobError)
+}
+
+func (m *Manager) completeRecoveredDeployment(jobID string) error {
+	job, err := m.Job(jobID)
+	if err != nil {
+		return err
+	}
+	if err := m.persistSuccessfulDeployment(job); err != nil {
+		return err
+	}
+
+	controlPlanePrepared, controlPlaneErr := m.prepareControlPlaneUpgrade(job)
+	cleanupWarning := ""
+	if controlPlaneErr != nil {
+		_ = m.writeControlPlaneUpgradeStatus(job, "failed", controlPlaneErr.Error())
+		cleanupWarning = "application update recovered successfully, but the deployer control-plane upgrade could not be prepared: " + controlPlaneErr.Error()
+	}
+	job, err = m.Job(jobID)
+	if err != nil {
+		return err
+	}
+	job.CleanupWarning = cleanupWarning
+	if err := m.finishRecoveredJob(*job, JobStatusSucceeded, "Recovered deployment after deployer restart", ""); err != nil {
+		return err
+	}
+	if controlPlanePrepared {
+		if err := m.startControlPlaneUpgrade(job); err != nil {
+			_ = m.writeControlPlaneUpgradeStatus(job, "failed", err.Error())
+			_ = m.appendCleanupWarning(jobID, "application update recovered successfully, but the deployer control-plane upgrade was not scheduled: "+err.Error())
+		}
+	}
+	return nil
 }
 
 func (m *Manager) execute(jobID string) {
@@ -1474,6 +1507,7 @@ func (m *Manager) finishRecoveredJob(job Job, status, message, jobError string) 
 	next.Job.Stage = map[bool]string{true: StageCompleted, false: StageFailed}[status == JobStatusSucceeded]
 	next.Job.Message = message
 	next.Job.Error = jobError
+	next.Job.CleanupWarning = job.CleanupWarning
 	next.Job.BackgroundActivated = job.BackgroundActivated
 	next.Job.RollbackPerformed = job.RollbackPerformed
 	next.Job.UpdatedAt = now

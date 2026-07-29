@@ -56,6 +56,18 @@ cat > "$FAKE_BIN/flock" <<'EOF'
 [[ "$1" == "-n" && "$2" == "9" ]]
 EOF
 
+cat > "$FAKE_BIN/install" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+destination="${!#}"
+if [[ "${FAKE_CRASH_DURING_BACKUP:-0}" == 1 && "$destination" == */.sub2api-deployer.previous.next ]]; then
+  printf 'partial-backup\n' > "$destination"
+  kill -KILL "$PPID"
+  exit 137
+fi
+exec /usr/bin/install "$@"
+EOF
+
 cat > "$FAKE_BIN/rm" <<'EOF'
 #!/usr/bin/env bash
 set -euo pipefail
@@ -67,7 +79,7 @@ for arg in "$@"; do
 done
 exec /bin/rm "$@"
 EOF
-chmod 0755 "$FAKE_BIN/systemctl" "$FAKE_BIN/curl" "$FAKE_BIN/sleep" "$FAKE_BIN/flock" "$FAKE_BIN/rm"
+chmod 0755 "$FAKE_BIN/systemctl" "$FAKE_BIN/curl" "$FAKE_BIN/sleep" "$FAKE_BIN/flock" "$FAKE_BIN/install" "$FAKE_BIN/rm"
 
 HELPER="$TEST_DIR/sub2api-deployer-upgrade"
 sed \
@@ -140,6 +152,7 @@ run_helper() {
   FAKE_SYSTEMCTL_LOG="$TEST_DIR/systemctl.log" \
   FAKE_HEALTH_MODE="$1" \
   FAKE_CRASH_BEFORE_REMOVE="${2:-}" \
+  FAKE_CRASH_DURING_BACKUP="${FAKE_CRASH_DURING_BACKUP:-0}" \
   FAKE_TARGET_HEALTH="$TARGET_HEALTH" \
   FAKE_WRONG_BUILD_HEALTH="$WRONG_BUILD_HEALTH" \
     "$HELPER"
@@ -179,6 +192,22 @@ jq -e '.status == "succeeded"' "$request_path.status" >/dev/null
 run_helper target
 [[ ! -e "$request_path" ]]
 [[ ! -e "$TEST_DIR/restart-count" ]]
+
+# SIGKILL while creating the rollback copy cannot publish a truncated
+# .previous binary. A retry recreates and verifies the copy before swapping.
+write_fixture
+cp -a "$ROOT/usr/local/sbin/sub2api-deployer" "$TEST_DIR/expected-old-after-backup-kill"
+if FAKE_CRASH_DURING_BACKUP=1 run_helper target >"$TEST_DIR/kill-during-backup.log" 2>&1; then
+  echo "backup SIGKILL mutation unexpectedly completed" >&2
+  exit 1
+fi
+stage="$ROOT/var/lib/sub2api-deployer/control-plane-staging/$JOB_ID"
+[[ ! -e "$stage/sub2api-deployer.previous" ]]
+[[ -f "$stage/.sub2api-deployer.previous.next" ]]
+cmp -s "$TEST_DIR/expected-old-after-backup-kill" "$ROOT/usr/local/sbin/sub2api-deployer"
+run_helper target
+cmp -s "$expected_target" "$ROOT/usr/local/sbin/sub2api-deployer"
+[[ ! -e "$ROOT/var/lib/sub2api-deployer/control-plane-upgrade.json" ]]
 
 # Failed target health restores and verifies the previous binary, then leaves a
 # bounded retry request for the timer.

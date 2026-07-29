@@ -68,4 +68,3 @@ rm -rf -- "$CANDIDATE_DIR/oci-context"
   mapfile -t files < <(find . -type f ! -name MANIFEST.sha256 -print | sed 's#^./##' | LC_ALL=C sort)
   sha256sum "${files[@]}" > MANIFEST.sha256
 )
-

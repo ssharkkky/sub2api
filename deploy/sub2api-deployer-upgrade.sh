@@ -24,6 +24,7 @@ STAGE=""
 STAGED_BINARY=""
 STAGED_SHA=""
 PREVIOUS_BINARY=""
+PREVIOUS_BINARY_NEXT=""
 SWAPPED=0
 HANDLING_FAILURE=0
 
@@ -188,6 +189,7 @@ record_unexpected_failure() {
 
 cleanup() {
   rm -f -- "$NEXT_BINARY" "$STATUS.tmp.$$"
+  [[ -z "$PREVIOUS_BINARY_NEXT" ]] || rm -f -- "$PREVIOUS_BINARY_NEXT"
 }
 
 trap cleanup EXIT
@@ -241,6 +243,7 @@ EXPECTED_ARCH=$(jq -r '.expected_arch' "$REQUEST")
 
 STAGE="$STAGING_ROOT/$JOB_ID"
 PREVIOUS_BINARY="$STAGE/sub2api-deployer.previous"
+PREVIOUS_BINARY_NEXT="$STAGE/.sub2api-deployer.previous.next"
 
 # A terminal status is written before destructive cleanup. If the machine
 # stops between those mutations, the timer only finishes cleanup and never
@@ -302,7 +305,10 @@ if [[ "$CURRENT_SHA" == "$STAGED_SHA" ]] && health_matches_target; then
 fi
 
 if [[ ! -e "$PREVIOUS_BINARY" ]]; then
-  install -m 0755 "$BINARY" "$PREVIOUS_BINARY"
+  install -m 0755 "$BINARY" "$PREVIOUS_BINARY_NEXT"
+  [[ "sha256:$(sha256sum "$PREVIOUS_BINARY_NEXT" | awk '{print $1}')" == "$CURRENT_SHA" ]] || \
+    fail_permanent "previous deployer recovery copy failed verification"
+  mv -f -- "$PREVIOUS_BINARY_NEXT" "$PREVIOUS_BINARY"
 elif [[ ! -f "$PREVIOUS_BINARY" || -L "$PREVIOUS_BINARY" ]]; then
   fail_permanent "previous deployer recovery file is unsafe"
 fi

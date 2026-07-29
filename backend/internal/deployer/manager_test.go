@@ -810,38 +810,43 @@ func TestRestartRecoveryFinishesHealthySwitchedCandidate(t *testing.T) {
 	t.Cleanup(func() { _ = server.Close() })
 
 	cfg := testConfig(t, port)
+	const controlPlaneCommit = "0123456789abcdef0123456789abcdef01234567"
 	if err := atomicWrite(cfg.NginxUpstreamPath, []byte(fmt.Sprintf("upstream sub2api_managed {\n server 127.0.0.1:%d;\n}\n", port)), 0644); err != nil {
 		t.Fatal(err)
 	}
 	now := time.Now().UTC()
 	state := State{
-		ActiveSlot:      "blue",
-		ActiveContainer: "sub2api",
-		ActivePort:      cfg.Slots[0].Port,
-		ActiveVersion:   "0.1.1-ts.1",
-		ActiveImage:     "ghcr.io/ssharkkky/sub2api:0.1.1-ts.1",
+		ActiveSlot:        "blue",
+		ActiveContainer:   "sub2api",
+		ActiveContainerID: fakeContainerID("sub2api"),
+		ActivePort:        cfg.Slots[0].Port,
+		ActiveVersion:     "0.1.1-ts.1",
+		ActiveImage:       "ghcr.io/ssharkkky/sub2api:0.1.1-ts.1",
 		Job: &Job{
-			ID:                 "restart-recovery-1",
-			Action:             "update",
-			TargetVersion:      "0.1.2-ts.1",
-			TargetImage:        "ghcr.io/ssharkkky/sub2api@sha256:" + strings.Repeat("a", 64),
-			Status:             JobStatusRunning,
-			Stage:              StageStabilizing,
-			OldContainer:       "sub2api",
-			OldSlot:            "blue",
-			CandidateContainer: "sub2api-green",
-			CandidateSlot:      "sub2api-green",
-			CandidatePort:      port,
-			TrafficSwitched:    true,
-			CreatedAt:          now,
-			StartedAt:          now,
-			UpdatedAt:          now,
+			ID:                   "restart-recovery-1",
+			Action:               "update",
+			TargetVersion:        "0.1.2-ts.1",
+			TargetImage:          "ghcr.io/ssharkkky/sub2api@sha256:" + strings.Repeat("a", 64),
+			TargetDigest:         "sha256:" + strings.Repeat("a", 64),
+			Status:               JobStatusRunning,
+			Stage:                StageStabilizing,
+			OldContainer:         "sub2api",
+			OldSlot:              "blue",
+			CandidateContainer:   "sub2api-green",
+			CandidateContainerID: fakeContainerID("sub2api-green"),
+			CandidateSlot:        "sub2api-green",
+			CandidatePort:        port,
+			TrafficSwitched:      true,
+			CreatedAt:            now,
+			StartedAt:            now,
+			UpdatedAt:            now,
 		},
 	}
 	if err := saveState(cfg.StatePath, state); err != nil {
 		t.Fatal(err)
 	}
-	runner := &fakeRunner{candidate: true, runtimeState: &runtimeState}
+	baseRunner := &fakeRunner{candidate: true, runtimeState: &runtimeState}
+	runner := newControlPlaneRunner(t, baseRunner, "0.1.2-ts.1", controlPlaneCommit)
 	manager, err := NewManager(cfg, runner)
 	if err != nil {
 		t.Fatal(err)
@@ -858,6 +863,18 @@ func TestRestartRecoveryFinishesHealthySwitchedCandidate(t *testing.T) {
 	}
 	if manager.state.PreviousContainer != "sub2api" {
 		t.Fatalf("previous container=%s", manager.state.PreviousContainer)
+	}
+	if job.ControlPlaneUpgradeStatus != "pending" {
+		t.Fatalf("control-plane status=%q error=%q", job.ControlPlaneUpgradeStatus, job.ControlPlaneUpgradeError)
+	}
+	if _, err := os.Stat(cfg.ControlPlaneUpgradePath); err != nil {
+		t.Fatalf("recovered deployment did not persist control-plane activation request: %v", err)
+	}
+	baseRunner.mu.Lock()
+	commands := strings.Join(baseRunner.commands, "\n")
+	baseRunner.mu.Unlock()
+	if !strings.Contains(commands, strings.Join(cfg.ControlPlaneUpgradeCommand, " ")) {
+		t.Fatalf("recovered deployment did not schedule control-plane activation: %s", commands)
 	}
 }
 
@@ -2779,6 +2796,27 @@ func TestUpdateRequiresControlPlaneUpgradeBootstrap(t *testing.T) {
 	})
 	if !errors.Is(err, ErrControlPlaneUpgradeUnavailable) {
 		t.Fatalf("Start error=%v, want ErrControlPlaneUpgradeUnavailable", err)
+	}
+}
+
+func TestUpdateRejectsPendingControlPlaneActivationRequest(t *testing.T) {
+	cfg := testConfig(t, 18081)
+	if err := os.WriteFile(cfg.ControlPlaneUpgradePath, []byte("{}\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	for _, action := range []string{"update", "rollback"} {
+		manager := &Manager{cfg: cfg}
+		request := DeployRequest{
+			Action:        action,
+			TargetVersion: "0.1.2-ts.1",
+			RequestID:     "activation-pending-" + action,
+		}
+		if action == "update" {
+			request.ExpectedTargetDigest = "sha256:" + strings.Repeat("a", 64)
+		}
+		if _, err := manager.Start(request); !errors.Is(err, ErrControlPlaneUpgradePending) {
+			t.Fatalf("Start(%s) error=%v, want ErrControlPlaneUpgradePending", action, err)
+		}
 	}
 }
 

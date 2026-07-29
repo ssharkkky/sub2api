@@ -37,12 +37,24 @@ require_literal "$PRETAG_WORKFLOW" 'backend/scripts/check-release-migrations-his
 require_literal "$PRETAG_WORKFLOW" 'go mod tidy'
 require_literal "$PRETAG_WORKFLOW" 'args: release --snapshot --clean --skip=publish --skip=docker'
 require_literal "$PRETAG_WORKFLOW" 'deploy/prepare-release-candidate.sh \'
-require_literal "$PRETAG_WORKFLOW" 'assert-image-absent "$CANDIDATE_IMAGE"'
+require_literal "$PRETAG_WORKFLOW" 'push-by-digest=true'
+require_literal "$PRETAG_WORKFLOW" '-f event=push -f head_sha="$TARGET_SHA" -f per_page=20'
+require_literal "$PRETAG_WORKFLOW" 'source_run_id=$REUSE_RUN_ID'
 require_literal "$PRETAG_WORKFLOW" 'deploy/finalize-release-candidate.sh'
 require_literal "$PRETAG_WORKFLOW" 'deploy/verify-release-candidate.sh'
 require_literal "$PRETAG_WORKFLOW" 'deploy/verify-control-plane-image.sh'
 require_literal "$PRETAG_WORKFLOW" "-run '^TestRealDockerControlPlaneStaging$'"
 require_literal "$PRETAG_WORKFLOW" 'name: ${{ steps.identity.outputs.artifact_name }}'
+require_literal "$PRETAG_WORKFLOW" 'if: steps.reuse.outputs.source_run_id != github.run_id'
+require_literal "$PRETAG_WORKFLOW" 'Create or verify immutable candidate tag'
+if grep -Fq -- 'assert-image-absent "$CANDIDATE_IMAGE"' "$PRETAG_WORKFLOW"; then
+  fail "$PRETAG_WORKFLOW must not create the candidate tag before its recoverable artifact exists"
+fi
+candidate_upload_line=$(grep -nF 'name: ${{ steps.identity.outputs.artifact_name }}' "$PRETAG_WORKFLOW" | tail -n 1 | cut -d: -f1)
+candidate_tag_line=$(grep -nF 'Create or verify immutable candidate tag' "$PRETAG_WORKFLOW" | cut -d: -f1)
+if [[ -z "$candidate_upload_line" || -z "$candidate_tag_line" || "$candidate_upload_line" -ge "$candidate_tag_line" ]]; then
+  fail "$PRETAG_WORKFLOW must upload the recoverable candidate artifact before creating its immutable tag"
+fi
 require_literal "$PRETAG_WORKFLOW" 'name: Release Preflight'
 require_literal "$PRETAG_WORKFLOW" 'if: always()'
 require_literal "$PROMOTE_WORKFLOW" 'name: Promote Release'
