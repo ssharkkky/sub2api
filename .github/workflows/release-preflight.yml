@@ -188,7 +188,6 @@ jobs:
           echo "reused=true" >> "$GITHUB_OUTPUT"
 
       - uses: actions/setup-go@v6
-        if: steps.reuse.outputs.reused != 'true'
         with:
           go-version-file: backend/go.mod
           check-latest: false
@@ -283,6 +282,16 @@ jobs:
             "${CANDIDATE_IMAGE}@${IMAGE_DIGEST}" \
             "$RUNNER_TEMP/candidate" \
             deploy/sub2api-deployer.example.json
+
+      - name: Exercise versioned staging against the real Docker daemon
+        env:
+          SUB2API_CONTROL_PLANE_TEST_VERSION: ${{ steps.identity.outputs.version }}
+          SUB2API_CONTROL_PLANE_TEST_COMMIT: ${{ env.TARGET_SHA }}
+        run: |
+          IMAGE_DIGEST=$(jq -er '.image_digest' "$RUNNER_TEMP/candidate/candidate.json")
+          export SUB2API_CONTROL_PLANE_TEST_IMAGE="${{ steps.identity.outputs.candidate_image }}@${IMAGE_DIGEST}"
+          go test -tags integration ./internal/deployer -run '^TestRealDockerControlPlaneStaging$' -count=1
+        working-directory: backend
 
       - name: Upload audited Build Once candidate
         uses: actions/upload-artifact@v7

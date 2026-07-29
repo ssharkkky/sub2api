@@ -132,6 +132,8 @@ fi
 grep -Fq 'run-id: ${{ inputs.candidate_run_id }}' "$RELEASE_WORKFLOW"
 grep -Fq 'assert-image-digest-matches' "$PROMOTE_WORKFLOW"
 grep -Fq 'verify-completion-candidate' "$RELEASE_WORKFLOW"
+grep -Fq "go test -tags integration ./internal/deployer -run '^TestRealDockerControlPlaneStaging$'" "$PREFLIGHT_WORKFLOW"
+test -f "$REPO_ROOT/backend/internal/deployer/control_plane_upgrade_integration_test.go"
 grep -Fq 'release-safety.sh publish-release-with-latest \' "$RELEASE_WORKFLOW"
 if [[ $(grep -Fc 'gh release view "$RELEASE_TAG"' "$RELEASE_WORKFLOW") -lt 3 ]]; then
   echo "draft and published release states must be verified through GitHub CLI" >&2

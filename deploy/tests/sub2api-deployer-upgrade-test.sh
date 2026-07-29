@@ -55,7 +55,19 @@ cat > "$FAKE_BIN/flock" <<'EOF'
 #!/usr/bin/env bash
 [[ "$1" == "-n" && "$2" == "9" ]]
 EOF
-chmod 0755 "$FAKE_BIN/systemctl" "$FAKE_BIN/curl" "$FAKE_BIN/sleep" "$FAKE_BIN/flock"
+
+cat > "$FAKE_BIN/rm" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+for arg in "$@"; do
+  if [[ -n "${FAKE_CRASH_BEFORE_REMOVE:-}" && "$arg" == "$FAKE_CRASH_BEFORE_REMOVE" ]]; then
+    kill -KILL "$PPID"
+    exit 137
+  fi
+done
+exec /bin/rm "$@"
+EOF
+chmod 0755 "$FAKE_BIN/systemctl" "$FAKE_BIN/curl" "$FAKE_BIN/sleep" "$FAKE_BIN/flock" "$FAKE_BIN/rm"
 
 HELPER="$TEST_DIR/sub2api-deployer-upgrade"
 sed \
@@ -127,6 +139,7 @@ run_helper() {
   FAKE_RESTART_COUNT="$TEST_DIR/restart-count" \
   FAKE_SYSTEMCTL_LOG="$TEST_DIR/systemctl.log" \
   FAKE_HEALTH_MODE="$1" \
+  FAKE_CRASH_BEFORE_REMOVE="${2:-}" \
   FAKE_TARGET_HEALTH="$TARGET_HEALTH" \
   FAKE_WRONG_BUILD_HEALTH="$WRONG_BUILD_HEALTH" \
     "$HELPER"
@@ -150,6 +163,22 @@ cp -a "$ROOT/var/lib/sub2api-deployer/control-plane-staging/$JOB_ID/sub2api-depl
 run_helper target
 [[ ! -e "$TEST_DIR/restart-count" ]]
 jq -e '.status == "succeeded"' "$ROOT/var/lib/sub2api-deployer/control-plane-upgrade.json.status" >/dev/null
+
+# SIGKILL after terminal state and stage cleanup but before request removal is
+# recovered as cleanup-only work. It must not restart or reactivate deployer.
+write_fixture
+cp -a "$ROOT/var/lib/sub2api-deployer/control-plane-staging/$JOB_ID/sub2api-deployer" "$ROOT/usr/local/sbin/sub2api-deployer"
+request_path="$ROOT/var/lib/sub2api-deployer/control-plane-upgrade.json"
+if run_helper target "$request_path" >"$TEST_DIR/kill-before-request-remove.log" 2>&1; then
+  echo "SIGKILL mutation unexpectedly completed" >&2
+  exit 1
+fi
+jq -e '.status == "succeeded"' "$request_path.status" >/dev/null
+[[ -f "$request_path" ]]
+[[ ! -e "$ROOT/var/lib/sub2api-deployer/control-plane-staging/$JOB_ID" ]]
+run_helper target
+[[ ! -e "$request_path" ]]
+[[ ! -e "$TEST_DIR/restart-count" ]]
 
 # Failed target health restores and verifies the previous binary, then leaves a
 # bounded retry request for the timer.
@@ -189,5 +218,36 @@ if grep -Eq '(^|[[:space:]])docker([[:space:]]|$)' "$REPO_ROOT/deploy/sub2api-de
   echo "stable activator must not call Docker" >&2
   exit 1
 fi
+
+success_block=$(sed -n '/if \[\[ "$CURRENT_SHA" == "$STAGED_SHA" \]\]/,/^fi$/p' \
+  "$REPO_ROOT/deploy/sub2api-deployer-upgrade.sh")
+success_status_line=$(grep -n 'write_status succeeded' <<<"$success_block" | cut -d: -f1)
+success_remove_line=$(grep -n 'rm -f -- "$REQUEST"' <<<"$success_block" | cut -d: -f1)
+if [[ -z "$success_status_line" || -z "$success_remove_line" || "$success_status_line" -ge "$success_remove_line" ]]; then
+  echo "idempotent success must persist its terminal state before removing the request" >&2
+  exit 1
+fi
+
+health_success_block=$(sed -n '/if wait_for_health health_matches_target/,/^fi$/p' \
+  "$REPO_ROOT/deploy/sub2api-deployer-upgrade.sh")
+health_status_line=$(grep -n 'write_status succeeded' <<<"$health_success_block" | cut -d: -f1)
+health_remove_line=$(grep -n 'rm -f -- "$REQUEST"' <<<"$health_success_block" | cut -d: -f1)
+if [[ -z "$health_status_line" || -z "$health_remove_line" || "$health_status_line" -ge "$health_remove_line" ]]; then
+  echo "activated success must persist its terminal state before removing the request" >&2
+  exit 1
+fi
+
+for function_name in fail_permanent fail_transient; do
+  function_block=$(sed -n "/^${function_name}()/,/^}/p" "$REPO_ROOT/deploy/sub2api-deployer-upgrade.sh")
+  while IFS=: read -r quarantine_line _; do
+    [[ -n "$quarantine_line" ]] || continue
+    preceding_status=$(sed -n "1,${quarantine_line}p" <<<"$function_block" | \
+      grep -n 'write_status failed' | tail -n 1 | cut -d: -f1)
+    if [[ -z "$preceding_status" || "$preceding_status" -ge "$quarantine_line" ]]; then
+      echo "$function_name must persist a terminal state before quarantining its request" >&2
+      exit 1
+    fi
+  done < <(grep -n 'quarantine_request' <<<"$function_block")
+done
 
 echo "sub2api deployer control-plane activator tests passed"

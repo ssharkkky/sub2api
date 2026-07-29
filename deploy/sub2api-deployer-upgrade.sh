@@ -149,8 +149,8 @@ fail_permanent() {
   if ! restore_previous_binary; then
     message="$message; previous deployer could not be restored and verified"
   fi
-  quarantine_request
   write_status failed "$message" permanent
+  quarantine_request
   echo "sub2api-deployer control-plane upgrade: $message" >&2
   exit 1
 }
@@ -163,14 +163,14 @@ fail_transient() {
   HANDLING_FAILURE=1
   if ! restore_previous_binary; then
     message="$message; previous deployer could not be restored and verified"
-    quarantine_request
     write_status failed "$message" permanent
+    quarantine_request
     echo "sub2api-deployer control-plane upgrade: $message" >&2
     exit 1
   fi
   if (( ATTEMPT >= MAX_ATTEMPTS )); then
-    quarantine_request
     write_status failed "$message" transient
+    quarantine_request
   else
     next_attempt_at=$(date -u -d '60 seconds' +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || true)
     write_status retrying "$message" transient "$next_attempt_at"
@@ -238,10 +238,37 @@ STAGED_MANIFEST=$(jq -r '.staged_manifest' "$REQUEST")
 STAGED_MANIFEST_SHA=$(jq -r '.staged_manifest_sha256' "$REQUEST")
 EXPECTED_COMMIT=$(jq -r '.expected_commit' "$REQUEST")
 EXPECTED_ARCH=$(jq -r '.expected_arch' "$REQUEST")
-ATTEMPT=$((ATTEMPT + 1))
 
 STAGE="$STAGING_ROOT/$JOB_ID"
 PREVIOUS_BINARY="$STAGE/sub2api-deployer.previous"
+
+# A terminal status is written before destructive cleanup. If the machine
+# stops between those mutations, the timer only finishes cleanup and never
+# repeats activation or turns a durable success into a failure.
+TERMINAL_STATUS=$(jq -r \
+  --arg job_id "$JOB_ID" \
+  --arg id "$CONTAINER_ID" \
+  --arg version "$TARGET_VERSION" '
+    if .schema == 1
+      and .job_id == $job_id
+      and .container_id == $id
+      and .target_version == $version
+      and (.status == "succeeded" or .status == "failed")
+    then .status else empty end
+  ' "$STATUS" 2>/dev/null || true)
+case "$TERMINAL_STATUS" in
+  succeeded)
+    rm -rf -- "$STAGE"
+    rm -f -- "$REQUEST"
+    exit 0
+    ;;
+  failed)
+    quarantine_request
+    exit 0
+    ;;
+esac
+
+ATTEMPT=$((ATTEMPT + 1))
 [[ -d "$STAGE" && ! -L "$STAGE" ]] || fail_permanent "verified staging directory is missing or unsafe"
 [[ "$STAGED_BINARY" == "$STAGE/sub2api-deployer" ]] || fail_permanent "staged binary path escaped the verified staging directory"
 [[ "$STAGED_MANIFEST" == "$STAGE/CONTROL-PLANE-MANIFEST.json" ]] || fail_permanent "staged manifest path escaped the verified staging directory"
@@ -268,9 +295,9 @@ jq -e \
 
 CURRENT_SHA="sha256:$(sha256sum "$BINARY" | awk '{print $1}')"
 if [[ "$CURRENT_SHA" == "$STAGED_SHA" ]] && health_matches_target; then
-  rm -f -- "$REQUEST"
   write_status succeeded
   rm -rf -- "$STAGE"
+  rm -f -- "$REQUEST"
   exit 0
 fi
 
@@ -289,9 +316,9 @@ SWAPPED=1
 systemctl restart sub2api-deployer.service || true
 if wait_for_health health_matches_target; then
   SWAPPED=0
-  rm -f -- "$REQUEST"
   write_status succeeded
   rm -rf -- "$STAGE"
+  rm -f -- "$REQUEST"
   exit 0
 fi
 
