@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"os"
 	"regexp"
+	"runtime"
 	"strconv"
 	"strings"
 	"sync"
@@ -52,6 +53,7 @@ type Manager struct {
 	runner     CommandRunner
 	httpClient *http.Client
 	now        func() time.Time
+	buildInfo  BuildInfo
 
 	mu    sync.RWMutex
 	state State
@@ -71,6 +73,16 @@ func (j *Job) candidateContainerRef() containerRef {
 }
 
 func NewManager(cfg Config, runner CommandRunner) (*Manager, error) {
+	return NewManagerWithBuildInfo(cfg, runner, BuildInfo{
+		Version: "dev",
+		Commit:  "none",
+		Date:    "unknown",
+		Type:    "dev",
+		Arch:    runtime.GOARCH,
+	})
+}
+
+func NewManagerWithBuildInfo(cfg Config, runner CommandRunner, buildInfo BuildInfo) (*Manager, error) {
 	if runner == nil {
 		runner = ExecRunner{}
 	}
@@ -84,6 +96,7 @@ func NewManager(cfg Config, runner CommandRunner) (*Manager, error) {
 		httpClient: &http.Client{Timeout: 4 * time.Second},
 		now:        time.Now,
 		state:      state,
+		buildInfo:  normalizeBuildInfo(buildInfo),
 	}
 	if err := validateStateContainerIdentities(state); err != nil {
 		return nil, err
@@ -102,6 +115,25 @@ func NewManager(cfg Config, runner CommandRunner) (*Manager, error) {
 	return m, nil
 }
 
+func normalizeBuildInfo(info BuildInfo) BuildInfo {
+	if strings.TrimSpace(info.Version) == "" {
+		info.Version = "dev"
+	}
+	if strings.TrimSpace(info.Commit) == "" {
+		info.Commit = "none"
+	}
+	if strings.TrimSpace(info.Date) == "" {
+		info.Date = "unknown"
+	}
+	if strings.TrimSpace(info.Type) == "" {
+		info.Type = "dev"
+	}
+	if strings.TrimSpace(info.Arch) == "" {
+		info.Arch = runtime.GOARCH
+	}
+	return info
+}
+
 func (m *Manager) Health() Health {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
@@ -113,7 +145,7 @@ func (m *Manager) Health() Health {
 	}
 	return Health{
 		Status:                   status,
-		Version:                  "2.0.0",
+		Version:                  ControlProtocolVersion,
 		ActiveSlot:               m.state.ActiveSlot,
 		ActiveContainer:          m.state.ActiveContainer,
 		ActiveContainerID:        m.state.ActiveContainerID,
@@ -123,6 +155,7 @@ func (m *Manager) Health() Health {
 		Degraded:                 degraded,
 		DegradedReason:           m.state.DegradedReason,
 		ControlPlaneUpgradeReady: m.controlPlaneUpgradeReady(),
+		Build:                    m.buildInfo,
 	}
 }
 

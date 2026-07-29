@@ -2,6 +2,8 @@ package deployer
 
 import "time"
 
+const ControlProtocolVersion = "2.0.0"
+
 const (
 	JobStatusRunning        = "running"
 	JobStatusSucceeded      = "succeeded"
@@ -105,15 +107,24 @@ type State struct {
 }
 
 type Health struct {
-	Status                   string `json:"status"`
-	Version                  string `json:"version"`
-	ActiveSlot               string `json:"active_slot,omitempty"`
-	ActiveContainer          string `json:"active_container,omitempty"`
-	ActiveContainerID        string `json:"active_container_id,omitempty"`
-	ActivePort               int    `json:"active_port,omitempty"`
-	ActiveVersion            string `json:"active_version,omitempty"`
-	JobRunning               bool   `json:"job_running"`
-	Degraded                 bool   `json:"degraded"`
-	DegradedReason           string `json:"degraded_reason,omitempty"`
-	ControlPlaneUpgradeReady bool   `json:"control_plane_upgrade_ready"`
+	Status                   string    `json:"status"`
+	Version                  string    `json:"version"`
+	ActiveSlot               string    `json:"active_slot,omitempty"`
+	ActiveContainer          string    `json:"active_container,omitempty"`
+	ActiveContainerID        string    `json:"active_container_id,omitempty"`
+	ActivePort               int       `json:"active_port,omitempty"`
+	ActiveVersion            string    `json:"active_version,omitempty"`
+	JobRunning               bool      `json:"job_running"`
+	Degraded                 bool      `json:"degraded"`
+	DegradedReason           string    `json:"degraded_reason,omitempty"`
+	ControlPlaneUpgradeReady bool      `json:"control_plane_upgrade_ready"`
+	Build                    BuildInfo `json:"build"`
+}
+
+type BuildInfo struct {
+	Version string `json:"version"`
+	Commit  string `json:"commit"`
+	Date    string `json:"date"`
+	Type    string `json:"type"`
+	Arch    string `json:"arch"`
 }
