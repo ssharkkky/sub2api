@@ -1,7 +1,7 @@
 name: Release
 
 on:
-  workflow_dispatch:
+  workflow_call:
     inputs:
       tag:
         description: 'Fork tag to release (e.g., v0.1.165-ts.1)'
@@ -38,13 +38,13 @@ jobs:
         uses: actions/checkout@v6
         with:
           fetch-depth: 0
-          ref: ${{ github.event.inputs.tag || github.ref }}
+          ref: ${{ inputs.tag }}
 
       - name: Validate fork release tag
         id: release_ref
         env:
           GH_TOKEN: ${{ github.token }}
-          RELEASE_TAG: ${{ github.event.inputs.tag || github.ref_name }}
+          RELEASE_TAG: ${{ inputs.tag }}
           RELEASE_TAG_RULESET_ID: ${{ vars.RELEASE_TAG_RULESET_ID }}
         run: |
           bash .github/scripts/release-safety.sh fetch origin main
@@ -125,7 +125,7 @@ jobs:
       - name: Verify rollback-compatible migrations
         env:
           RELEASE_COMMIT: ${{ steps.release_ref.outputs.commit }}
-          RELEASE_TAG: ${{ github.event.inputs.tag || github.ref_name }}
+          RELEASE_TAG: ${{ inputs.tag }}
         run: |
           backend/scripts/check-release-migrations-history.sh \
             "$MIGRATION_BASELINE_COMMIT" \
@@ -294,7 +294,7 @@ jobs:
       - name: Load versioned release notes
         id: release_notes
         env:
-          RELEASE_TAG: ${{ github.event.inputs.tag || github.ref_name }}
+          RELEASE_TAG: ${{ inputs.tag }}
           VALIDATED_RELEASE_TAG_OBJECT: ${{ needs.release-gate.outputs.release_tag_object }}
         run: |
           bash .github/scripts/release-safety.sh write-notes-output \
@@ -312,7 +312,7 @@ jobs:
       - name: Final immutable release preflight
         env:
           GH_TOKEN: ${{ github.token }}
-          RELEASE_TAG: ${{ github.event.inputs.tag || github.ref_name }}
+          RELEASE_TAG: ${{ inputs.tag }}
           RELEASE_TAG_RULESET_ID: ${{ vars.RELEASE_TAG_RULESET_ID }}
           VALIDATED_RELEASE_COMMIT: ${{ needs.release-gate.outputs.release_commit }}
           VALIDATED_RELEASE_TAG_OBJECT: ${{ needs.release-gate.outputs.release_tag_object }}
@@ -462,7 +462,7 @@ jobs:
           args: release --clean
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          GORELEASER_CURRENT_TAG: ${{ github.event.inputs.tag || github.ref_name }}
+          GORELEASER_CURRENT_TAG: ${{ inputs.tag }}
           GORELEASER_PREVIOUS_TAG: ${{ needs.release-gate.outputs.previous_release_tag }}
           TAG_MESSAGE: ${{ steps.release_notes.outputs.message }}
           GITHUB_REPO_OWNER: ${{ github.repository_owner }}
@@ -473,13 +473,13 @@ jobs:
       - name: Attach deployer binaries to release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          RELEASE_TAG: ${{ github.event.inputs.tag || github.ref_name }}
+          RELEASE_TAG: ${{ inputs.tag }}
         run: gh release upload "$RELEASE_TAG" "$RUNNER_TEMP/deployer-dist/"*
 
       - name: Verify and publish completed release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          RELEASE_TAG: ${{ github.event.inputs.tag || github.ref_name }}
+          RELEASE_TAG: ${{ inputs.tag }}
           RELEASE_COMMIT: ${{ needs.release-gate.outputs.release_commit }}
           RELEASE_TAG_OBJECT: ${{ needs.release-gate.outputs.release_tag_object }}
           GHCR_OWNER: ${{ steps.lowercase.outputs.owner }}
@@ -651,7 +651,7 @@ jobs:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
           DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
-          RELEASE_TAG: ${{ github.event.inputs.tag || github.ref_name }}
+          RELEASE_TAG: ${{ inputs.tag }}
           RELEASE_NOTES: ${{ steps.release_notes.outputs.message }}
           REPOSITORY: ${{ github.repository }}
         continue-on-error: true

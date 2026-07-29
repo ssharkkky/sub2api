@@ -255,7 +255,9 @@ Release PR 合并后、创建 tag 前：
 
 Release PR 合并且上述 tag 前门禁全部通过后，禁止从本地人工创建或推送发布 tag。仓库 tag ruleset 必须禁止 `v*-ts.*` 的人工创建、更新和删除，仅允许 GitHub Actions 执行唯一的 `Promote Release` workflow。
 
-从 Actions 页面运行 `Promote Release`，输入已审计的版本号和完整 `origin/main` SHA。该工作流必须再次确认远端 `main` 没有移动、`VERSION` 一致、tag/Release 未占用，并核验同一 SHA 的 `Backend CI` 与 `Release Preflight` push run 均成功；之后才由工作流创建 annotated tag 并启动 `Release` workflow。
+从 Actions 页面运行 `Promote Release`，输入已审计的版本号和完整 `origin/main` SHA。该工作流必须再次确认远端 `main` 没有移动、`VERSION` 一致、tag/Release 未占用，并核验同一 SHA 的 `Backend CI` 与 `Release Preflight` push run 均成功；之后才由工作流创建 annotated tag，并在同一执行链中调用 reusable `Release` workflow。`Release` 不提供独立的 tag push 或手动 dispatch 入口。
+
+Promote 在创建 tag 前再次读取远端 `main`。若 Actions 在 tag 创建后、进入 Release job 前发生暂时故障，重跑同一 Promote run 可以复用“同版本、同审计 SHA、annotated”的已有 tag；任何对象不一致都会停止，不能覆盖 tag。
 
 命令行等价入口仅用于触发同一个受控工作流，不直接创建 tag：
 

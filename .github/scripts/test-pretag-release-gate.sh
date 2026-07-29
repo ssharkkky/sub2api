@@ -44,13 +44,18 @@ require_literal "$PROMOTE_WORKFLOW" 'origin/main moved to'
 require_literal "$PROMOTE_WORKFLOW" 'verify_workflow backend-ci.yml "Backend CI"'
 require_literal "$PROMOTE_WORKFLOW" 'verify_workflow release-preflight.yml "Release Preflight"'
 require_literal "$PROMOTE_WORKFLOW" 'verify-ruleset-json "$RUNNER_TEMP/release-tag-ruleset.json"'
+require_literal "$PROMOTE_WORKFLOW" "if: steps.verify.outputs.tag_exists != 'true'"
+require_literal "$PROMOTE_WORKFLOW" 'origin/main moved to $REMOTE_MAIN_SHA before tag creation'
 require_literal "$PROMOTE_WORKFLOW" 'git tag -a "$RELEASE_TAG"'
-require_literal "$PROMOTE_WORKFLOW" 'gh workflow run release.yml'
+require_literal "$PROMOTE_WORKFLOW" 'uses: ./.github/workflows/release.yml'
+require_literal "$PROMOTE_WORKFLOW" 'secrets: inherit'
 require_literal "$RELEASE_WORKFLOW" 'bash .github/scripts/test-pretag-release-gate.sh'
 require_literal "$RELEASE_WORKFLOW" 'run: pnpm run test:run'
 require_literal "$RELEASE_WORKFLOW" 'run: pnpm run build'
-if grep -Fq -- "tags:" "$RELEASE_WORKFLOW"; then
-  fail "$RELEASE_WORKFLOW must not publish automatically from manually pushed tags"
+require_literal "$RELEASE_WORKFLOW" 'workflow_call:'
+require_literal "$RELEASE_WORKFLOW" 'ref: ${{ inputs.tag }}'
+if grep -Eq -- '^[[:space:]]+(workflow_dispatch|push):' "$RELEASE_WORKFLOW"; then
+  fail "$RELEASE_WORKFLOW must only be callable through the controlled promotion workflow"
 fi
 
 echo "Pre-tag release gate contract passed"
