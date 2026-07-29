@@ -128,6 +128,8 @@ scripts
 !.github/scripts/validate-release-candidate.sh
 !.github/scripts/test-release-candidate.sh
 !.github/scripts/test-pretag-release-gate.sh
+!.github/scripts/release-promotion-state.sh
+!.github/scripts/test-release-promotion-state.sh
 !backend/scripts/
 !backend/scripts/resolve-version.sh
 .code-review-state

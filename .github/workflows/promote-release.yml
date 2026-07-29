@@ -37,6 +37,7 @@ jobs:
           EXPECTED_SHA: ${{ inputs.main_sha }}
           EXPECTED_VERSION: ${{ inputs.version }}
           RELEASE_TAG_RULESET_ID: ${{ vars.RELEASE_TAG_RULESET_ID }}
+          RELEASE_TAG_CREATION_RULESET_ID: ${{ vars.RELEASE_TAG_CREATION_RULESET_ID }}
         run: |
           [[ "$EXPECTED_SHA" =~ ^[0-9a-f]{40}$ ]] || {
             echo "main_sha must be an exact 40-character lowercase commit SHA" >&2
@@ -47,44 +48,25 @@ jobs:
             exit 1
           }
           [[ "$RELEASE_TAG_RULESET_ID" =~ ^[1-9][0-9]*$ ]] || {
-            echo "RELEASE_TAG_RULESET_ID must identify the controlled release tag ruleset" >&2
+            echo "RELEASE_TAG_RULESET_ID must identify the immutable release tag ruleset" >&2
+            exit 1
+          }
+          [[ "$RELEASE_TAG_CREATION_RULESET_ID" =~ ^[1-9][0-9]*$ ]] || {
+            echo "RELEASE_TAG_CREATION_RULESET_ID must identify the controlled tag creation ruleset" >&2
             exit 1
           }
 
           git fetch origin main --tags
-          ACTUAL_SHA=$(git rev-parse HEAD)
-          REMOTE_MAIN_SHA=$(git rev-parse refs/remotes/origin/main)
           VERSION=$(tr -d '\r\n' < backend/cmd/server/VERSION)
           RELEASE_TAG="v${EXPECTED_VERSION}"
 
-          [[ "$ACTUAL_SHA" == "$EXPECTED_SHA" ]] || {
-            echo "Checkout drifted from audited SHA: $ACTUAL_SHA" >&2
-            exit 1
-          }
-          [[ "$REMOTE_MAIN_SHA" == "$EXPECTED_SHA" ]] || {
-            echo "origin/main moved to $REMOTE_MAIN_SHA; rerun checks and audit that SHA" >&2
-            exit 1
-          }
           [[ "$VERSION" == "$EXPECTED_VERSION" ]] || {
             echo "VERSION contains $VERSION, expected $EXPECTED_VERSION" >&2
             exit 1
           }
-          if git ls-remote --exit-code --tags origin "refs/tags/${RELEASE_TAG}" >/dev/null 2>&1; then
-            git fetch --force origin "refs/tags/${RELEASE_TAG}:refs/tags/${RELEASE_TAG}"
-            TAG_COMMIT=$(git rev-parse --verify "refs/tags/${RELEASE_TAG}^{commit}")
-            git rev-parse --verify "refs/tags/${RELEASE_TAG}^{tag}" >/dev/null || {
-              echo "Existing release tag is not annotated: $RELEASE_TAG" >&2
-              exit 1
-            }
-            [[ "$TAG_COMMIT" == "$EXPECTED_SHA" ]] || {
-              echo "Existing tag $RELEASE_TAG points to $TAG_COMMIT, expected $EXPECTED_SHA" >&2
-              exit 1
-            }
-            echo "tag_exists=true" >> "$GITHUB_OUTPUT"
-            echo "Reusing controlled tag $RELEASE_TAG at $TAG_COMMIT"
-          else
-            echo "tag_exists=false" >> "$GITHUB_OUTPUT"
-          fi
+          TAG_EXISTS=$(bash .github/scripts/release-promotion-state.sh \
+            inspect "$EXPECTED_SHA" "$EXPECTED_VERSION" refs/remotes/origin/main origin)
+          echo "tag_exists=$TAG_EXISTS" >> "$GITHUB_OUTPUT"
           gh release view "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1 && {
             echo "GitHub Release already exists: $RELEASE_TAG" >&2
             exit 1
@@ -118,9 +100,13 @@ jobs:
           verify_workflow release-preflight.yml "Release Preflight"
           bash .github/scripts/validate-release-candidate.sh
           gh api "repos/${GITHUB_REPOSITORY}/rulesets/${RELEASE_TAG_RULESET_ID}" \
-            > "$RUNNER_TEMP/release-tag-ruleset.json"
+            > "$RUNNER_TEMP/release-tag-immutable-ruleset.json"
+          gh api "repos/${GITHUB_REPOSITORY}/rulesets/${RELEASE_TAG_CREATION_RULESET_ID}" \
+            > "$RUNNER_TEMP/release-tag-creation-ruleset.json"
           bash .github/scripts/release-safety.sh \
-            verify-ruleset-json "$RUNNER_TEMP/release-tag-ruleset.json"
+            verify-rulesets-json \
+            "$RUNNER_TEMP/release-tag-immutable-ruleset.json" \
+            "$RUNNER_TEMP/release-tag-creation-ruleset.json"
 
       - name: Create immutable annotated tag
         if: steps.verify.outputs.tag_exists != 'true'
@@ -131,11 +117,8 @@ jobs:
         run: |
           RELEASE_TAG="v${EXPECTED_VERSION}"
           git fetch origin main
-          REMOTE_MAIN_SHA=$(git rev-parse refs/remotes/origin/main)
-          [[ "$REMOTE_MAIN_SHA" == "$EXPECTED_SHA" ]] || {
-            echo "origin/main moved to $REMOTE_MAIN_SHA before tag creation; rerun checks and audit" >&2
-            exit 1
-          }
+          bash .github/scripts/release-promotion-state.sh \
+            require-current-main "$EXPECTED_SHA" refs/remotes/origin/main
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git tag -a "$RELEASE_TAG" -m "TokenSupply $RELEASE_TAG"

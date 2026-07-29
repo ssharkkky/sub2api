@@ -46,15 +46,22 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           RELEASE_TAG: ${{ inputs.tag }}
           RELEASE_TAG_RULESET_ID: ${{ vars.RELEASE_TAG_RULESET_ID }}
+          RELEASE_TAG_CREATION_RULESET_ID: ${{ vars.RELEASE_TAG_CREATION_RULESET_ID }}
         run: |
           bash .github/scripts/release-safety.sh fetch origin main
           if [[ ! "$RELEASE_TAG_RULESET_ID" =~ ^[1-9][0-9]*$ ]]; then
             echo "RELEASE_TAG_RULESET_ID must identify the immutable fork-release tag ruleset" >&2
             exit 1
           fi
-          gh api "repos/${GITHUB_REPOSITORY}/rulesets/${RELEASE_TAG_RULESET_ID}" > "$RUNNER_TEMP/release-tag-ruleset.json"
-          bash .github/scripts/release-safety.sh verify-ruleset-json \
-            "$RUNNER_TEMP/release-tag-ruleset.json"
+          if [[ ! "$RELEASE_TAG_CREATION_RULESET_ID" =~ ^[1-9][0-9]*$ ]]; then
+            echo "RELEASE_TAG_CREATION_RULESET_ID must identify the controlled tag creation ruleset" >&2
+            exit 1
+          fi
+          gh api "repos/${GITHUB_REPOSITORY}/rulesets/${RELEASE_TAG_RULESET_ID}" > "$RUNNER_TEMP/release-tag-immutable-ruleset.json"
+          gh api "repos/${GITHUB_REPOSITORY}/rulesets/${RELEASE_TAG_CREATION_RULESET_ID}" > "$RUNNER_TEMP/release-tag-creation-ruleset.json"
+          bash .github/scripts/release-safety.sh verify-rulesets-json \
+            "$RUNNER_TEMP/release-tag-immutable-ruleset.json" \
+            "$RUNNER_TEMP/release-tag-creation-ruleset.json"
           gh api --paginate --slurp "repos/${GITHUB_REPOSITORY}/releases?per_page=100" > "$RUNNER_TEMP/releases.json"
           bash .github/scripts/release-safety.sh assert-unpublished-json "$RELEASE_TAG" "$RUNNER_TEMP/releases.json"
           PREVIOUS_RELEASE_TAG=$(bash .github/scripts/release-safety.sh previous-release-json \
@@ -315,6 +322,7 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           RELEASE_TAG: ${{ inputs.tag }}
           RELEASE_TAG_RULESET_ID: ${{ vars.RELEASE_TAG_RULESET_ID }}
+          RELEASE_TAG_CREATION_RULESET_ID: ${{ vars.RELEASE_TAG_CREATION_RULESET_ID }}
           VALIDATED_RELEASE_COMMIT: ${{ needs.release-gate.outputs.release_commit }}
           VALIDATED_RELEASE_TAG_OBJECT: ${{ needs.release-gate.outputs.release_tag_object }}
           VALIDATED_PREVIOUS_RELEASE_TAG: ${{ needs.release-gate.outputs.previous_release_tag }}
@@ -323,9 +331,11 @@ jobs:
           GHCR_OWNER: ${{ steps.lowercase.outputs.owner }}
         run: |
           bash .github/scripts/release-safety.sh fetch origin main
-          gh api "repos/${GITHUB_REPOSITORY}/rulesets/${RELEASE_TAG_RULESET_ID}" > "$RUNNER_TEMP/release-tag-ruleset-final.json"
-          bash .github/scripts/release-safety.sh verify-ruleset-json \
-            "$RUNNER_TEMP/release-tag-ruleset-final.json"
+          gh api "repos/${GITHUB_REPOSITORY}/rulesets/${RELEASE_TAG_RULESET_ID}" > "$RUNNER_TEMP/release-tag-immutable-ruleset-final.json"
+          gh api "repos/${GITHUB_REPOSITORY}/rulesets/${RELEASE_TAG_CREATION_RULESET_ID}" > "$RUNNER_TEMP/release-tag-creation-ruleset-final.json"
+          bash .github/scripts/release-safety.sh verify-rulesets-json \
+            "$RUNNER_TEMP/release-tag-immutable-ruleset-final.json" \
+            "$RUNNER_TEMP/release-tag-creation-ruleset-final.json"
           gh api --paginate --slurp "repos/${GITHUB_REPOSITORY}/releases?per_page=100" > "$RUNNER_TEMP/releases-final.json"
           bash .github/scripts/release-safety.sh assert-unpublished-json "$RELEASE_TAG" "$RUNNER_TEMP/releases-final.json"
           CURRENT_PREVIOUS_RELEASE_TAG=$(bash .github/scripts/release-safety.sh previous-release-json \
