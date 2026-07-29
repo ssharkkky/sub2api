@@ -74,7 +74,7 @@
         </div>
 
         <div
-          v-else-if="enabled && credentials.length === 0"
+          v-else-if="credentials.length === 0"
           class="rounded-lg border border-dashed border-gray-200 px-4 py-8 text-center text-sm text-gray-500 dark:border-dark-700 dark:text-gray-400"
         >
           {{ t('profile.passkey.empty') }}
@@ -177,7 +177,7 @@
 </template>
 
 <script setup lang="ts">
-import { ref, watch } from 'vue'
+import { onBeforeUnmount, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { passkeyAPI, type PasskeyCredentialSummary } from '@/api'
 import { Icon } from '@/components/icons'
@@ -207,19 +207,15 @@ function extractErrorMessage(error: unknown, fallback: string): string {
 
 async function loadCredentials(): Promise<void> {
   const requestId = ++loadRequestId
-  if (!props.enabled) {
-    credentials.value = []
-    loading.value = false
-    return
-  }
+  // The setting controls sign-in and enrollment, not management of existing credentials.
   loading.value = true
   try {
     const result = await passkeyAPI.list()
-    if (requestId === loadRequestId && props.enabled) {
+    if (requestId === loadRequestId) {
       credentials.value = result
     }
   } catch (error) {
-    if (requestId !== loadRequestId || !props.enabled) return
+    if (requestId !== loadRequestId) return
     // 字符串错误码在 reason 字段（code 是数字状态码）；
     // 设置变更竞态下后端仍可能返回 PASSKEY_DISABLED，静默处理
     const reason = (error as { reason?: string }).reason
@@ -313,4 +309,8 @@ watch(
   },
   { immediate: true }
 )
+
+onBeforeUnmount(() => {
+  loadRequestId++
+})
 </script>
