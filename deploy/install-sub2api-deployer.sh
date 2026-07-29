@@ -392,10 +392,12 @@ rollback_install() {
     else
       systemctl disable sub2api-deployer.service >/dev/null 2>&1 || failed=1
     fi
-    if (( UPGRADE_TIMER_WAS_ENABLED == 1 )); then
-      systemctl enable sub2api-deployer-upgrade.timer >/dev/null 2>&1 || failed=1
-    else
-      systemctl disable sub2api-deployer-upgrade.timer >/dev/null 2>&1 || failed=1
+    if (( UPGRADE_TIMER_EXISTED == 1 )); then
+      if (( UPGRADE_TIMER_WAS_ENABLED == 1 )); then
+        systemctl enable sub2api-deployer-upgrade.timer >/dev/null 2>&1 || failed=1
+      else
+        systemctl disable sub2api-deployer-upgrade.timer >/dev/null 2>&1 || failed=1
+      fi
     fi
     release_state_lock
     if (( SERVICE_WAS_ACTIVE == 1 )); then
@@ -406,10 +408,12 @@ rollback_install() {
     else
       systemctl stop sub2api-deployer.service >/dev/null 2>&1 || failed=1
     fi
-    if (( UPGRADE_TIMER_WAS_ACTIVE == 1 )); then
-      systemctl start sub2api-deployer-upgrade.timer >/dev/null 2>&1 || failed=1
-    else
-      systemctl stop sub2api-deployer-upgrade.timer >/dev/null 2>&1 || failed=1
+    if (( UPGRADE_TIMER_EXISTED == 1 )); then
+      if (( UPGRADE_TIMER_WAS_ACTIVE == 1 )); then
+        systemctl start sub2api-deployer-upgrade.timer >/dev/null 2>&1 || failed=1
+      else
+        systemctl stop sub2api-deployer-upgrade.timer >/dev/null 2>&1 || failed=1
+      fi
     fi
   else
     echo "CRITICAL: deployer remains stopped because its prior installation was not fully restored" >&2
