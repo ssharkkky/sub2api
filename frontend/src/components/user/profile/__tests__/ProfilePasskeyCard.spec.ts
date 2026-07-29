@@ -40,7 +40,7 @@ describe('ProfilePasskeyCard', () => {
   })
 
   it('does not request credentials while passkeys are disabled', async () => {
-    mount(ProfilePasskeyCard, {
+    const wrapper = mount(ProfilePasskeyCard, {
       props: { enabled: false },
       global: { stubs: { Icon: true } }
     })
@@ -49,6 +49,8 @@ describe('ProfilePasskeyCard', () => {
 
     expect(listMock).not.toHaveBeenCalled()
     expect(showErrorMock).not.toHaveBeenCalled()
+    expect(wrapper.text()).toContain('profile.passkey.featureDisabled')
+    expect(wrapper.text()).not.toContain('profile.passkey.empty')
   })
 
   it('silences PASSKEY_DISABLED returned during a settings race', async () => {
@@ -77,5 +79,25 @@ describe('ProfilePasskeyCard', () => {
 
     expect(showErrorMock).toHaveBeenCalledOnce()
     expect(showErrorMock).toHaveBeenCalledWith('profile.passkey.loadFailed')
+  })
+
+  it('discards a credential response after passkeys are disabled', async () => {
+    let resolveList!: (value: Array<{ id: number; name: string }>) => void
+    listMock.mockReturnValue(new Promise((resolve) => {
+      resolveList = resolve
+    }))
+    const wrapper = mount(ProfilePasskeyCard, {
+      props: { enabled: true },
+      global: { stubs: { Icon: true } }
+    })
+    await flushPromises()
+
+    await wrapper.setProps({ enabled: false })
+    resolveList([{ id: 1, name: 'stale credential' }])
+    await flushPromises()
+
+    expect(wrapper.text()).toContain('profile.passkey.featureDisabled')
+    expect(wrapper.text()).not.toContain('stale credential')
+    expect(showErrorMock).not.toHaveBeenCalled()
   })
 })

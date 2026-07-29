@@ -74,7 +74,7 @@
         </div>
 
         <div
-          v-else-if="credentials.length === 0"
+          v-else-if="enabled && credentials.length === 0"
           class="rounded-lg border border-dashed border-gray-200 px-4 py-8 text-center text-sm text-gray-500 dark:border-dark-700 dark:text-gray-400"
         >
           {{ t('profile.passkey.empty') }}
@@ -196,6 +196,7 @@ const newPassword = ref('')
 const deleteTarget = ref<PasskeyCredentialSummary | null>(null)
 const deletePassword = ref('')
 const credentials = ref<PasskeyCredentialSummary[]>([])
+let loadRequestId = 0
 
 // apiClient 拦截器把错误规范化为 { code, reason, message }；
 // 透出后端消息（如密码错误），否则回退到通用文案。
@@ -205,14 +206,20 @@ function extractErrorMessage(error: unknown, fallback: string): string {
 }
 
 async function loadCredentials(): Promise<void> {
+  const requestId = ++loadRequestId
   if (!props.enabled) {
     credentials.value = []
+    loading.value = false
     return
   }
   loading.value = true
   try {
-    credentials.value = await passkeyAPI.list()
+    const result = await passkeyAPI.list()
+    if (requestId === loadRequestId && props.enabled) {
+      credentials.value = result
+    }
   } catch (error) {
+    if (requestId !== loadRequestId || !props.enabled) return
     // 字符串错误码在 reason 字段（code 是数字状态码）；
     // 设置变更竞态下后端仍可能返回 PASSKEY_DISABLED，静默处理
     const reason = (error as { reason?: string }).reason
@@ -220,7 +227,9 @@ async function loadCredentials(): Promise<void> {
       appStore.showError(t('profile.passkey.loadFailed'))
     }
   } finally {
-    loading.value = false
+    if (requestId === loadRequestId) {
+      loading.value = false
+    }
   }
 }
 
