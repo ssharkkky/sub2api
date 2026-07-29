@@ -35,6 +35,7 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           EXPECTED_SHA: ${{ inputs.main_sha }}
           EXPECTED_VERSION: ${{ inputs.version }}
+          RELEASE_TAG_RULESET_ID: ${{ vars.RELEASE_TAG_RULESET_ID }}
         run: |
           [[ "$EXPECTED_SHA" =~ ^[0-9a-f]{40}$ ]] || {
             echo "main_sha must be an exact 40-character lowercase commit SHA" >&2
@@ -42,6 +43,10 @@ jobs:
           }
           [[ "$EXPECTED_VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+-ts\.[1-9][0-9]*$ ]] || {
             echo "version must use X.Y.Z-ts.N with N >= 1" >&2
+            exit 1
+          }
+          [[ "$RELEASE_TAG_RULESET_ID" =~ ^[1-9][0-9]*$ ]] || {
+            echo "RELEASE_TAG_RULESET_ID must identify the controlled release tag ruleset" >&2
             exit 1
           }
 
@@ -99,6 +104,10 @@ jobs:
           verify_workflow backend-ci.yml "Backend CI"
           verify_workflow release-preflight.yml "Release Preflight"
           bash .github/scripts/validate-release-candidate.sh
+          gh api "repos/${GITHUB_REPOSITORY}/rulesets/${RELEASE_TAG_RULESET_ID}" \
+            > "$RUNNER_TEMP/release-tag-ruleset.json"
+          bash .github/scripts/release-safety.sh \
+            verify-ruleset-json "$RUNNER_TEMP/release-tag-ruleset.json"
 
       - name: Create immutable annotated tag
         env:
