@@ -326,6 +326,33 @@ expect_failure 'already exists' env PATH="$FAKE_BIN:$PATH" bash "$SAFETY_SCRIPT"
 expect_failure 'Could not prove' env PATH="$FAKE_BIN:$PATH" bash "$SAFETY_SCRIPT" \
   assert-image-absent ghcr.io/example/sub2api:network-error
 
+MATCHING_IMAGE_DIGEST="sha256:$(printf 'd%.0s' {1..64})"
+printf '%s\n' \
+  '#!/usr/bin/env bash' \
+  'case "${*: -1}" in' \
+  '  *:matching) printf '\''{"manifest":{"digest":"%s"}}\n'\'' "$MATCHING_IMAGE_DIGEST"; exit 0 ;;' \
+  '  *:mismatch) printf '\''{"manifest":{"digest":"sha256:%064d"}}\n'\'' 0; exit 0 ;;' \
+  '  *:missing) echo "manifest unknown" >&2; exit 1 ;;' \
+  '  *:network-error) echo "registry timeout" >&2; exit 1 ;;' \
+  'esac' \
+  'exit 1' > "$FAKE_BIN/docker"
+chmod +x "$FAKE_BIN/docker"
+env PATH="$FAKE_BIN:$PATH" MATCHING_IMAGE_DIGEST="$MATCHING_IMAGE_DIGEST" \
+  bash "$SAFETY_SCRIPT" assert-image-digest-matches \
+  ghcr.io/example/sub2api:matching "$MATCHING_IMAGE_DIGEST"
+expect_failure 'does not match the recorded candidate digest' env PATH="$FAKE_BIN:$PATH" \
+  MATCHING_IMAGE_DIGEST="$MATCHING_IMAGE_DIGEST" bash "$SAFETY_SCRIPT" \
+  assert-image-digest-matches ghcr.io/example/sub2api:mismatch "$MATCHING_IMAGE_DIGEST"
+expect_failure 'is missing' env PATH="$FAKE_BIN:$PATH" \
+  MATCHING_IMAGE_DIGEST="$MATCHING_IMAGE_DIGEST" bash "$SAFETY_SCRIPT" \
+  assert-image-digest-matches ghcr.io/example/sub2api:missing "$MATCHING_IMAGE_DIGEST"
+expect_failure 'Could not inspect image tag' env PATH="$FAKE_BIN:$PATH" \
+  MATCHING_IMAGE_DIGEST="$MATCHING_IMAGE_DIGEST" bash "$SAFETY_SCRIPT" \
+  assert-image-digest-matches ghcr.io/example/sub2api:network-error "$MATCHING_IMAGE_DIGEST"
+expect_failure 'Invalid expected image digest' env PATH="$FAKE_BIN:$PATH" \
+  MATCHING_IMAGE_DIGEST="$MATCHING_IMAGE_DIGEST" bash "$SAFETY_SCRIPT" \
+  assert-image-digest-matches ghcr.io/example/sub2api:matching invalid
+
 PROMOTION_MANIFEST="$TEST_ROOT/promotion-manifest.json"
 PROMOTION_LOG="$TEST_ROOT/promotion.log"
 PROMOTION_DIGEST="sha256:$(printf 'c%.0s' {1..64})"

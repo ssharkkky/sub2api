@@ -10,6 +10,7 @@ EXAMPLE="$REPO_ROOT/deploy/sub2api-deployer.example.json"
 TMPFILES="$REPO_ROOT/deploy/sub2api-deployer-tmpfiles.conf"
 INSTALLER="$REPO_ROOT/deploy/install-sub2api-deployer.sh"
 PACKAGER="$REPO_ROOT/deploy/package-sub2api-deployer-bundles.sh"
+CONTROL_PLANE_PREPARER="$REPO_ROOT/deploy/prepare-control-plane-artifacts.sh"
 BUNDLE_README="$REPO_ROOT/deploy/DEPLOYER_BUNDLE_README.md"
 UPGRADE_HELPER="$REPO_ROOT/deploy/sub2api-deployer-upgrade.sh"
 RELEASE_WORKFLOW="$REPO_ROOT/.github/workflows/release.yml"
@@ -21,6 +22,7 @@ GORELEASER_DOCKERFILE="$REPO_ROOT/Dockerfile.goreleaser"
 
 bash -n "$INSTALLER"
 bash -n "$PACKAGER"
+bash -n "$CONTROL_PLANE_PREPARER"
 bash -n "$UPGRADE_HELPER"
 bash -n "$REPO_ROOT/deploy/tests/sub2api-deployer-upgrade-test.sh"
 
@@ -69,6 +71,12 @@ grep -Fq 'package-sub2api-deployer-bundles.sh ../deployer-dist' "$RELEASE_WORKFL
 grep -Fq 'control_plane_upgrade_ready == true' "$BUNDLE_README"
 grep -Fq '.active_container_id == $id' "$UPGRADE_HELPER"
 grep -Fq 'write_status failed' "$UPGRADE_HELPER"
+grep -Fq 'sub2api-deployer-upgrade.timer' "$INSTALLER"
+grep -Fq 'systemctl enable --now sub2api-deployer-upgrade.timer' "$INSTALLER"
+if grep -Eq '(^|[[:space:]])docker([[:space:]]|$)' "$UPGRADE_HELPER"; then
+  echo "stable activator must not call Docker" >&2
+  exit 1
+fi
 grep -Fq 'release-safety.sh previous-release-json \' "$RELEASE_WORKFLOW"
 grep -Fq 'release-safety.sh validate "$RELEASE_TAG" "$PREVIOUS_RELEASE_TAG" refs/remotes/origin/main' "$RELEASE_WORKFLOW"
 grep -Fq 'release_commit: ${{ steps.release_ref.outputs.commit }}' "$RELEASE_WORKFLOW"
@@ -128,6 +136,15 @@ if [[ $(grep -Fc 'ARG TARGETPLATFORM' "$GORELEASER_DOCKERFILE") -ne 2 ]]; then
   echo "GoReleaser Dockerfile must redeclare TARGETPLATFORM in the final stage" >&2
   exit 1
 fi
+grep -Fq 'id: sub2api-deployer' "$GORELEASER_CONFIG"
+grep -Fq "mod_timestamp: '{{ .CommitTimestamp }}'" "$GORELEASER_CONFIG"
+grep -Fq 'io.tokensupply.sub2api.control-plane-protocol: "1"' "$GORELEASER_CONFIG"
+grep -Fq 'io.tokensupply.sub2api.control-plane-manifest-sha256:' "$GORELEASER_CONFIG"
+grep -Fq 'COPY ${TARGETPLATFORM}/sub2api-deployer /opt/sub2api-control-plane/sub2api-deployer' "$GORELEASER_DOCKERFILE"
+if grep -Fq './cmd/deployer' "$REPO_ROOT/Dockerfile"; then
+  echo "the non-release Dockerfile must not maintain a second deployer build path" >&2
+  exit 1
+fi
 if grep -Eq '^      - (latest|"\{\{ \.Major)' "$GORELEASER_CONFIG"; then
   echo "GoReleaser must not publish mutable image tags before completion verification" >&2
   exit 1
@@ -180,8 +197,41 @@ fi
 "$REPO_ROOT/deploy/tests/install-sub2api-deployer-test.sh"
 "$REPO_ROOT/deploy/tests/sub2api-deployer-upgrade-test.sh"
 
+artifact_test_dir=$(mktemp -d "${TMPDIR:-/tmp}/sub2api-control-plane-artifacts.XXXXXX")
+for arch in amd64 arm64; do
+  printf '#!/usr/bin/env bash\n# %s\nexit 0\n' "$arch" > "$artifact_test_dir/deployer-$arch"
+  chmod 0755 "$artifact_test_dir/deployer-$arch"
+done
+jq -n \
+  --arg amd64 "$artifact_test_dir/deployer-amd64" \
+  --arg arm64 "$artifact_test_dir/deployer-arm64" '
+  [
+    {type:"Binary", name:"sub2api-deployer", goos:"linux", goarch:"amd64", path:$amd64, extra:{ID:"sub2api-deployer"}},
+    {type:"Binary", name:"sub2api-deployer", goos:"linux", goarch:"arm64", path:$arm64, extra:{ID:"sub2api-deployer"}}
+  ]' > "$artifact_test_dir/artifacts.json"
+CONTROL_MANIFEST_SHA=$(
+  "$CONTROL_PLANE_PREPARER" \
+    "$artifact_test_dir/artifacts.json" \
+    "$artifact_test_dir/dist" \
+    "$artifact_test_dir/CONTROL-PLANE-MANIFEST.json" \
+    "0.1.168-ts.1" \
+    "$(printf 'd%.0s' {1..40})"
+)
+[[ "$CONTROL_MANIFEST_SHA" =~ ^sha256:[0-9a-f]{64}$ ]]
+for arch in amd64 arm64; do
+  cmp -s "$artifact_test_dir/deployer-$arch" "$artifact_test_dir/dist/sub2api-deployer-linux-$arch"
+  jq -e \
+    --arg arch "linux/$arch" \
+    --arg sha "sha256:$(sha256sum "$artifact_test_dir/deployer-$arch" | awk '{print $1}')" '
+      .schema == 1
+      and .version == "0.1.168-ts.1"
+      and .runtime_payload[$arch].path == "/opt/sub2api-control-plane/sub2api-deployer"
+      and .runtime_payload[$arch].sha256 == $sha
+    ' "$artifact_test_dir/CONTROL-PLANE-MANIFEST.json" >/dev/null
+done
+
 bundle_test_dir=$(mktemp -d "${TMPDIR:-/tmp}/sub2api-bundle-test.XXXXXX")
-trap 'rm -rf -- "$bundle_test_dir"' EXIT
+trap 'rm -rf -- "$artifact_test_dir" "$bundle_test_dir"' EXIT
 for arch in amd64 arm64; do
   printf '#!/usr/bin/env bash\nexit 0\n' > "$bundle_test_dir/sub2api-deployer-linux-$arch"
   chmod +x "$bundle_test_dir/sub2api-deployer-linux-$arch"

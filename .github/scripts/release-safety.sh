@@ -328,6 +328,19 @@ assert_image_absent() {
   esac
 }
 
+assert_image_digest_matches() {
+  local image_ref="$1"
+  local expected_digest="$2"
+  local actual_digest
+
+  [[ "$expected_digest" =~ ^sha256:[0-9a-f]{64}$ ]] || fail "Invalid expected image digest: $expected_digest"
+  actual_digest=$(image_tag_digest_or_missing "$image_ref")
+  [[ "$actual_digest" != missing ]] || \
+    fail "Container image $image_ref is missing; it cannot be reused as the recorded candidate"
+  [[ "$actual_digest" == "$expected_digest" ]] || \
+    fail "Container image $image_ref does not match the recorded candidate digest (expected $expected_digest, got $actual_digest)"
+}
+
 promote_image_tags() {
   local immutable_image="$1"
   local expected_digest="$2"
@@ -638,6 +651,7 @@ Usage:
   release-safety.sh verify-completion-deployer-checksums <completion-json> <deployer-checksums>
   release-safety.sh goreleaser-image-digest <artifacts-json> <image-ref>
   release-safety.sh assert-image-absent <image-ref>
+  release-safety.sh assert-image-digest-matches <image-ref> <sha256-digest>
   release-safety.sh promote-image-tags <immutable-image@digest> <digest> <target-tag> [<target-tag>...]
   release-safety.sh image-tag-digest-or-missing <image-tag>
   release-safety.sh publish-release-with-latest <release-tag> <ghcr-repository> <ghcr-digest> <previous-ghcr-digest> [<dockerhub-repository> <dockerhub-digest> <previous-dockerhub-digest>]
@@ -690,6 +704,10 @@ case "${1:-}" in
   assert-image-absent)
     [[ $# -eq 2 ]] || usage
     assert_image_absent "$2"
+    ;;
+  assert-image-digest-matches)
+    [[ $# -eq 3 ]] || usage
+    assert_image_digest_matches "$2" "$3"
     ;;
   promote-image-tags)
     [[ $# -ge 4 ]] || usage
