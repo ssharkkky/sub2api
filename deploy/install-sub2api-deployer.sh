@@ -31,6 +31,7 @@ SERVICE_WAS_ENABLED=0
 SERVICE_WAS_ACTIVE=0
 UPGRADE_TIMER_WAS_ENABLED=0
 UPGRADE_TIMER_WAS_ACTIVE=0
+UPGRADE_TIMER_EXISTED=0
 
 CONFIG_DIR="/etc/sub2api-deployer"
 CONFIG_FILE="$CONFIG_DIR/config.json"
@@ -342,12 +343,18 @@ rollback_install() {
   (( ROLLBACK_RUNNING == 1 )) && return
   ROLLBACK_RUNNING=1
   set +e
-  local failed=0 files_restored=1 metadata_restored=1 daemon_reloaded=1 nginx_restored=1
+  local failed=0 files_restored=1 metadata_restored=1 daemon_reloaded=1 nginx_restored=1 timer_must_stop=0
   echo "Installation failed; restoring the previous deployer and Nginx state..." >&2
+  if (( UPGRADE_TIMER_EXISTED == 1 || UPGRADE_TIMER_WAS_ENABLED == 1 || UPGRADE_TIMER_WAS_ACTIVE == 1 )) || \
+    systemctl is-active --quiet sub2api-deployer-upgrade.timer >/dev/null 2>&1; then
+    timer_must_stop=1
+  fi
   if ! systemctl stop sub2api-deployer-upgrade.timer >/dev/null 2>&1; then
-    echo "CRITICAL: failed to stop the control-plane upgrade timer before restoration" >&2
-    ROLLBACK_INCOMPLETE=1
-    return 0
+    if (( timer_must_stop == 1 )); then
+      echo "CRITICAL: failed to stop the control-plane upgrade timer before restoration" >&2
+      ROLLBACK_INCOMPLETE=1
+      return 0
+    fi
   fi
   if ! prove_deployer_stopped_for_restore; then
     ROLLBACK_INCOMPLETE=1
@@ -688,6 +695,9 @@ if systemctl is-enabled --quiet sub2api-deployer-upgrade.timer >/dev/null 2>&1; 
 fi
 if systemctl is-active --quiet sub2api-deployer-upgrade.timer >/dev/null 2>&1; then
   UPGRADE_TIMER_WAS_ACTIVE=1
+fi
+if [[ -e "$UPGRADE_TIMER_FILE" ]]; then
+  UPGRADE_TIMER_EXISTED=1
 fi
 
 TEMP_DIR=$(mktemp -d /tmp/sub2api-deployer-install.XXXXXX)

@@ -133,6 +133,9 @@ case "$command_name" in
     if [[ "${FAKE_FAIL_ROLLBACK_STOP:-0}" == 1 && "$unit" == "sub2api-deployer.service" && -f "$FAKE_CONTROL_DIR/restart-failed" ]]; then
       exit 1
     fi
+    if [[ "${FAKE_FAIL_MISSING_TIMER_STOP:-0}" == 1 && "$unit" == "sub2api-deployer-upgrade.timer" && ! -f "$enabled_state" && ! -f "$active_state" ]]; then
+      exit 5
+    fi
     rm -f -- "$active_state"
     ;;
   start)
@@ -384,7 +387,7 @@ FIRST_ROOT="$TEST_DIR/first-failure"
 make_root "$FIRST_ROOT"
 make_deployer_binary "$FIRST_ROOT/deployer-v1" v1
 cp -- "$FIRST_ROOT/nginx/site.conf" "$FIRST_ROOT/original-site.conf"
-if FAKE_FAIL_NGINX_RELOAD_ONCE=1 run_installer "$FIRST_ROOT" "$FIRST_ROOT/deployer-v1" >"$FIRST_ROOT/output.log" 2>&1; then
+if FAKE_FAIL_MISSING_TIMER_STOP=1 FAKE_FAIL_NGINX_RELOAD_ONCE=1 run_installer "$FIRST_ROOT" "$FIRST_ROOT/deployer-v1" >"$FIRST_ROOT/output.log" 2>&1; then
   echo "first-install Nginx reload failure unexpectedly succeeded" >&2
   exit 1
 fi
