@@ -276,6 +276,8 @@ type releaseCompletionLedger struct {
 	DockerHubImageDigest    *string           `json:"dockerhub_image_digest"`
 	DockerHubImmutableImage *string           `json:"dockerhub_immutable_image"`
 	Architectures           []string          `json:"architectures"`
+	ControlPlaneManifestSHA string            `json:"control_plane_manifest_sha256"`
+	CandidateManifestSHA    string            `json:"candidate_manifest_sha256"`
 	DeployerChecksumsSHA256 string            `json:"deployer_checksums_sha256"`
 	DeployerAssets          map[string]string `json:"deployer_assets"`
 }
@@ -323,6 +325,8 @@ func (s *UpdateService) verifiedReleaseDigest(ctx context.Context, info *UpdateI
 		ledger.ImmutableImage != ledger.Image+"@"+ledger.ImageDigest ||
 		!releaseObjectPattern.MatchString(ledger.Commit) ||
 		!releaseObjectPattern.MatchString(ledger.TagObject) ||
+		!releaseDigestPattern.MatchString(ledger.ControlPlaneManifestSHA) ||
+		!releaseDigestPattern.MatchString(ledger.CandidateManifestSHA) ||
 		!releaseDigestPattern.MatchString(ledger.DeployerChecksumsSHA256) {
 		return "", errors.New("completion ledger identity is invalid")
 	}

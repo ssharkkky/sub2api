@@ -2,6 +2,12 @@ version: 2
 
 project_name: sub2api
 
+# Pre-tag Build Once uses snapshot mode because GoReleaser otherwise requires
+# the selected current tag to exist at HEAD. The validated release version is
+# injected explicitly, so snapshot artifacts carry their final identity.
+snapshot:
+  version_template: '{{ .Env.RELEASE_VERSION }}'
+
 builds:
   - id: sub2api
     dir: backend

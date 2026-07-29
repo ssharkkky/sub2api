@@ -2,15 +2,13 @@ name: Release Preflight
 
 on:
   pull_request:
-    branches:
-      - main
+    branches: [main]
   push:
-    branches:
-      - main
+    branches: [main]
 
 concurrency:
-  group: release-preflight-${{ github.event.pull_request.number || github.ref }}
-  cancel-in-progress: true
+  group: release-candidate-${{ github.event.pull_request.head.sha || github.sha }}
+  cancel-in-progress: false
 
 permissions:
   contents: read
@@ -25,6 +23,7 @@ jobs:
     runs-on: ubuntu-latest
     outputs:
       required: ${{ steps.candidate.outputs.required }}
+      version: ${{ steps.candidate.outputs.version }}
     steps:
       - uses: actions/checkout@v6
         with:
@@ -35,6 +34,7 @@ jobs:
         id: candidate
         run: |
           VERSION=$(tr -d '\r\n' < backend/cmd/server/VERSION)
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
           if [[ ! "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+-ts\.[1-9][0-9]*$ ]]; then
             echo "required=false" >> "$GITHUB_OUTPUT"
             echo "Upstream baseline $VERSION does not require fork release preflight"
@@ -65,8 +65,7 @@ jobs:
 
       - name: Validate candidate, migrations, and repository contracts
         run: |
-          VERSION=$(cat backend/cmd/server/VERSION)
-          RELEASE_TAG="v${VERSION}"
+          RELEASE_TAG="v${{ needs.candidate.outputs.version }}"
           bash .github/scripts/validate-release-candidate.sh
           backend/scripts/check-release-migrations-history.sh \
             "$MIGRATION_BASELINE_COMMIT" \
@@ -77,20 +76,13 @@ jobs:
           bash .github/scripts/test-release-safety.sh
           backend/scripts/check-release-migrations-test.sh
           deploy/tests/managed-update-assets-test.sh
+          deploy/tests/release-candidate-test.sh
 
       - name: Verify Go module graph is already tidy
         working-directory: backend
         run: |
           go mod tidy
           git diff --exit-code -- go.mod go.sum
-
-      - name: Build deployer binaries and self-contained bundles
-        working-directory: backend
-        run: |
-          mkdir -p "$RUNNER_TEMP/deployer-dist"
-          CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -trimpath -ldflags='-s -w' -o "$RUNNER_TEMP/deployer-dist/sub2api-deployer-linux-amd64" ./cmd/deployer
-          CGO_ENABLED=0 GOOS=linux GOARCH=arm64 go build -trimpath -ldflags='-s -w' -o "$RUNNER_TEMP/deployer-dist/sub2api-deployer-linux-arm64" ./cmd/deployer
-          ../deploy/package-sub2api-deployer-bundles.sh "$RUNNER_TEMP/deployer-dist"
 
   frontend-release:
     name: Frontend Release Suite
@@ -102,16 +94,14 @@ jobs:
         with:
           ref: ${{ env.TARGET_SHA }}
 
-      - name: Setup pnpm
-        uses: pnpm/action-setup@v6
+      - uses: pnpm/action-setup@v6
         with:
           version: 9
 
-      - name: Setup Node.js
-        uses: actions/setup-node@v6
+      - uses: actions/setup-node@v6
         with:
           node-version: '20'
-          cache: 'pnpm'
+          cache: pnpm
           cache-dependency-path: frontend/pnpm-lock.yaml
 
       - name: Install frontend dependencies
@@ -121,34 +111,208 @@ jobs:
       - name: Full frontend release preflight
         run: make test-frontend-release
 
+      - name: Upload exact frontend build
+        if: github.event_name == 'push'
+        uses: actions/upload-artifact@v7
+        with:
+          name: frontend-dist-${{ env.TARGET_SHA }}
+          path: backend/internal/web/dist/
+          if-no-files-found: error
+          retention-days: 30
+
+  build-candidate:
+    name: Build Once Candidate
+    needs: [candidate, release-contracts, frontend-release]
+    if: github.event_name == 'push' && needs.candidate.outputs.required == 'true'
+    runs-on: ubuntu-latest
+    permissions:
+      actions: read
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+          ref: ${{ env.TARGET_SHA }}
+
+      - name: Set candidate identity
+        id: identity
+        env:
+          VERSION: ${{ needs.candidate.outputs.version }}
+          REPOSITORY_OWNER: ${{ github.repository_owner }}
+          REPOSITORY_NAME: ${{ github.event.repository.name }}
+        run: |
+          OWNER=$(printf '%s' "$REPOSITORY_OWNER" | tr '[:upper:]' '[:lower:]')
+          IMAGE_REPOSITORY="ghcr.io/${OWNER}/${REPOSITORY_NAME}"
+          echo "image_repository=$IMAGE_REPOSITORY" >> "$GITHUB_OUTPUT"
+          echo "owner_lower=$OWNER" >> "$GITHUB_OUTPUT"
+          echo "candidate_image=${IMAGE_REPOSITORY}:candidate-${TARGET_SHA}" >> "$GITHUB_OUTPUT"
+          echo "artifact_name=release-candidate-${TARGET_SHA}" >> "$GITHUB_OUTPUT"
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+
+      - name: Reuse an already verified candidate for this commit
+        id: reuse
+        env:
+          GH_TOKEN: ${{ github.token }}
+          ARTIFACT_NAME: ${{ steps.identity.outputs.artifact_name }}
+          CANDIDATE_IMAGE: ${{ steps.identity.outputs.candidate_image }}
+          VERSION: ${{ steps.identity.outputs.version }}
+        run: |
+          mkdir -p "$RUNNER_TEMP/candidate"
+          REUSE_RUN_ID=""
+          mapfile -t RUN_IDS < <(gh api --method GET \
+            "repos/${GITHUB_REPOSITORY}/actions/workflows/release-preflight.yml/runs" \
+            -f event=push -f head_sha="$TARGET_SHA" -f status=success -f per_page=20 \
+            --jq '.workflow_runs[].id')
+          for run_id in "${RUN_IDS[@]}"; do
+            [[ "$run_id" != "$GITHUB_RUN_ID" ]] || continue
+            artifact_id=$(gh api "repos/${GITHUB_REPOSITORY}/actions/runs/${run_id}/artifacts" | \
+              jq -r --arg name "$ARTIFACT_NAME" \
+                '.artifacts[] | select(.name == $name and .expired == false) | .id' | head -n 1)
+            if [[ -n "$artifact_id" ]]; then
+              REUSE_RUN_ID=$run_id
+              break
+            fi
+          done
+          if [[ -z "$REUSE_RUN_ID" ]]; then
+            echo "reused=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          gh run download "$REUSE_RUN_ID" --repo "$GITHUB_REPOSITORY" \
+            --name "$ARTIFACT_NAME" --dir "$RUNNER_TEMP/candidate"
+          deploy/verify-release-candidate.sh "$RUNNER_TEMP/candidate" "$VERSION" "$TARGET_SHA"
+          RECORDED_DIGEST=$(jq -er '.image_digest' "$RUNNER_TEMP/candidate/candidate.json")
+          bash .github/scripts/release-safety.sh assert-image-digest-matches \
+            "$CANDIDATE_IMAGE" "$RECORDED_DIGEST"
+          echo "Reusing candidate from workflow run $REUSE_RUN_ID"
+          echo "reused=true" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/setup-go@v6
+        if: steps.reuse.outputs.reused != 'true'
+        with:
+          go-version-file: backend/go.mod
+          check-latest: false
+          cache-dependency-path: backend/go.sum
+
+      - name: Download exact frontend build
+        if: steps.reuse.outputs.reused != 'true'
+        uses: actions/download-artifact@v8
+        with:
+          name: frontend-dist-${{ env.TARGET_SHA }}
+          path: backend/internal/web/dist/
+
+      - name: Build all binaries and archives exactly once
+        if: steps.reuse.outputs.reused != 'true'
+        uses: goreleaser/goreleaser-action@v7
+        with:
+          version: v2.17.0
+          args: release --snapshot --clean --skip=publish --skip=docker
+        env:
+          RELEASE_VERSION: ${{ steps.identity.outputs.version }}
+          GORELEASER_PREVIOUS_TAG: v0.1.166-ts.4
+          GITHUB_REPO_OWNER: ${{ github.repository_owner }}
+          GITHUB_REPO_OWNER_LOWER: ${{ steps.identity.outputs.owner_lower }}
+          GITHUB_REPO_NAME: ${{ github.event.repository.name }}
+          DOCKERHUB_USERNAME: skip
+          CONTROL_PLANE_MANIFEST_SHA256: pending
+          TAG_MESSAGE: candidate
+
+      - name: Prepare candidate assets and OCI context
+        if: steps.reuse.outputs.reused != 'true'
+        env:
+          VERSION: ${{ steps.identity.outputs.version }}
+          IMAGE_REPOSITORY: ${{ steps.identity.outputs.image_repository }}
+        run: |
+          deploy/prepare-release-candidate.sh \
+            dist/artifacts.json \
+            "$RUNNER_TEMP/candidate" \
+            "$VERSION" \
+            "$TARGET_SHA" \
+            "$IMAGE_REPOSITORY"
+
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v3
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Login to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.repository_owner }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build and push immutable candidate image
+        if: steps.reuse.outputs.reused != 'true'
+        env:
+          CANDIDATE_IMAGE: ${{ steps.identity.outputs.candidate_image }}
+          VERSION: ${{ steps.identity.outputs.version }}
+        run: |
+          bash .github/scripts/release-safety.sh assert-image-absent "$CANDIDATE_IMAGE"
+          CONTROL_SHA="sha256:$(sha256sum "$RUNNER_TEMP/candidate/CONTROL-PLANE-MANIFEST.json" | awk '{print $1}')"
+          docker buildx build \
+            --file Dockerfile.goreleaser \
+            --platform linux/amd64,linux/arm64 \
+            --provenance=false \
+            --sbom=false \
+            --label "org.opencontainers.image.version=$VERSION" \
+            --label "org.opencontainers.image.revision=$TARGET_SHA" \
+            --label "org.opencontainers.image.source=https://github.com/${GITHUB_REPOSITORY}" \
+            --label "io.tokensupply.sub2api.update-protocol=2" \
+            --label "io.tokensupply.sub2api.control-plane-protocol=1" \
+            --label "io.tokensupply.sub2api.control-plane-manifest-sha256=$CONTROL_SHA" \
+            --tag "$CANDIDATE_IMAGE" \
+            --push \
+            "$RUNNER_TEMP/candidate/oci-context"
+          docker buildx imagetools inspect "$CANDIDATE_IMAGE" --format '{{json .}}' > "$RUNNER_TEMP/candidate-image.json"
+          IMAGE_DIGEST=$(jq -er '.manifest.digest | select(type == "string" and test("^sha256:[0-9a-f]{64}$"))' \
+            "$RUNNER_TEMP/candidate-image.json")
+          deploy/finalize-release-candidate.sh "$RUNNER_TEMP/candidate" "$IMAGE_DIGEST"
+
+      - name: Verify exact candidate artifact and OCI payload
+        env:
+          CANDIDATE_IMAGE: ${{ steps.identity.outputs.candidate_image }}
+          VERSION: ${{ steps.identity.outputs.version }}
+        run: |
+          deploy/verify-release-candidate.sh "$RUNNER_TEMP/candidate" "$VERSION" "$TARGET_SHA"
+          IMAGE_DIGEST=$(jq -er '.image_digest' "$RUNNER_TEMP/candidate/candidate.json")
+          bash .github/scripts/release-safety.sh assert-image-digest-matches \
+            "$CANDIDATE_IMAGE" "$IMAGE_DIGEST"
+          deploy/verify-control-plane-image.sh \
+            "${CANDIDATE_IMAGE}@${IMAGE_DIGEST}" \
+            "$RUNNER_TEMP/candidate" \
+            deploy/sub2api-deployer.example.json
+
+      - name: Upload audited Build Once candidate
+        uses: actions/upload-artifact@v7
+        with:
+          name: ${{ steps.identity.outputs.artifact_name }}
+          path: ${{ runner.temp }}/candidate/
+          if-no-files-found: error
+          retention-days: 30
+
   preflight:
     name: Release Preflight
     if: always()
-    needs:
-      - candidate
-      - release-contracts
-      - frontend-release
+    needs: [candidate, release-contracts, frontend-release, build-candidate]
     runs-on: ubuntu-latest
     steps:
       - name: Enforce candidate preflight result
         env:
+          EVENT_NAME: ${{ github.event_name }}
           CANDIDATE_RESULT: ${{ needs.candidate.result }}
           PREFLIGHT_REQUIRED: ${{ needs.candidate.outputs.required }}
           CONTRACTS_RESULT: ${{ needs.release-contracts.result }}
           FRONTEND_RESULT: ${{ needs.frontend-release.result }}
+          BUILD_RESULT: ${{ needs.build-candidate.result }}
         run: |
-          [[ "$CANDIDATE_RESULT" == "success" ]] || {
-            echo "Release candidate detection failed: $CANDIDATE_RESULT" >&2
-            exit 1
-          }
-          if [[ "$PREFLIGHT_REQUIRED" == "true" ]]; then
-            [[ "$CONTRACTS_RESULT" == "success" ]] || {
-              echo "Release contracts did not pass: $CONTRACTS_RESULT" >&2
-              exit 1
-            }
-            [[ "$FRONTEND_RESULT" == "success" ]] || {
-              echo "Frontend release suite did not pass: $FRONTEND_RESULT" >&2
-              exit 1
-            }
+          [[ "$CANDIDATE_RESULT" == success ]] || { echo "Candidate detection failed: $CANDIDATE_RESULT" >&2; exit 1; }
+          if [[ "$PREFLIGHT_REQUIRED" == true ]]; then
+            [[ "$CONTRACTS_RESULT" == success ]] || { echo "Release contracts failed: $CONTRACTS_RESULT" >&2; exit 1; }
+            [[ "$FRONTEND_RESULT" == success ]] || { echo "Frontend release suite failed: $FRONTEND_RESULT" >&2; exit 1; }
+            if [[ "$EVENT_NAME" == push ]]; then
+              [[ "$BUILD_RESULT" == success ]] || { echo "Build Once candidate failed: $BUILD_RESULT" >&2; exit 1; }
+            fi
           fi
           echo "Release preflight passed for $TARGET_SHA"
