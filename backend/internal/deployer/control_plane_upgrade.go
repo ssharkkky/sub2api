@@ -217,7 +217,7 @@ func (m *Manager) stageControlPlaneUpgrade(ctx context.Context, job *Job) (*veri
 
 func (m *Manager) imageLabels(ctx context.Context, image string) (map[string]string, error) {
 	if m.runner == nil {
-		return nil, errors.New("Docker command runner is not configured")
+		return nil, errors.New("docker command runner is not configured")
 	}
 	output, err := m.runner.Run(ctx, nil, m.cfg.DockerBinary, "image", "inspect", "--format", "{{json .Config.Labels}}", image)
 	if err != nil {
