@@ -289,6 +289,7 @@ EOF
     -e "s#^CONFIG_DIR=.*#CONFIG_DIR=\"$root/etc/sub2api-deployer\"#" \
     -e "s#^SERVICE_FILE=.*#SERVICE_FILE=\"$root/etc/systemd/system/sub2api-deployer.service\"#" \
     -e "s#^UPGRADE_SERVICE_FILE=.*#UPGRADE_SERVICE_FILE=\"$root/etc/systemd/system/sub2api-deployer-upgrade.service\"#" \
+    -e "s#^UPGRADE_TIMER_FILE=.*#UPGRADE_TIMER_FILE=\"$root/etc/systemd/system/sub2api-deployer-upgrade.timer\"#" \
     -e "s#^TMPFILES_FILE=.*#TMPFILES_FILE=\"$root/etc/tmpfiles.d/sub2api-deployer.conf\"#" \
     -e "s#^RUNTIME_PRESERVE_DROPIN=.*#RUNTIME_PRESERVE_DROPIN=\"$root/run/systemd/system/sub2api-deployer.service.d/10-preserve-runtime.conf\"#" \
     -e "s#^INSTALLED_BINARY=.*#INSTALLED_BINARY=\"$root/usr/local/sbin/sub2api-deployer\"#" \

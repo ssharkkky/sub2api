@@ -12,6 +12,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strconv"
 	"strings"
 	"sync"
@@ -2670,8 +2671,6 @@ func TestPrepareControlPlaneUpgradePersistsImmutableCandidateIdentity(t *testing
 	cfg := testConfig(t, 18081)
 	cfg.ControlPlaneUpgradePath = filepath.Join(t.TempDir(), "control-plane-upgrade.json")
 	cfg.ControlPlaneUpgradeCommand = []string{"/bin/systemctl", "start", "--no-block", "sub2api-deployer-upgrade.service"}
-	runner := &fakeRunner{}
-	manager := &Manager{cfg: cfg, runner: runner, now: time.Now}
 	job := &Job{
 		ID:                   "control-plane-upgrade-0001",
 		Action:               "update",
@@ -2683,6 +2682,9 @@ func TestPrepareControlPlaneUpgradePersistsImmutableCandidateIdentity(t *testing
 		Status:               JobStatusRunning,
 		Stage:                StageActivating,
 	}
+	baseRunner := &fakeRunner{}
+	runner := newControlPlaneRunner(t, baseRunner, job.TargetVersion, "0123456789abcdef")
+	manager := &Manager{cfg: cfg, runner: runner, now: time.Now}
 	manager.state = State{Job: job}
 
 	prepared, err := manager.prepareControlPlaneUpgrade(job)
@@ -2706,12 +2708,15 @@ func TestPrepareControlPlaneUpgradePersistsImmutableCandidateIdentity(t *testing
 	if request.JobID != job.ID || request.ContainerID != job.CandidateContainerID ||
 		request.TargetVersion != job.TargetVersion ||
 		request.ExpectedImage != job.TargetImage ||
-		request.ExpectedImageHash != job.TargetDigest {
+		request.ExpectedImageHash != job.TargetDigest || request.Schema != 2 ||
+		request.StagedBinarySHA != sha256Digest(runner.binary) ||
+		request.StagedManifestSHA != sha256Digest(runner.manifest) ||
+		request.ExpectedCommit != "0123456789abcdef" || request.ExpectedArch != runtime.GOARCH {
 		t.Fatalf("unexpected upgrade request: %+v", request)
 	}
-	runner.mu.Lock()
-	commands := strings.Join(runner.commands, "\n")
-	runner.mu.Unlock()
+	baseRunner.mu.Lock()
+	commands := strings.Join(baseRunner.commands, "\n")
+	baseRunner.mu.Unlock()
 	if !strings.Contains(commands, strings.Join(cfg.ControlPlaneUpgradeCommand, " ")) {
 		t.Fatalf("control-plane helper was not scheduled:\n%s", commands)
 	}
@@ -2774,6 +2779,55 @@ func TestUpdateRequiresControlPlaneUpgradeBootstrap(t *testing.T) {
 	})
 	if !errors.Is(err, ErrControlPlaneUpgradeUnavailable) {
 		t.Fatalf("Start error=%v, want ErrControlPlaneUpgradeUnavailable", err)
+	}
+}
+
+func TestProtocolOneActiveImageRequiresExpectedTargetDigest(t *testing.T) {
+	cfg := testConfig(t, 18081)
+	cfg.ControlPlaneUpgradePath = filepath.Join(t.TempDir(), "control-plane-upgrade.json")
+	cfg.ControlPlaneUpgradeCommand = []string{"/bin/systemctl", "start", "--no-block", "sub2api-deployer-upgrade.service"}
+	baseRunner := &fakeRunner{}
+	runner := newControlPlaneRunner(t, baseRunner, "0.1.168-ts.1", "0123456789abcdef")
+	manager := &Manager{
+		cfg:    cfg,
+		runner: runner,
+		now:    time.Now,
+		state: State{
+			ActiveVersion: "0.1.168-ts.1",
+			ActiveImage:   cfg.ImageRepository + "@sha256:" + strings.Repeat("a", 64),
+		},
+	}
+
+	_, err := manager.Start(DeployRequest{
+		Action:        "update",
+		TargetVersion: "0.1.168-ts.2",
+		RequestID:     "protocol-digest-0001",
+	})
+	if err == nil || !strings.Contains(err.Error(), "expected target digest is required") {
+		t.Fatalf("Start() error = %v", err)
+	}
+}
+
+func TestPendingControlPlaneUpgradeBecomesUnknownAfterTimeout(t *testing.T) {
+	cfg := testConfig(t, 18081)
+	now := time.Date(2026, 7, 29, 10, 0, 0, 0, time.UTC)
+	job := &Job{
+		ID: "control-plane-timeout-0001", Action: "update", Status: JobStatusSucceeded,
+		TargetVersion: "0.1.168-ts.1", CandidateContainerID: fakeContainerID("sub2api-green"),
+		UpdatedAt: now,
+	}
+	manager := &Manager{cfg: cfg, state: State{Job: job}, now: func() time.Time { return now }}
+	if err := manager.writeControlPlaneUpgradeStatus(job, "pending", ""); err != nil {
+		t.Fatal(err)
+	}
+	manager.now = func() time.Time { return now.Add(11 * time.Minute) }
+
+	got, err := manager.Job(job.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.ControlPlaneUpgradeStatus != "unknown" || !strings.Contains(got.ControlPlaneUpgradeError, "more than 10 minutes") {
+		t.Fatalf("unexpected timed-out control-plane status: %+v", got)
 	}
 }
 
