@@ -5,6 +5,7 @@ set -euo pipefail
 REPO_ROOT=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../.." && pwd)
 CI_WORKFLOW="$REPO_ROOT/.github/workflows/backend-ci.yml"
 PRETAG_WORKFLOW="$REPO_ROOT/.github/workflows/release-preflight.yml"
+PROMOTE_WORKFLOW="$REPO_ROOT/.github/workflows/promote-release.yml"
 RELEASE_WORKFLOW="$REPO_ROOT/.github/workflows/release.yml"
 
 fail() {
@@ -28,14 +29,27 @@ done
 
 require_literal "$CI_WORKFLOW" 'bash .github/scripts/test-pretag-release-gate.sh'
 require_literal "$PRETAG_WORKFLOW" 'name: Release Preflight'
-require_literal "$PRETAG_WORKFLOW" 'backend/cmd/server/VERSION'
-require_literal "$PRETAG_WORKFLOW" "'docs/releases/**'"
+require_literal "$PRETAG_WORKFLOW" 'TARGET_SHA: ${{ github.event.pull_request.head.sha || github.sha }}'
+require_literal "$PRETAG_WORKFLOW" 'ref: ${{ env.TARGET_SHA }}'
+require_literal "$PRETAG_WORKFLOW" 'git ls-remote --exit-code --tags origin'
 require_literal "$PRETAG_WORKFLOW" 'run: make test-frontend-release'
 require_literal "$PRETAG_WORKFLOW" 'backend/scripts/check-release-migrations-history.sh'
 require_literal "$PRETAG_WORKFLOW" 'go mod tidy'
 require_literal "$PRETAG_WORKFLOW" 'package-sub2api-deployer-bundles.sh'
+require_literal "$PRETAG_WORKFLOW" 'name: Release Preflight'
+require_literal "$PRETAG_WORKFLOW" 'if: always()'
+require_literal "$PROMOTE_WORKFLOW" 'name: Promote Release'
+require_literal "$PROMOTE_WORKFLOW" 'ref: ${{ inputs.main_sha }}'
+require_literal "$PROMOTE_WORKFLOW" 'origin/main moved to'
+require_literal "$PROMOTE_WORKFLOW" 'verify_workflow backend-ci.yml "Backend CI"'
+require_literal "$PROMOTE_WORKFLOW" 'verify_workflow release-preflight.yml "Release Preflight"'
+require_literal "$PROMOTE_WORKFLOW" 'git tag -a "$RELEASE_TAG"'
+require_literal "$PROMOTE_WORKFLOW" 'gh workflow run release.yml'
 require_literal "$RELEASE_WORKFLOW" 'bash .github/scripts/test-pretag-release-gate.sh'
 require_literal "$RELEASE_WORKFLOW" 'run: pnpm run test:run'
 require_literal "$RELEASE_WORKFLOW" 'run: pnpm run build'
+if grep -Fq -- "tags:" "$RELEASE_WORKFLOW"; then
+  fail "$RELEASE_WORKFLOW must not publish automatically from manually pushed tags"
+fi
 
 echo "Pre-tag release gate contract passed"

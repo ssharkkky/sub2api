@@ -1,9 +1,6 @@
 name: Release
 
 on:
-  push:
-    tags:
-      - 'v*-ts.*'
   workflow_dispatch:
     inputs:
       tag:

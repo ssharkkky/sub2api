@@ -242,25 +242,30 @@ Release PR 合并前：
 3. release notes 已人工审阅。
 4. `go mod tidy`、迁移历史和 release safety tests 无漂移。
 5. 不存在尚未决定是否纳入本版本的代码。
-6. Release PR 的精确 SHA 必须通过 `Release Preflight` workflow；其中 `make test-frontend-release` 包含 frontend lint、完整 Vitest 和 production build，同时验证迁移/tidy、发布契约和 deployer bundle 构建。
+6. Release PR 的精确 head SHA 必须通过 `Release Preflight` workflow；工作流必须显式检出该 SHA，其中 `make test-frontend-release` 包含 frontend lint、完整 Vitest 和 production build，同时验证迁移/tidy、发布契约和 deployer bundle 构建。
 
 Release PR 合并后、创建 tag 前：
 
-1. 等待合并后的精确 `origin/main` SHA 再次通过全部 required CI。
-2. 确认该 SHA 的完整前端发布预检已通过，不能沿用 PR 合并前的旧 SHA 结果。
+1. 等待合并后的精确 `origin/main` SHA 再次通过 `Backend CI` 和 `Release Preflight` 的 push run。
+2. 确认该 SHA 的完整前端发布预检已通过，不能沿用 PR 合并前的 head SHA 或合成 merge SHA 结果。
 3. 完成该 SHA 的最终审计并确认版本 tag、GitHub Release 和版本镜像均未被占用。
 4. 任一门禁失败都回到修复 PR；在新的 `main` SHA 全绿前禁止创建正式 tag。
 
 ## 11. Tag 与 Release SOP
 
-Release PR 合并且上述 tag 前门禁全部通过后：
+Release PR 合并且上述 tag 前门禁全部通过后，禁止从本地人工创建或推送发布 tag。仓库 tag ruleset 必须禁止 `v*-ts.*` 的人工创建、更新和删除，仅允许 GitHub Actions 执行唯一的 `Promote Release` workflow。
+
+从 Actions 页面运行 `Promote Release`，输入已审计的版本号和完整 `origin/main` SHA。该工作流必须再次确认远端 `main` 没有移动、`VERSION` 一致、tag/Release 未占用，并核验同一 SHA 的 `Backend CI` 与 `Release Preflight` push run 均成功；之后才由工作流创建 annotated tag 并启动 `Release` workflow。
+
+命令行等价入口仅用于触发同一个受控工作流，不直接创建 tag：
 
 ```bash
-git switch main
-git pull --ff-only origin main
 VERSION=$(cat backend/cmd/server/VERSION)
-git tag -a "v${VERSION}" -m "TokenSupply v${VERSION}"
-git push origin "v${VERSION}"
+MAIN_SHA=$(git rev-parse origin/main)
+gh workflow run promote-release.yml \
+  --ref main \
+  -f "version=${VERSION}" \
+  -f "main_sha=${MAIN_SHA}"
 ```
 
 Release workflow 必须：

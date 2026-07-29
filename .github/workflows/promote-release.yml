@@ -1,0 +1,121 @@
+name: Promote Release
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Unpublished fork version to promote (e.g., 0.1.166-ts.4)'
+        required: true
+        type: string
+      main_sha:
+        description: 'Exact audited main commit (40 hexadecimal characters)'
+        required: true
+        type: string
+
+concurrency:
+  group: promote-release-${{ github.repository }}
+  cancel-in-progress: false
+
+permissions:
+  actions: write
+  contents: write
+
+jobs:
+  promote:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout exact audited main commit
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+          ref: ${{ inputs.main_sha }}
+
+      - name: Verify candidate and successful pre-tag workflows
+        env:
+          GH_TOKEN: ${{ github.token }}
+          EXPECTED_SHA: ${{ inputs.main_sha }}
+          EXPECTED_VERSION: ${{ inputs.version }}
+        run: |
+          [[ "$EXPECTED_SHA" =~ ^[0-9a-f]{40}$ ]] || {
+            echo "main_sha must be an exact 40-character lowercase commit SHA" >&2
+            exit 1
+          }
+          [[ "$EXPECTED_VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+-ts\.[1-9][0-9]*$ ]] || {
+            echo "version must use X.Y.Z-ts.N with N >= 1" >&2
+            exit 1
+          }
+
+          git fetch origin main --tags
+          ACTUAL_SHA=$(git rev-parse HEAD)
+          REMOTE_MAIN_SHA=$(git rev-parse refs/remotes/origin/main)
+          VERSION=$(tr -d '\r\n' < backend/cmd/server/VERSION)
+          RELEASE_TAG="v${EXPECTED_VERSION}"
+
+          [[ "$ACTUAL_SHA" == "$EXPECTED_SHA" ]] || {
+            echo "Checkout drifted from audited SHA: $ACTUAL_SHA" >&2
+            exit 1
+          }
+          [[ "$REMOTE_MAIN_SHA" == "$EXPECTED_SHA" ]] || {
+            echo "origin/main moved to $REMOTE_MAIN_SHA; rerun checks and audit that SHA" >&2
+            exit 1
+          }
+          [[ "$VERSION" == "$EXPECTED_VERSION" ]] || {
+            echo "VERSION contains $VERSION, expected $EXPECTED_VERSION" >&2
+            exit 1
+          }
+          if git ls-remote --exit-code --tags origin "refs/tags/${RELEASE_TAG}" >/dev/null 2>&1; then
+            echo "Tag already exists: $RELEASE_TAG" >&2
+            exit 1
+          fi
+          gh release view "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1 && {
+            echo "GitHub Release already exists: $RELEASE_TAG" >&2
+            exit 1
+          }
+
+          verify_workflow() {
+            local workflow="$1"
+            local label="$2"
+            local run
+            run=$(gh api --method GET \
+              "repos/${GITHUB_REPOSITORY}/actions/workflows/${workflow}/runs" \
+              -f branch=main \
+              -f event=push \
+              -f head_sha="$EXPECTED_SHA" \
+              -f status=success \
+              -f per_page=1 \
+              --jq '.workflow_runs[0] | [.id, .head_sha, .conclusion] | @tsv')
+            [[ -n "$run" ]] || {
+              echo "$label has no successful push run for $EXPECTED_SHA" >&2
+              exit 1
+            }
+            IFS=$'\t' read -r run_id run_sha conclusion <<<"$run"
+            [[ "$run_sha" == "$EXPECTED_SHA" && "$conclusion" == "success" ]] || {
+              echo "$label evidence is invalid: $run" >&2
+              exit 1
+            }
+            echo "$label passed in run $run_id for $run_sha"
+          }
+
+          verify_workflow backend-ci.yml "Backend CI"
+          verify_workflow release-preflight.yml "Release Preflight"
+          bash .github/scripts/validate-release-candidate.sh
+
+      - name: Create immutable annotated tag
+        env:
+          EXPECTED_VERSION: ${{ inputs.version }}
+        run: |
+          RELEASE_TAG="v${EXPECTED_VERSION}"
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git tag -a "$RELEASE_TAG" -m "TokenSupply $RELEASE_TAG"
+          git push origin "refs/tags/${RELEASE_TAG}"
+
+      - name: Start release workflow
+        env:
+          GH_TOKEN: ${{ github.token }}
+          EXPECTED_VERSION: ${{ inputs.version }}
+        run: |
+          gh workflow run release.yml \
+            --repo "$GITHUB_REPOSITORY" \
+            --ref main \
+            -f "tag=v${EXPECTED_VERSION}"

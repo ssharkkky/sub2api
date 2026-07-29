@@ -4,15 +4,9 @@ on:
   pull_request:
     branches:
       - main
-    paths:
-      - backend/cmd/server/VERSION
-      - 'docs/releases/**'
   push:
     branches:
       - main
-    paths:
-      - backend/cmd/server/VERSION
-      - 'docs/releases/**'
 
 concurrency:
   group: release-preflight-${{ github.event.pull_request.number || github.ref }}
@@ -23,14 +17,45 @@ permissions:
 
 env:
   MIGRATION_BASELINE_COMMIT: 0572569c6e0187fd02655bec2d9439e30d9edc04
+  TARGET_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
 
 jobs:
+  candidate:
+    name: Detect Release Candidate
+    runs-on: ubuntu-latest
+    outputs:
+      required: ${{ steps.candidate.outputs.required }}
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+          ref: ${{ env.TARGET_SHA }}
+
+      - name: Detect unpublished fork version
+        id: candidate
+        run: |
+          VERSION=$(tr -d '\r\n' < backend/cmd/server/VERSION)
+          if [[ ! "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+-ts\.[1-9][0-9]*$ ]]; then
+            echo "required=false" >> "$GITHUB_OUTPUT"
+            echo "Upstream baseline $VERSION does not require fork release preflight"
+          elif git ls-remote --exit-code --tags origin "refs/tags/v${VERSION}" >/dev/null 2>&1; then
+            echo "required=false" >> "$GITHUB_OUTPUT"
+            echo "v${VERSION} is already tagged; no unpublished candidate is active"
+          else
+            echo "required=true" >> "$GITHUB_OUTPUT"
+            echo "v${VERSION} is unpublished; full release preflight is required"
+          fi
+
   release-contracts:
+    name: Release Contracts
+    needs: candidate
+    if: needs.candidate.outputs.required == 'true'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
         with:
           fetch-depth: 0
+          ref: ${{ env.TARGET_SHA }}
 
       - uses: actions/setup-go@v6
         with:
@@ -45,7 +70,7 @@ jobs:
           bash .github/scripts/validate-release-candidate.sh
           backend/scripts/check-release-migrations-history.sh \
             "$MIGRATION_BASELINE_COMMIT" \
-            "$GITHUB_SHA" \
+            "$TARGET_SHA" \
             "$RELEASE_TAG"
           bash .github/scripts/test-release-candidate.sh
           bash .github/scripts/test-pretag-release-gate.sh
@@ -68,9 +93,14 @@ jobs:
           ../deploy/package-sub2api-deployer-bundles.sh "$RUNNER_TEMP/deployer-dist"
 
   frontend-release:
+    name: Frontend Release Suite
+    needs: candidate
+    if: needs.candidate.outputs.required == 'true'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
+        with:
+          ref: ${{ env.TARGET_SHA }}
 
       - name: Setup pnpm
         uses: pnpm/action-setup@v6
@@ -90,3 +120,35 @@ jobs:
 
       - name: Full frontend release preflight
         run: make test-frontend-release
+
+  preflight:
+    name: Release Preflight
+    if: always()
+    needs:
+      - candidate
+      - release-contracts
+      - frontend-release
+    runs-on: ubuntu-latest
+    steps:
+      - name: Enforce candidate preflight result
+        env:
+          CANDIDATE_RESULT: ${{ needs.candidate.result }}
+          PREFLIGHT_REQUIRED: ${{ needs.candidate.outputs.required }}
+          CONTRACTS_RESULT: ${{ needs.release-contracts.result }}
+          FRONTEND_RESULT: ${{ needs.frontend-release.result }}
+        run: |
+          [[ "$CANDIDATE_RESULT" == "success" ]] || {
+            echo "Release candidate detection failed: $CANDIDATE_RESULT" >&2
+            exit 1
+          }
+          if [[ "$PREFLIGHT_REQUIRED" == "true" ]]; then
+            [[ "$CONTRACTS_RESULT" == "success" ]] || {
+              echo "Release contracts did not pass: $CONTRACTS_RESULT" >&2
+              exit 1
+            }
+            [[ "$FRONTEND_RESULT" == "success" ]] || {
+              echo "Frontend release suite did not pass: $FRONTEND_RESULT" >&2
+              exit 1
+            }
+          fi
+          echo "Release preflight passed for $TARGET_SHA"
