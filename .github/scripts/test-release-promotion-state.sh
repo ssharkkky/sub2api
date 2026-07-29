@@ -80,4 +80,14 @@ expect_failure '40-character' bash -c 'cd "$1" && bash "$2" inspect invalid 1.0.
 expect_failure 'X.Y.Z-ts.N' bash -c 'cd "$1" && bash "$2" inspect "$3" invalid refs/remotes/origin/main origin' \
   _ "$REPO" "$STATE_SCRIPT" "$SECOND"
 
+git -C "$REPO" switch -q --orphan unrelated
+printf 'unrelated\n' > "$REPO/unrelated.txt"
+git -C "$REPO" add unrelated.txt
+git -C "$REPO" commit -q -m unrelated
+git -C "$REPO" push -q --force origin HEAD:main
+git -C "$REPO" fetch -q origin main
+git -C "$REPO" checkout -q "$FIRST"
+expect_failure 'not an ancestor' bash -c 'cd "$1" && bash "$2" inspect "$3" 1.0.0-ts.1 refs/remotes/origin/main origin' \
+  _ "$REPO" "$STATE_SCRIPT" "$FIRST"
+
 echo "Release promotion state tests passed"
