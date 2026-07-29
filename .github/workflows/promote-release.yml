@@ -17,8 +17,8 @@ concurrency:
   cancel-in-progress: false
 
 permissions:
-  actions: write
-  contents: write
+  actions: read
+  contents: read
 
 jobs:
   promote:
@@ -127,6 +127,7 @@ jobs:
         env:
           EXPECTED_SHA: ${{ inputs.main_sha }}
           EXPECTED_VERSION: ${{ inputs.version }}
+          RELEASE_TAG_DEPLOY_KEY: ${{ secrets.RELEASE_TAG_DEPLOY_KEY }}
         run: |
           RELEASE_TAG="v${EXPECTED_VERSION}"
           git fetch origin main
@@ -138,7 +139,13 @@ jobs:
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git tag -a "$RELEASE_TAG" -m "TokenSupply $RELEASE_TAG"
-          git push origin "refs/tags/${RELEASE_TAG}"
+          KEY_PATH="$RUNNER_TEMP/release-tag-deploy-key"
+          KNOWN_HOSTS_PATH="$RUNNER_TEMP/release-tag-known-hosts"
+          install -m 600 /dev/null "$KEY_PATH"
+          printf '%s\n' "$RELEASE_TAG_DEPLOY_KEY" > "$KEY_PATH"
+          ssh-keyscan -t ed25519 github.com > "$KNOWN_HOSTS_PATH"
+          GIT_SSH_COMMAND="ssh -i $KEY_PATH -o IdentitiesOnly=yes -o UserKnownHostsFile=$KNOWN_HOSTS_PATH -o StrictHostKeyChecking=yes" \
+            git push "git@github.com:${GITHUB_REPOSITORY}.git" "refs/tags/${RELEASE_TAG}"
 
   release:
     needs: promote

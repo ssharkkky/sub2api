@@ -542,18 +542,20 @@ jq -n '{
   target: "tag",
   enforcement: "active",
   conditions: {ref_name: {include: ["refs/tags/v*-ts.*"], exclude: []}},
-  bypass_actors: [{actor_type: "Integration", actor_id: 15368, bypass_mode: "always"}],
+  bypass_actors: [{actor_type: "DeployKey", actor_id: null, bypass_mode: "always"}],
   rules: [{type: "creation"}, {type: "update"}, {type: "deletion"}]
 }' > "$GOOD_RULESET"
 bash "$SAFETY_SCRIPT" verify-ruleset-json "$GOOD_RULESET"
 
 BAD_RULESET="$TEST_ROOT/bad-ruleset.json"
 jq '.bypass_actors = [{actor_type: "RepositoryRole", actor_id: 5, bypass_mode: "always"}]' "$GOOD_RULESET" > "$BAD_RULESET"
-expect_failure 'only GitHub Actions allowed to bypass' bash "$SAFETY_SCRIPT" verify-ruleset-json "$BAD_RULESET"
+expect_failure 'dedicated release deploy key' bash "$SAFETY_SCRIPT" verify-ruleset-json "$BAD_RULESET"
 jq '.rules = [{type: "update"}, {type: "deletion"}]' "$GOOD_RULESET" > "$BAD_RULESET"
 expect_failure 'forbid creation, updates, and deletion' bash "$SAFETY_SCRIPT" verify-ruleset-json "$BAD_RULESET"
 jq '.bypass_actors += [{actor_type: "RepositoryRole", actor_id: 5, bypass_mode: "always"}]' "$GOOD_RULESET" > "$BAD_RULESET"
-expect_failure 'only GitHub Actions allowed to bypass' bash "$SAFETY_SCRIPT" verify-ruleset-json "$BAD_RULESET"
+expect_failure 'dedicated release deploy key' bash "$SAFETY_SCRIPT" verify-ruleset-json "$BAD_RULESET"
+jq '.bypass_actors[0].actor_id = 4242' "$GOOD_RULESET" > "$BAD_RULESET"
+expect_failure 'dedicated release deploy key' bash "$SAFETY_SCRIPT" verify-ruleset-json "$BAD_RULESET"
 
 REMOTE_REPO="$TEST_ROOT/origin.git"
 FETCH_REPO="$TEST_ROOT/fetch-repo"

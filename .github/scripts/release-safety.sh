@@ -509,7 +509,7 @@ verify_tag_commit() {
 verify_ruleset_json() {
   local ruleset_path="$1"
   [[ -f "$ruleset_path" ]] || fail "Release tag ruleset JSON is missing: $ruleset_path"
-  jq -e --arg pattern 'refs/tags/v*-ts.*' --argjson actions_app_id 15368 '
+  jq -e --arg pattern 'refs/tags/v*-ts.*' '
     (.conditions.ref_name.include // []) as $includes
     | ([.rules[]?.type]) as $rules
     | (.bypass_actors // []) as $bypass
@@ -518,14 +518,14 @@ verify_ruleset_json() {
       and (($includes | index($pattern)) != null or ($includes | index("~ALL")) != null)
       and ((.conditions.ref_name.exclude // []) | length == 0)
       and ($bypass | length == 1)
-      and ($bypass[0].actor_type == "Integration")
-      and ($bypass[0].actor_id == $actions_app_id)
+      and ($bypass[0].actor_type == "DeployKey")
+      and ($bypass[0].actor_id == null)
       and ($bypass[0].bypass_mode == "always")
       and (($rules | index("creation")) != null)
       and (($rules | index("update")) != null)
       and (($rules | index("deletion")) != null)
   ' "$ruleset_path" >/dev/null || \
-    fail "Release tag ruleset must forbid creation, updates, and deletion for refs/tags/v*-ts.* with only GitHub Actions allowed to bypass"
+    fail "Release tag ruleset must forbid creation, updates, and deletion for refs/tags/v*-ts.* with only the dedicated release deploy key allowed to bypass"
 }
 
 write_release_notes_output() {
