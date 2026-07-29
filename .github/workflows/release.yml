@@ -144,6 +144,7 @@ jobs:
       - name: Test release safety gates and deployment assets
         run: |
           bash .github/scripts/test-release-candidate.sh
+          bash .github/scripts/test-pretag-release-gate.sh
           bash .github/scripts/test-release-safety.sh
           backend/scripts/check-release-migrations-test.sh
           deploy/tests/managed-update-assets-test.sh

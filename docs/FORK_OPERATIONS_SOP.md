@@ -242,10 +242,18 @@ Release PR 合并前：
 3. release notes 已人工审阅。
 4. `go mod tidy`、迁移历史和 release safety tests 无漂移。
 5. 不存在尚未决定是否纳入本版本的代码。
+6. Release PR 的精确 SHA 必须通过 `Release Preflight` workflow；其中 `make test-frontend-release` 包含 frontend lint、完整 Vitest 和 production build，同时验证迁移/tidy、发布契约和 deployer bundle 构建。
+
+Release PR 合并后、创建 tag 前：
+
+1. 等待合并后的精确 `origin/main` SHA 再次通过全部 required CI。
+2. 确认该 SHA 的完整前端发布预检已通过，不能沿用 PR 合并前的旧 SHA 结果。
+3. 完成该 SHA 的最终审计并确认版本 tag、GitHub Release 和版本镜像均未被占用。
+4. 任一门禁失败都回到修复 PR；在新的 `main` SHA 全绿前禁止创建正式 tag。
 
 ## 11. Tag 与 Release SOP
 
-Release PR 合并后：
+Release PR 合并且上述 tag 前门禁全部通过后：
 
 ```bash
 git switch main

@@ -127,6 +127,7 @@ scripts
 !.github/scripts/test-release-safety.sh
 !.github/scripts/validate-release-candidate.sh
 !.github/scripts/test-release-candidate.sh
+!.github/scripts/test-pretag-release-gate.sh
 !backend/scripts/
 !backend/scripts/resolve-version.sh
 .code-review-state
