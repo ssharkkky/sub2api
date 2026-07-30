@@ -82,7 +82,7 @@ Options:
   --deployer-binary <path>      Prebuilt release binary (recommended)
   --deployer-checksums <path>   Release checksum file for the prebuilt binary
   --docker-config <path>        Optional Docker config.json for private registries
-  --activation-version <ver>    Version to use in the printed first-deployment command
+  --activation-version <ver>    Version shown in the post-install UI deployment reminder
   --allow-source-build          Explicitly permit a dev-identity source build fallback
 
 With a prebuilt binary, assets default to the deploy directory beside this
@@ -621,7 +621,7 @@ fi
 if [[ -z "$ASSET_DIR" || ! -d "$ASSET_DIR" ]]; then
   fail "--assets-dir must point to the packaged deploy assets (or use an installer beside deploy/)"
 fi
-for source_asset in compose.deployer.yml sub2api-deployer.service sub2api-deployer-upgrade.service sub2api-deployer-upgrade.timer sub2api-deployer-upgrade.sh sub2api-deployer-tmpfiles.conf sub2api-managed-upstream.conf; do
+for source_asset in compose.deployer.yml sub2api-deployer.service sub2api-deployer-upgrade.service sub2api-deployer-upgrade.timer sub2api-deployer-tmpfiles.conf sub2api-managed-upstream.conf; do
   [[ -f "$ASSET_DIR/$source_asset" ]] || fail "Deploy assets are missing $source_asset"
 done
 if [[ -z "$NGINX_SITE" || ! -f "$NGINX_SITE" ]]; then
@@ -1108,7 +1108,6 @@ fi
 install -d -m 0700 "$STATE_DIR"
 install -d -m 0755 "$RUNTIME_DIR" "$NGINX_STATE_DIR"
 install -m 0755 "$TEMP_DIR/sub2api-deployer" "$INSTALLED_BINARY"
-install -m 0755 "$ASSET_DIR/sub2api-deployer-upgrade.sh" "$INSTALLED_UPGRADER"
 install -m 0644 "$ASSET_DIR/compose.deployer.yml" "$INSTALL_DIR/compose.deployer.yml"
 if [[ -f "$TEMP_DIR/docker-config.json" ]]; then
   install -m 0600 "$TEMP_DIR/docker-config.json" "$DOCKER_CONFIG_FILE"
@@ -1167,7 +1166,10 @@ for ((attempt=0; attempt<40; attempt++)); do
        and .active_container_id == $container_id
        and .active_port == $port
        and .active_version == $version
-       and .control_plane_upgrade_ready == true' \
+       and .control_plane_upgrade_ready == true
+       and .control_plane.activator == "go-v1"
+       and .control_plane.payload_schema_min <= 1
+       and .control_plane.payload_schema_max >= 1' \
       <<<"$DEPLOYER_HEALTH" >/dev/null 2>&1; then
     DEPLOYER_READY=1
     break
@@ -1175,6 +1177,31 @@ for ((attempt=0; attempt<40; attempt++)); do
   sleep 0.25
 done
 (( DEPLOYER_READY == 1 )) || fail "Deployer health check failed after restart"
+
+EFFECTIVE_UPGRADE_EXEC=$(systemctl show --property=ExecStart --value sub2api-deployer-upgrade.service)
+[[ "$EFFECTIVE_UPGRADE_EXEC" == *"argv[]=/usr/local/sbin/sub2api-deployer --activate-staged-control-plane ;"* ]] || \
+  fail "Effective control-plane activator ExecStart does not match the stable deployer flag contract"
+[[ "$EFFECTIVE_UPGRADE_EXEC" != *"sub2api-deployer-upgrade"* ]] || \
+  fail "Effective control-plane activator still references the retired shell helper"
+[[ ! -e "$CONTROL_PLANE_UPGRADE_REQUEST" && ! -L "$CONTROL_PLANE_UPGRADE_REQUEST" ]] || \
+  fail "Refusing to validate the new activator while an activation request is pending; inspect it with the deployer control-plane status command"
+ACTIVATOR_STATUS_BEFORE=absent
+if [[ -f "$CONTROL_PLANE_UPGRADE_REQUEST.status" && ! -L "$CONTROL_PLANE_UPGRADE_REQUEST.status" ]]; then
+  ACTIVATOR_STATUS_BEFORE=$(sha256sum "$CONTROL_PLANE_UPGRADE_REQUEST.status" | awk '{print $1}')
+elif [[ -e "$CONTROL_PLANE_UPGRADE_REQUEST.status" || -L "$CONTROL_PLANE_UPGRADE_REQUEST.status" ]]; then
+  fail "Existing control-plane activation status path is unsafe"
+fi
+systemctl start sub2api-deployer-upgrade.service
+if systemctl is-failed --quiet sub2api-deployer-upgrade.service; then
+  fail "The Go activator did not exit cleanly on its normal no-request path"
+fi
+ACTIVATOR_STATUS_AFTER=absent
+if [[ -f "$CONTROL_PLANE_UPGRADE_REQUEST.status" && ! -L "$CONTROL_PLANE_UPGRADE_REQUEST.status" ]]; then
+  ACTIVATOR_STATUS_AFTER=$(sha256sum "$CONTROL_PLANE_UPGRADE_REQUEST.status" | awk '{print $1}')
+fi
+[[ "$ACTIVATOR_STATUS_AFTER" == "$ACTIVATOR_STATUS_BEFORE" ]] || \
+  fail "The Go activator changed status state while no request existed"
+rm -f -- "$INSTALLED_UPGRADER"
 
 if (( EXISTING_INSTALL == 1 )); then
   [[ $(stat -c '%i' "$SOCKET_DIRECTORY") == "$SOCKET_DIRECTORY_INODE" ]] || \
@@ -1203,16 +1230,14 @@ EOF
 if [[ -n "$ACTIVATION_VERSION" ]]; then
   cat <<EOF
 
-Deploy the first managed release through the same rollback-safe state machine:
-  curl --fail --show-error --max-time 10 --unix-socket /run/sub2api-deployer/deployer.sock \\
-    -H 'Content-Type: application/json' \\
-    -d '{"action":"update","target_version":"$ACTIVATION_VERSION","expected_current_version":"$CURRENT_VERSION","request_id":"bootstrap-$ACTIVATION_VERSION"}' \\
-    http://localhost/v1/deployments
+The host control plane is ready for $ACTIVATION_VERSION. Start the first managed
+deployment from the administrator update page so the verified release ledger
+digest is included. Do not use a hand-written request without that digest.
 EOF
 elif (( EXISTING_INSTALL == 0 )); then
   cat <<'EOF'
 
-After publishing the first protocol-v2 image, rerun this installer with
---activation-version or POST that version to /v1/deployments over the Unix socket.
+After publishing the first managed image, use the administrator update page.
+It supplies the verified release ledger digest required by the deployer.
 EOF
 fi

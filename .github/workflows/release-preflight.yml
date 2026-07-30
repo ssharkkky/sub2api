@@ -25,6 +25,16 @@ jobs:
       required: ${{ steps.candidate.outputs.required }}
       version: ${{ steps.candidate.outputs.version }}
     steps:
+      - name: Verify workflow identity for Build Once
+        if: github.event_name == 'push'
+        env:
+          WORKFLOW_SHA: ${{ github.workflow_sha }}
+        run: |
+          [[ "$WORKFLOW_SHA" == "$TARGET_SHA" ]] || {
+            echo "Release Preflight workflow was loaded from $WORKFLOW_SHA, expected candidate commit $TARGET_SHA" >&2
+            exit 1
+          }
+
       - uses: actions/checkout@v6
         with:
           fetch-depth: 0

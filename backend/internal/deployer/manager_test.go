@@ -2718,16 +2718,17 @@ func TestPrepareControlPlaneUpgradePersistsImmutableCandidateIdentity(t *testing
 	if err != nil {
 		t.Fatal(err)
 	}
-	var request controlPlaneUpgradeRequest
+	var request controlPlaneActivationRequest
 	if err := json.Unmarshal(data, &request); err != nil {
 		t.Fatal(err)
 	}
 	if request.JobID != job.ID || request.ContainerID != job.CandidateContainerID ||
 		request.TargetVersion != job.TargetVersion ||
 		request.ExpectedImage != job.TargetImage ||
-		request.ExpectedImageHash != job.TargetDigest || request.Schema != 2 ||
-		request.StagedBinarySHA != sha256Digest(runner.binary) ||
-		request.StagedManifestSHA != sha256Digest(runner.manifest) ||
+		request.ExpectedImageDigest != job.TargetDigest || request.Schema != controlPlaneRequestSchema ||
+		request.PayloadSchema != controlPlanePayloadSchema || request.MaxAttempts != defaultActivationAttempts ||
+		len(request.Assets) != 1 || request.Assets[0].SHA256 != sha256Digest(runner.binary) ||
+		request.StagedManifestSHA256 != sha256Digest(runner.manifest) ||
 		request.ExpectedCommit != "0123456789abcdef" || request.ExpectedArch != runtime.GOARCH {
 		t.Fatalf("unexpected upgrade request: %+v", request)
 	}
@@ -2866,6 +2867,39 @@ func TestPendingControlPlaneUpgradeBecomesUnknownAfterTimeout(t *testing.T) {
 	}
 	if got.ControlPlaneUpgradeStatus != "unknown" || !strings.Contains(got.ControlPlaneUpgradeError, "more than 10 minutes") {
 		t.Fatalf("unexpected timed-out control-plane status: %+v", got)
+	}
+}
+
+func TestFailedControlPlaneUpgradeBlocksUntilOperatorResolution(t *testing.T) {
+	cfg := testConfig(t, 18081)
+	cfg.ControlPlaneUpgradePath = filepath.Join(t.TempDir(), "control-plane-upgrade.json")
+	cfg.ControlPlaneUpgradeCommand = []string{"/bin/systemctl", "start", "--no-block", "sub2api-deployer-upgrade.service"}
+	job := &Job{ID: "control-plane-failed-0001", CandidateContainerID: fakeContainerID("failed-control-plane"), TargetVersion: "0.1.168-ts.3", Status: JobStatusSucceeded}
+	manager := &Manager{cfg: cfg, state: State{Job: job}, now: time.Now}
+	if err := manager.writeControlPlaneUpgradeStatus(job, "failed", "activation failed"); err != nil {
+		t.Fatal(err)
+	}
+	if !manager.controlPlaneUpgradeFailureUnresolvedLocked() {
+		t.Fatal("failed control-plane status did not block later deployments")
+	}
+	if err := manager.writeControlPlaneUpgradeStatus(job, "quarantined", "operator accepted break-glass state"); err != nil {
+		t.Fatal(err)
+	}
+	if manager.controlPlaneUpgradeFailureUnresolvedLocked() {
+		t.Fatal("operator-resolved quarantine status still blocked deployments")
+	}
+}
+
+func TestCorruptControlPlaneUpgradeStatusFailsClosed(t *testing.T) {
+	cfg := testConfig(t, 18081)
+	cfg.ControlPlaneUpgradePath = filepath.Join(t.TempDir(), "control-plane-upgrade.json")
+	job := &Job{ID: "control-plane-corrupt-0001", CandidateContainerID: fakeContainerID("corrupt-control-plane"), TargetVersion: "0.1.168-ts.3", Status: JobStatusSucceeded}
+	manager := &Manager{cfg: cfg, state: State{Job: job}, now: time.Now}
+	if err := os.WriteFile(manager.controlPlaneUpgradeStatusPath(), []byte("{corrupt\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if !manager.controlPlaneUpgradeFailureUnresolvedLocked() {
+		t.Fatal("corrupt control-plane status did not fail closed")
 	}
 }
 

@@ -66,7 +66,12 @@ jobs:
           RELEASE_TAG_RULESET_ID: ${{ vars.RELEASE_TAG_RULESET_ID }}
           RELEASE_TAG_CREATION_RULESET_ID: ${{ vars.RELEASE_TAG_CREATION_RULESET_ID }}
           INPUT_CANDIDATE_COMMIT: ${{ inputs.candidate_commit }}
+          WORKFLOW_SHA: ${{ github.workflow_sha }}
         run: |
+          [[ "$WORKFLOW_SHA" == "$INPUT_CANDIDATE_COMMIT" ]] || {
+            echo "Release workflow was loaded from $WORKFLOW_SHA, expected audited commit $INPUT_CANDIDATE_COMMIT" >&2
+            exit 1
+          }
           bash .github/scripts/release-safety.sh fetch origin main
           [[ "$RELEASE_TAG_RULESET_ID" =~ ^[1-9][0-9]*$ ]] || { echo "Invalid immutable tag ruleset ID" >&2; exit 1; }
           [[ "$RELEASE_TAG_CREATION_RULESET_ID" =~ ^[1-9][0-9]*$ ]] || { echo "Invalid tag creation ruleset ID" >&2; exit 1; }
@@ -322,7 +327,7 @@ jobs:
             --arg candidate_manifest_sha "$CANDIDATE_MANIFEST_SHA" \
             --slurpfile candidate "$CANDIDATE" '
               ($candidate[0]) as $c | {
-                schema: 3,
+                schema: 4,
                 tag: $tag,
                 commit: $commit,
                 tag_object: $tag_object,
@@ -335,6 +340,8 @@ jobs:
                 architectures: $c.architectures,
                 control_plane_manifest_sha256: $c.control_plane_manifest_sha256,
                 candidate_manifest_sha256: $candidate_manifest_sha,
+                workflow_commit: $c.workflow_commit,
+                workflow_blobs: $c.workflow_blobs,
                 deployer_checksums_sha256: $c.deployer_checksums_sha256,
                 deployer_assets: $c.deployer_assets
               }
