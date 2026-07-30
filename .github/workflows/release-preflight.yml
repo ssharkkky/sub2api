@@ -94,6 +94,14 @@ jobs:
           go mod tidy
           git diff --exit-code -- go.mod go.sum
 
+      - name: Exercise the activator with real systemd
+        run: |
+          go build -trimpath -o "$RUNNER_TEMP/sub2api-deployer-systemd-test" ./cmd/deployer
+          sudo env SUB2API_SYSTEMD_TEST_EPHEMERAL=1 \
+            ../deploy/tests/systemd-control-plane-activation-test.sh \
+            "$RUNNER_TEMP/sub2api-deployer-systemd-test"
+        working-directory: backend
+
   frontend-release:
     name: Frontend Release Suite
     needs: candidate

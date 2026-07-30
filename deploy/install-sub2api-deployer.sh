@@ -32,6 +32,8 @@ SERVICE_WAS_ACTIVE=0
 UPGRADE_TIMER_WAS_ENABLED=0
 UPGRADE_TIMER_WAS_ACTIVE=0
 UPGRADE_TIMER_EXISTED=0
+UPGRADE_SERVICE_WAS_ACTIVE=0
+ACTIVATOR_FROZEN=0
 
 CONFIG_DIR="/etc/sub2api-deployer"
 CONFIG_FILE="$CONFIG_DIR/config.json"
@@ -56,6 +58,8 @@ NGINX_LOADER_FILE="/etc/nginx/conf.d/sub2api-managed-upstream.conf"
 INSTALL_LOCK_FILE="/run/sub2api-deployer-install.lock"
 INSTALL_LOCK_FD=""
 STATE_LOCK_FD=""
+ACTIVATION_LOCK_FD=""
+TARGET_ACTIVATION_LOCK_FD=""
 SOCKET_DIRECTORY="/run/sub2api-deployer"
 SOCKET_DIRECTORY_INODE=""
 
@@ -134,6 +138,19 @@ validate_container_name() {
   local value="$2"
   if ! [[ "$value" =~ ^[A-Za-z0-9][A-Za-z0-9_.-]*$ ]]; then
     fail "$label must match ^[A-Za-z0-9][A-Za-z0-9_.-]*$"
+  fi
+}
+
+validate_docker_server_version() {
+  local version major minor
+  version=$(docker version --format '{{.Server.Version}}') || fail "Could not read the Docker server version"
+  if [[ ! "$version" =~ ^([0-9]+)\.([0-9]+)(\.|$) ]]; then
+    fail "Docker server returned an unsupported version string: $version"
+  fi
+  major=${BASH_REMATCH[1]}
+  minor=${BASH_REMATCH[2]}
+  if (( major < 20 || (major == 20 && minor < 10) )); then
+    fail "Docker server 20.10 or newer is required (found $version)"
   fi
 }
 
@@ -230,6 +247,45 @@ release_state_lock() {
     flock -u "$STATE_LOCK_FD" >/dev/null 2>&1 || true
     exec {STATE_LOCK_FD}>&-
     STATE_LOCK_FD=""
+  fi
+}
+
+release_activation_lock() {
+  if [[ -n "$ACTIVATION_LOCK_FD" ]]; then
+    flock -u "$ACTIVATION_LOCK_FD" >/dev/null 2>&1 || true
+    exec {ACTIVATION_LOCK_FD}>&-
+    ACTIVATION_LOCK_FD=""
+  fi
+  if [[ -n "$TARGET_ACTIVATION_LOCK_FD" ]]; then
+    flock -u "$TARGET_ACTIVATION_LOCK_FD" >/dev/null 2>&1 || true
+    exec {TARGET_ACTIVATION_LOCK_FD}>&-
+    TARGET_ACTIVATION_LOCK_FD=""
+  fi
+}
+
+validate_effective_activator_exec() {
+  local effective="$1"
+  perl -e '
+    use strict; use warnings;
+    my $value = do { local $/; <STDIN> };
+    exit 1 unless (() = $value =~ /argv\[\]=/g) == 1;
+    exit 1 unless (() = $value =~ /(?:^|[;{]\s*)path=/g) == 1;
+    my ($path) = $value =~ /(?:^|[;{]\s*)path=([^;]*?)\s*;/;
+    my ($argv) = $value =~ /(?:^|[;{]\s*)argv\[\]=([^;]*?)\s*;/;
+    exit 1 unless defined($path) && defined($argv);
+    exit 1 unless $path eq "/usr/local/sbin/sub2api-deployer";
+    exit 1 unless $argv eq "/usr/local/sbin/sub2api-deployer --activate-staged-control-plane";
+  ' <<<"$effective"
+}
+
+restore_frozen_activator_state() {
+  if (( UPGRADE_TIMER_WAS_ACTIVE == 1 )); then
+    systemctl start sub2api-deployer-upgrade.timer >/dev/null 2>&1 || true
+  else
+    systemctl stop sub2api-deployer-upgrade.timer >/dev/null 2>&1 || true
+  fi
+  if (( UPGRADE_SERVICE_WAS_ACTIVE == 1 )); then
+    systemctl start sub2api-deployer-upgrade.service >/dev/null 2>&1 || true
   fi
 }
 
@@ -430,6 +486,8 @@ on_exit() {
   trap - EXIT
   if (( status != 0 && MUTATION_STARTED == 1 && COMMITTED == 0 )); then
     rollback_install
+  elif (( status != 0 && ACTIVATOR_FROZEN == 1 && COMMITTED == 0 )); then
+    restore_frozen_activator_state
   fi
   if (( status != 0 && SOCKET_GROUP_CREATED == 1 && COMMITTED == 0 )); then
     groupdel "$SOCKET_GROUP_NAME" >/dev/null 2>&1 || true
@@ -439,6 +497,7 @@ on_exit() {
   elif [[ -n "$TEMP_DIR" && -d "$TEMP_DIR" ]]; then
     rm -rf -- "$TEMP_DIR"
   fi
+  release_activation_lock
   exit "$status"
 }
 trap on_exit EXIT
@@ -675,6 +734,7 @@ validate_container_name "--container" "$CONTAINER_NAME"
 for command in docker nginx systemctl ss sed grep readlink install mktemp sha256sum curl awk jq cp mv chmod chown stat rmdir perl flock env; do
   command -v "$command" >/dev/null || fail "Missing command: $command"
 done
+validate_docker_server_version
 if [[ -z "$DEPLOYER_BINARY" ]]; then
   (( ALLOW_SOURCE_BUILD == 1 )) || fail "Source builds are disabled by default; use a verified release binary or pass --allow-source-build for a dev-identity fallback"
   [[ -n "$SOURCE_DIR" && -f "$SOURCE_DIR/backend/go.mod" ]] || fail "--source must point to a Sub2API repository checkout when building the deployer"
@@ -699,6 +759,9 @@ if systemctl is-enabled --quiet sub2api-deployer-upgrade.timer >/dev/null 2>&1; 
 fi
 if systemctl is-active --quiet sub2api-deployer-upgrade.timer >/dev/null 2>&1; then
   UPGRADE_TIMER_WAS_ACTIVE=1
+fi
+if systemctl is-active --quiet sub2api-deployer-upgrade.service >/dev/null 2>&1; then
+  UPGRADE_SERVICE_WAS_ACTIVE=1
 fi
 if [[ -e "$UPGRADE_TIMER_FILE" ]]; then
   UPGRADE_TIMER_EXISTED=1
@@ -748,16 +811,19 @@ if [[ -f "$CONFIG_FILE" ]]; then
   OLD_IMAGE_STATE_FILE=$(jq -er '.image_state_path | strings | select(length > 0)' "$CONFIG_FILE")
   OLD_UPSTREAM_FILE=$(jq -er '.nginx_upstream_path | strings | select(length > 0)' "$CONFIG_FILE")
   OLD_STATE_FILE=$(jq -er '.state_path | strings | select(length > 0)' "$CONFIG_FILE")
+  EXISTING_CONTROL_PLANE_UPGRADE_REQUEST=$(jq -er '.control_plane_upgrade_path | strings | select(length > 0)' "$CONFIG_FILE")
   OLD_RUNTIME_MARKER=$(jq -er '.deployment_state_path | strings | select(length > 0)' "$CONFIG_FILE")
   OLD_SOCKET_PATH=$(jq -er '.socket_path | strings | select(length > 0)' "$CONFIG_FILE")
   CONFIGURED_SERVICE=$(jq -er '.compose_service | strings | select(length > 0)' "$CONFIG_FILE")
   CONFIGURED_PROJECT=$(jq -er '.compose_project | strings | select(length > 0)' "$CONFIG_FILE")
-  for value in "$OLD_IMAGE_STATE_FILE" "$OLD_UPSTREAM_FILE" "$OLD_STATE_FILE" "$OLD_RUNTIME_MARKER" "$OLD_SOCKET_PATH" "$CONFIGURED_PROJECT" "$CONFIGURED_SERVICE"; do
+  for value in "$OLD_IMAGE_STATE_FILE" "$OLD_UPSTREAM_FILE" "$OLD_STATE_FILE" "$OLD_RUNTIME_MARKER" "$OLD_SOCKET_PATH" "$EXISTING_CONTROL_PLANE_UPGRADE_REQUEST" "$CONFIGURED_PROJECT" "$CONFIGURED_SERVICE"; do
     reject_json_unsafe "Existing deployer path or Compose identity" "$value"
   done
-  for value in "$OLD_IMAGE_STATE_FILE" "$OLD_UPSTREAM_FILE" "$OLD_STATE_FILE" "$OLD_RUNTIME_MARKER" "$OLD_SOCKET_PATH"; do
+  for value in "$OLD_IMAGE_STATE_FILE" "$OLD_UPSTREAM_FILE" "$OLD_STATE_FILE" "$OLD_RUNTIME_MARKER" "$OLD_SOCKET_PATH" "$EXISTING_CONTROL_PLANE_UPGRADE_REQUEST"; do
     [[ "$value" == /* ]] || fail "Existing deployer paths must be absolute: $value"
   done
+  [[ $(dirname -- "$EXISTING_CONTROL_PLANE_UPGRADE_REQUEST") == "$(dirname -- "$OLD_STATE_FILE")" ]] || \
+    fail "Existing control_plane_upgrade_path must use the same directory as state_path"
   validate_container_name "Existing compose_service" "$CONFIGURED_SERVICE"
   [[ "$CONFIGURED_PROJECT" =~ ^[a-z0-9][a-z0-9_-]*$ ]] || fail "Existing compose_project is invalid"
   [[ "$OLD_RUNTIME_MARKER" == "$RUNTIME_MARKER" ]] || \
@@ -768,6 +834,20 @@ if [[ -f "$CONFIG_FILE" ]]; then
   if (( SOCKET_GID_SET == 0 )); then
     SOCKET_GID=$(jq -er '.socket_gid | numbers' "$CONFIG_FILE")
   fi
+
+  # Freeze the activator before the first host mutation. Holding the same lock
+  # as the Go activator prevents the timer from observing a partially updated
+  # binary or unit set.
+  systemctl stop sub2api-deployer-upgrade.timer
+  systemctl stop sub2api-deployer-upgrade.service
+  EXISTING_ACTIVATION_LOCK_FILE="$(dirname -- "$EXISTING_CONTROL_PLANE_UPGRADE_REQUEST")/control-plane-activation.lock"
+  acquire_root_lock "$EXISTING_ACTIVATION_LOCK_FILE" ACTIVATION_LOCK_FD
+  if [[ "$EXISTING_ACTIVATION_LOCK_FILE" != "$STATE_DIR/control-plane-activation.lock" ]]; then
+    acquire_root_lock "$STATE_DIR/control-plane-activation.lock" TARGET_ACTIVATION_LOCK_FD
+  fi
+  ACTIVATOR_FROZEN=1
+  [[ ! -e "$EXISTING_CONTROL_PLANE_UPGRADE_REQUEST" && ! -L "$EXISTING_CONTROL_PLANE_UPGRADE_REQUEST" ]] || \
+    fail "Refusing host migration while a control-plane activation request is pending"
 
   if (( SERVICE_WAS_ACTIVE == 1 )); then
     EXISTING_HEALTH=$(curl --fail --silent --show-error --max-time 10 --unix-socket "$OLD_SOCKET_PATH" http://localhost/v1/health) || \
@@ -1145,8 +1225,19 @@ install -m 0644 "$ASSET_DIR/sub2api-deployer-tmpfiles.conf" "$TMPFILES_FILE"
 rm -f -- "$RUNTIME_PRESERVE_DROPIN"
 rmdir -- "$(dirname -- "$RUNTIME_PRESERVE_DROPIN")" 2>/dev/null || true
 systemctl daemon-reload
-systemctl enable sub2api-deployer.service
-systemctl enable --now sub2api-deployer-upgrade.timer
+if (( EXISTING_INSTALL == 0 || SERVICE_WAS_ENABLED == 1 )); then
+  systemctl enable sub2api-deployer.service
+else
+  systemctl disable sub2api-deployer.service
+fi
+if (( EXISTING_INSTALL == 0 || UPGRADE_TIMER_WAS_ENABLED == 1 )); then
+  systemctl enable sub2api-deployer-upgrade.timer
+else
+  systemctl disable sub2api-deployer-upgrade.timer
+fi
+# Keep the timer active during verification so the daemon can prove the live
+# one-click capability. The activation lock prevents it from consuming work.
+systemctl start sub2api-deployer-upgrade.timer
 release_state_lock
 systemctl restart sub2api-deployer.service
 systemctl is-active --quiet sub2api-deployer.service
@@ -1179,12 +1270,11 @@ done
 (( DEPLOYER_READY == 1 )) || fail "Deployer health check failed after restart"
 
 EFFECTIVE_UPGRADE_EXEC=$(systemctl show --property=ExecStart --value sub2api-deployer-upgrade.service)
-[[ "$EFFECTIVE_UPGRADE_EXEC" == *"argv[]=/usr/local/sbin/sub2api-deployer --activate-staged-control-plane ;"* ]] || \
-  fail "Effective control-plane activator ExecStart does not match the stable deployer flag contract"
-[[ "$EFFECTIVE_UPGRADE_EXEC" != *"sub2api-deployer-upgrade"* ]] || \
-  fail "Effective control-plane activator still references the retired shell helper"
+validate_effective_activator_exec "$EFFECTIVE_UPGRADE_EXEC" || \
+  fail "Effective control-plane activator ExecStart does not exactly match the stable deployer flag contract"
 [[ ! -e "$CONTROL_PLANE_UPGRADE_REQUEST" && ! -L "$CONTROL_PLANE_UPGRADE_REQUEST" ]] || \
   fail "Refusing to validate the new activator while an activation request is pending; inspect it with the deployer control-plane status command"
+release_activation_lock
 ACTIVATOR_STATUS_BEFORE=absent
 if [[ -f "$CONTROL_PLANE_UPGRADE_REQUEST.status" && ! -L "$CONTROL_PLANE_UPGRADE_REQUEST.status" ]]; then
   ACTIVATOR_STATUS_BEFORE=$(sha256sum "$CONTROL_PLANE_UPGRADE_REQUEST.status" | awk '{print $1}')
@@ -1203,7 +1293,7 @@ fi
   fail "The Go activator changed status state while no request existed"
 rm -f -- "$INSTALLED_UPGRADER"
 
-if (( EXISTING_INSTALL == 1 )); then
+if (( EXISTING_INSTALL == 1 && SERVICE_WAS_ACTIVE == 1 )); then
   [[ $(stat -c '%i' "$SOCKET_DIRECTORY") == "$SOCKET_DIRECTORY_INODE" ]] || \
     fail "Deployer restart replaced the socket directory inode used by the running application container"
   assert_container_name_id "$ACTIVE_CONTAINER" "$INSPECTED_CONTAINER_ID"
@@ -1217,6 +1307,17 @@ if (( EXISTING_INSTALL == 1 )); then
   docker exec --user "$APPLICATION_UID" "$INSPECTED_CONTAINER_ID" sh -ceu \
     'test -S /run/sub2api-deployer/deployer.sock && test -r /run/sub2api-deployer/deployer.sock && test -w /run/sub2api-deployer/deployer.sock' || \
     fail "The running application user cannot access the restarted deployer socket"
+fi
+
+if (( EXISTING_INSTALL == 1 )); then
+  if (( UPGRADE_TIMER_WAS_ACTIVE == 1 )); then
+    systemctl start sub2api-deployer-upgrade.timer
+  else
+    systemctl stop sub2api-deployer-upgrade.timer
+  fi
+  if (( SERVICE_WAS_ACTIVE == 0 )); then
+    systemctl stop sub2api-deployer.service
+  fi
 fi
 
 COMMITTED=1

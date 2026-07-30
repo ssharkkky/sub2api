@@ -83,7 +83,7 @@ func (m *Manager) stageControlPlaneUpgrade(ctx context.Context, job *Job) (*veri
 		return nil, false, errors.New("control-plane protocol 1 image has no OCI revision label")
 	}
 
-	stageRoot := filepath.Join(filepath.Dir(m.cfg.ControlPlaneUpgradePath), "control-plane-staging")
+	stageRoot := filepath.Join(controlPlaneStateDirectory(m.cfg), "control-plane-staging")
 	if err := os.MkdirAll(stageRoot, 0700); err != nil {
 		return nil, false, fmt.Errorf("create control-plane staging root: %w", err)
 	}
@@ -127,9 +127,6 @@ func (m *Manager) stageControlPlaneUpgrade(ctx context.Context, job *Job) (*veri
 	}
 	if _, err := m.runner.Run(ctx, nil, m.cfg.DockerBinary, "cp", containerID+":"+controlPlaneBinaryPath, binaryPath); err != nil {
 		return nil, false, fmt.Errorf("extract control-plane deployer: %w", err)
-	}
-	if err := os.Chmod(binaryPath, 0755); err != nil {
-		return nil, false, fmt.Errorf("make staged deployer executable: %w", err)
 	}
 	for _, path := range []string{manifestPath, binaryPath} {
 		info, err := os.Lstat(path)
@@ -303,7 +300,7 @@ func (m *Manager) cleanupControlPlaneStage(jobID string) {
 	if strings.TrimSpace(m.cfg.ControlPlaneUpgradePath) == "" || !requestIDPattern.MatchString(jobID) {
 		return
 	}
-	stageRoot := filepath.Join(filepath.Dir(m.cfg.ControlPlaneUpgradePath), "control-plane-staging")
+	stageRoot := filepath.Join(controlPlaneStateDirectory(m.cfg), "control-plane-staging")
 	_ = os.RemoveAll(filepath.Join(stageRoot, jobID))
 }
 

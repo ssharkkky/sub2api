@@ -98,8 +98,12 @@ func defaultControlPlaneFileOps() controlPlaneFileOps {
 	}
 }
 
+func controlPlaneStateDirectory(cfg Config) string {
+	return filepath.Clean(filepath.Dir(cfg.ControlPlaneUpgradePath))
+}
+
 func defaultControlPlaneActivationPaths(cfg Config) controlPlaneActivationPaths {
-	stateDir := filepath.Dir(cfg.StatePath)
+	stateDir := controlPlaneStateDirectory(cfg)
 	request := cfg.ControlPlaneUpgradePath
 	return controlPlaneActivationPaths{
 		Request:     request,
@@ -156,20 +160,21 @@ func (a *controlPlaneActivator) activateLocked(ctx context.Context) error {
 	if !requestIDPattern.MatchString(req.JobID) {
 		return a.failMalformed(errors.New("activation request job id is invalid"))
 	}
-	status, _ := readControlPlaneStatus(a.paths.Status)
-	if status.matches(req) {
-		switch status.Status {
-		case "succeeded":
-			return a.cleanupSuccessful(req)
-		case "failed", "rollback_failed", "quarantined":
-			return a.quarantineRequest(req, status.Error)
-		}
+	status, err := readControlPlaneStatus(a.paths.Status)
+	if err != nil {
+		return a.failRequest(req, 1, "activation status is missing or unreadable: "+err.Error(), "permanent", false)
+	}
+	if err := validatePublishedActivationStatus(req, status); err != nil {
+		return a.failRequest(req, 1, "activation status is not valid transaction evidence: "+err.Error(), "permanent", false)
+	}
+	switch status.Status {
+	case "succeeded":
+		return a.cleanupSuccessful(req)
+	case "failed", "rollback_failed", "quarantined":
+		return a.quarantineRequest(req, status.Error)
 	}
 
-	attempt := 1
-	if status.matches(req) {
-		attempt = status.Attempt + 1
-	}
+	attempt := status.Attempt + 1
 	if attempt > req.MaxAttempts {
 		return a.failRequest(req, req.MaxAttempts, "activation retry budget is exhausted", "transient", false)
 	}
@@ -200,6 +205,17 @@ func (a *controlPlaneActivator) activateLocked(ctx context.Context) error {
 			return a.rollback(req, attempt, backupPath, err.Error())
 		}
 		return a.succeed(req, attempt)
+	}
+	currentVersionOutput, err := a.runner.Run(ctx, nil, a.paths.InstalledAssets[controlPlaneAssetDeployer], "--version")
+	if err != nil {
+		return a.failRequest(req, attempt, "read installed deployer build identity: "+err.Error(), "permanent", false)
+	}
+	currentIdentity, err := parseControlPlaneBuildIdentity(currentVersionOutput)
+	if err != nil {
+		return a.failRequest(req, attempt, "read installed deployer build identity: "+err.Error(), "permanent", false)
+	}
+	if controlPlaneVersionNotNewer(currentIdentity.Version, req.TargetVersion) {
+		return a.skip(req, attempt, fmt.Sprintf("target control plane %s is not newer than installed deployer %s", req.TargetVersion, currentIdentity.Version))
 	}
 
 	installedPath := a.paths.InstalledAssets[target.Type]
@@ -376,6 +392,13 @@ func (a *controlPlaneActivator) succeed(req controlPlaneActivationRequest, attem
 	return a.cleanupSuccessful(req)
 }
 
+func (a *controlPlaneActivator) skip(req controlPlaneActivationRequest, attempt int, message string) error {
+	if err := a.writeStatus(req, "skipped", attempt, message, "", nil); err != nil {
+		return err
+	}
+	return a.cleanupSuccessful(req)
+}
+
 func (a *controlPlaneActivator) cleanupSuccessful(req controlPlaneActivationRequest) error {
 	if err := a.files.removeAll(filepath.Join(a.paths.StagingRoot, req.JobID)); err != nil {
 		return err
@@ -394,13 +417,23 @@ func (a *controlPlaneActivator) failRequest(req controlPlaneActivationRequest, a
 		value := a.now().UTC().Add(time.Minute)
 		next = &value
 	}
-	if err := a.writeStatus(req, status, attempt, message, class, next); err != nil {
-		return errors.Join(errors.New(message), err)
-	}
 	if status == "failed" {
-		if err := a.quarantineRequest(req, message); err != nil {
+		staged, err := a.stageQuarantineRequest(req, message)
+		if err != nil {
 			return errors.Join(errors.New(message), err)
 		}
+		if err := a.writeStatus(req, status, attempt, message, class, next); err != nil {
+			return errors.Join(errors.New(message), err)
+		}
+		if staged {
+			if err := a.finalizeQuarantineRequest(); err != nil {
+				return errors.Join(errors.New(message), err)
+			}
+		}
+		return errors.New(message)
+	}
+	if err := a.writeStatus(req, status, attempt, message, class, next); err != nil {
+		return errors.Join(errors.New(message), err)
 	}
 	return errors.New(message)
 }
@@ -412,9 +445,18 @@ func (a *controlPlaneActivator) failMalformed(cause error) error {
 		identity.ContainerID = existing.ContainerID
 		identity.TargetVersion = existing.TargetVersion
 	}
+	staged, quarantineErr := a.stageQuarantineRequest(identity, cause.Error())
+	if quarantineErr != nil {
+		return errors.Join(cause, quarantineErr)
+	}
 	statusErr := a.writeStatus(identity, "failed", 1, cause.Error(), "permanent", nil)
-	quarantineErr := a.quarantineRequest(identity, cause.Error())
-	return errors.Join(cause, statusErr, quarantineErr)
+	if statusErr != nil {
+		return errors.Join(cause, statusErr)
+	}
+	if staged {
+		quarantineErr = a.finalizeQuarantineRequest()
+	}
+	return errors.Join(cause, quarantineErr)
 }
 
 func (a *controlPlaneActivator) writeStatus(req controlPlaneActivationRequest, status string, attempt int, message, class string, next *time.Time) error {
@@ -441,22 +483,43 @@ func (a *controlPlaneActivator) writeStatus(req controlPlaneActivationRequest, s
 }
 
 func (a *controlPlaneActivator) quarantineRequest(req controlPlaneActivationRequest, reason string) error {
-	if _, err := os.Lstat(a.paths.Request); errors.Is(err, os.ErrNotExist) {
-		return nil
-	} else if err != nil {
+	staged, err := a.stageQuarantineRequest(req, reason)
+	if err != nil || !staged {
 		return err
 	}
+	return a.finalizeQuarantineRequest()
+}
+
+func (a *controlPlaneActivator) stageQuarantineRequest(req controlPlaneActivationRequest, reason string) (bool, error) {
+	if _, err := os.Lstat(a.paths.Request); errors.Is(err, os.ErrNotExist) {
+		return false, nil
+	} else if err != nil {
+		return false, err
+	}
 	if err := ensureOwnedDirectory(a.paths.Quarantine, a.expectedUID, a.expectedGID, 0700); err != nil {
-		return err
+		return false, err
 	}
 	name := fmt.Sprintf("control-plane-upgrade.%s.%d.json", safeFilename(req.JobID), a.now().UTC().UnixNano())
 	target := filepath.Join(a.paths.Quarantine, name)
-	if err := a.files.rename(a.paths.Request, target); err != nil {
-		return err
+	if err := a.copyRegularFile(a.paths.Request, target, 0600); err != nil {
+		return false, err
 	}
 	audit := map[string]any{"job_id": req.JobID, "reason": strings.TrimSpace(reason), "quarantined_at": a.now().UTC()}
 	data, _ := json.Marshal(audit)
-	return a.files.write(target+".audit.json", append(data, '\n'), 0600)
+	if err := a.files.write(target+".audit.json", append(data, '\n'), 0600); err != nil {
+		return false, err
+	}
+	if err := a.files.syncDir(a.paths.Quarantine); err != nil {
+		return false, err
+	}
+	return true, nil
+}
+
+func (a *controlPlaneActivator) finalizeQuarantineRequest() error {
+	if err := a.files.remove(a.paths.Request); err != nil && !errors.Is(err, os.ErrNotExist) {
+		return err
+	}
+	return a.files.syncDir(filepath.Dir(a.paths.Request))
 }
 
 func readControlPlaneStatus(path string) (controlPlaneUpgradeStatus, error) {
@@ -485,6 +548,36 @@ func readActivationState(path string, uid, gid int) (State, error) {
 
 func (s controlPlaneUpgradeStatus) matches(req controlPlaneActivationRequest) bool {
 	return s.Schema == controlPlaneStatusSchema && s.JobID == req.JobID && s.ContainerID == req.ContainerID && s.TargetVersion == req.TargetVersion
+}
+
+func validatePublishedActivationStatus(req controlPlaneActivationRequest, status controlPlaneUpgradeStatus) error {
+	if !status.matches(req) || status.MaxAttempts != req.MaxAttempts || status.UpdatedAt == nil || status.UpdatedAt.IsZero() {
+		return errors.New("status identity or retry contract does not match the request")
+	}
+	if status.Attempt < 0 || status.Attempt > status.MaxAttempts {
+		return errors.New("status attempt is outside the retry contract")
+	}
+	switch status.Status {
+	case "pending":
+		if status.Attempt != 0 || status.Error != "" || status.LastError != "" || status.ErrorClass != "" || status.NextAttemptAt != nil {
+			return errors.New("pending status contains invalid retry or error state")
+		}
+	case "retrying":
+		if status.Attempt < 1 || status.Attempt >= status.MaxAttempts || status.Error == "" || status.ErrorClass != "transient" || status.NextAttemptAt == nil {
+			return errors.New("retrying status contains invalid retry state")
+		}
+	case "succeeded", "skipped":
+		if status.Attempt < 1 || status.NextAttemptAt != nil {
+			return errors.New("successful terminal status contains invalid retry state")
+		}
+	case "failed", "rollback_failed", "quarantined":
+		if status.Error == "" || status.NextAttemptAt != nil {
+			return errors.New("failed terminal status has no error evidence")
+		}
+	default:
+		return fmt.Errorf("unsupported activation status %q", status.Status)
+	}
+	return nil
 }
 
 func acquireActivationLock(path string, uid, gid int) (*os.File, bool, error) {
@@ -899,13 +992,13 @@ func quarantineControlPlaneUpgrade(activator *controlPlaneActivator, jobID, reas
 	if err != nil || health.Status != "ok" || health.Degraded || health.JobRunning || health.ActiveContainerID != req.ContainerID || health.ActiveVersion != req.TargetVersion {
 		return errors.New("live deployer health does not permit request quarantine")
 	}
-	if err := activator.writeStatus(req, "quarantined", 0, reason, "operator", nil); err != nil {
-		return err
-	}
 	if requestAlreadyQuarantined {
 		audit := map[string]any{"job_id": req.JobID, "reason": reason, "accepted_at": activator.now().UTC()}
 		data, _ := json.Marshal(audit)
-		return activator.files.write(quarantinedPath+".operator.json", append(data, '\n'), 0600)
+		if err := activator.files.write(quarantinedPath+".operator.json", append(data, '\n'), 0600); err != nil {
+			return err
+		}
+		return activator.writeStatus(req, "quarantined", 0, reason, "operator", nil)
 	}
 	if requestMissing {
 		if err := ensureOwnedDirectory(activator.paths.Quarantine, activator.expectedUID, activator.expectedGID, 0700); err != nil {
@@ -913,9 +1006,22 @@ func quarantineControlPlaneUpgrade(activator *controlPlaneActivator, jobID, reas
 		}
 		audit := map[string]any{"job_id": req.JobID, "reason": reason, "accepted_at": activator.now().UTC(), "request_missing": true, "status_reconstructed": statusReconstructed}
 		data, _ := json.Marshal(audit)
-		return activator.files.write(filepath.Join(activator.paths.Quarantine, "control-plane-upgrade."+safeFilename(req.JobID)+".operator.json"), append(data, '\n'), 0600)
+		if err := activator.files.write(filepath.Join(activator.paths.Quarantine, "control-plane-upgrade."+safeFilename(req.JobID)+".operator.json"), append(data, '\n'), 0600); err != nil {
+			return err
+		}
+		return activator.writeStatus(req, "quarantined", 0, reason, "operator", nil)
 	}
-	return activator.quarantineRequest(req, reason)
+	staged, err := activator.stageQuarantineRequest(req, reason)
+	if err != nil {
+		return err
+	}
+	if err := activator.writeStatus(req, "quarantined", 0, reason, "operator", nil); err != nil {
+		return err
+	}
+	if staged {
+		return activator.finalizeQuarantineRequest()
+	}
+	return nil
 }
 
 func newRuntimeControlPlaneActivator(cfg Config, runner CommandRunner) *controlPlaneActivator {

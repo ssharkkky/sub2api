@@ -16,9 +16,10 @@ import (
 )
 
 type activationRunner struct {
-	mu            sync.Mutex
-	restarts      int
-	restartErrors []error
+	mu             sync.Mutex
+	restarts       int
+	restartErrors  []error
+	currentVersion string
 }
 
 func (r *activationRunner) Run(_ context.Context, _ map[string]string, name string, args ...string) (string, error) {
@@ -30,6 +31,13 @@ func (r *activationRunner) Run(_ context.Context, _ map[string]string, name stri
 			return "", r.restartErrors[r.restarts-1]
 		}
 		return "", nil
+	}
+	if len(args) == 1 && args[0] == "--version" && strings.HasSuffix(name, "sub2api-deployer") {
+		version := r.currentVersion
+		if version == "" {
+			version = "0.1.168-ts.2"
+		}
+		return "Sub2API Deployer " + version + " (commit: " + strings.Repeat("a", 40) + ", built: 2026-07-30T00:00:00Z, type: release, arch: " + runtime.GOARCH + ")", nil
 	}
 	return "", nil
 }
@@ -81,6 +89,92 @@ func TestControlPlaneActivatorIdenticalPayloadDoesNotRestart(t *testing.T) {
 	status, err := readControlPlaneStatus(paths.Status)
 	if err != nil || status.Status != "succeeded" || status.Attempt != 1 {
 		t.Fatalf("status=%+v err=%v", status, err)
+	}
+}
+
+func TestControlPlaneActivatorSkipsControlPlaneDowngrade(t *testing.T) {
+	dir := t.TempDir()
+	paths := testActivationPaths(dir)
+	runner := &activationRunner{currentVersion: "0.1.168-ts.4"}
+	req := writeActivationFixture(t, paths, []byte("older-binary"))
+	installed := []byte("newer-binary")
+	if err := os.WriteFile(paths.InstalledAssets[controlPlaneAssetDeployer], installed, 0755); err != nil {
+		t.Fatal(err)
+	}
+	activator := newTestActivator(paths, runner, func() Health { return targetActivationHealth(req) })
+
+	if err := activator.activate(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	actual, err := os.ReadFile(paths.InstalledAssets[controlPlaneAssetDeployer])
+	if err != nil || string(actual) != string(installed) {
+		t.Fatalf("downgrade changed installed binary: %q err=%v", actual, err)
+	}
+	if runner.restartCount() != 0 {
+		t.Fatalf("downgrade restarted deployer %d times", runner.restartCount())
+	}
+	status, err := readControlPlaneStatus(paths.Status)
+	if err != nil || status.Status != "skipped" || !strings.Contains(status.Error, "not newer") {
+		t.Fatalf("skip status=%+v err=%v", status, err)
+	}
+}
+
+func TestControlPlaneActivatorRejectsMissingStatusTransactionEvidence(t *testing.T) {
+	dir := t.TempDir()
+	paths := testActivationPaths(dir)
+	runner := &activationRunner{}
+	req := writeActivationFixture(t, paths, []byte("new-binary"))
+	installed := []byte("old-binary")
+	if err := os.WriteFile(paths.InstalledAssets[controlPlaneAssetDeployer], installed, 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Remove(paths.Status); err != nil {
+		t.Fatal(err)
+	}
+	activator := newTestActivator(paths, runner, func() Health { return targetActivationHealth(req) })
+
+	if err := activator.activate(context.Background()); err == nil || !strings.Contains(err.Error(), "status is missing") {
+		t.Fatalf("missing status error=%v", err)
+	}
+	actual, err := os.ReadFile(paths.InstalledAssets[controlPlaneAssetDeployer])
+	if err != nil || string(actual) != string(installed) {
+		t.Fatalf("missing status changed installed binary: %q err=%v", actual, err)
+	}
+	if runner.restartCount() != 0 {
+		t.Fatalf("missing status restarted deployer %d times", runner.restartCount())
+	}
+	if _, err := os.Lstat(paths.Request); !os.IsNotExist(err) {
+		t.Fatalf("missing-status request was not quarantined: %v", err)
+	}
+	status, err := readControlPlaneStatus(paths.Status)
+	if err != nil || status.Status != "failed" || status.ErrorClass != "permanent" {
+		t.Fatalf("missing-status terminal record=%+v err=%v", status, err)
+	}
+}
+
+func TestControlPlaneActivatorRejectsMismatchedStatusRetryContract(t *testing.T) {
+	dir := t.TempDir()
+	paths := testActivationPaths(dir)
+	req := writeActivationFixture(t, paths, []byte("new-binary"))
+	status, err := readControlPlaneStatus(paths.Status)
+	if err != nil {
+		t.Fatal(err)
+	}
+	status.MaxAttempts = req.MaxAttempts - 1
+	data, _ := json.Marshal(status)
+	if err := os.WriteFile(paths.Status, append(data, '\n'), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(paths.InstalledAssets[controlPlaneAssetDeployer], []byte("old-binary"), 0755); err != nil {
+		t.Fatal(err)
+	}
+	activator := newTestActivator(paths, &activationRunner{}, func() Health { return targetActivationHealth(req) })
+
+	if err := activator.activate(context.Background()); err == nil || !strings.Contains(err.Error(), "transaction evidence") {
+		t.Fatalf("mismatched status error=%v", err)
+	}
+	if _, err := os.Lstat(paths.Request); !os.IsNotExist(err) {
+		t.Fatalf("mismatched-status request was not quarantined: %v", err)
 	}
 }
 
@@ -529,7 +623,7 @@ func TestControlPlaneActivatorStatusWriteFailureConvergesWithoutSecondRestart(t 
 	}
 }
 
-func TestControlPlaneActivatorQuarantineRenameFailureConverges(t *testing.T) {
+func TestControlPlaneActivatorQuarantineCommitFailureConverges(t *testing.T) {
 	dir := t.TempDir()
 	paths := testActivationPaths(dir)
 	req := writeActivationFixture(t, paths, []byte("new-binary"))
@@ -539,19 +633,24 @@ func TestControlPlaneActivatorQuarantineRenameFailureConverges(t *testing.T) {
 	req.MaxAttempts = 1
 	writeActivationRequest(t, paths.Request, req)
 	activator := newTestActivator(paths, &activationRunner{}, func() Health { return Health{} })
-	if err := activator.writeStatus(req, "retrying", 1, "previous failure", "transient", nil); err != nil {
+	if err := activator.writeStatus(req, "failed", 1, "previous terminal failure", "permanent", nil); err != nil {
 		t.Fatal(err)
 	}
-	rename := activator.files.rename
-	activator.files.rename = func(string, string) error { return errors.New("injected quarantine rename failure") }
+	remove := activator.files.remove
+	activator.files.remove = func(path string) error {
+		if path == paths.Request {
+			return errors.New("injected quarantine commit failure")
+		}
+		return remove(path)
+	}
 
-	if err := activator.activate(context.Background()); err == nil || !strings.Contains(err.Error(), "quarantine rename failure") {
-		t.Fatalf("quarantine rename error=%v", err)
+	if err := activator.activate(context.Background()); err == nil || !strings.Contains(err.Error(), "quarantine commit failure") {
+		t.Fatalf("quarantine commit error=%v", err)
 	}
 	if _, err := os.Stat(paths.Request); err != nil {
-		t.Fatalf("rename failure removed request: %v", err)
+		t.Fatalf("commit failure removed request: %v", err)
 	}
-	activator.files.rename = rename
+	activator.files.remove = remove
 	if err := activator.activate(context.Background()); err != nil {
 		t.Fatal(err)
 	}
@@ -591,12 +690,20 @@ func TestControlPlaneActivatorExhaustsBoundedRetryBudget(t *testing.T) {
 	if err := os.WriteFile(paths.InstalledAssets[controlPlaneAssetDeployer], []byte("old-binary"), 0755); err != nil {
 		t.Fatal(err)
 	}
-	activator := newTestActivator(paths, &activationRunner{}, func() Health { return Health{} })
-	if err := activator.writeStatus(req, "retrying", req.MaxAttempts, "previous failure", "transient", nil); err != nil {
+	healthChecks := 0
+	activator := newTestActivator(paths, &activationRunner{}, func() Health {
+		healthChecks++
+		if healthChecks <= 40 {
+			return Health{}
+		}
+		return targetActivationHealth(req)
+	})
+	next := time.Now().UTC().Add(time.Minute)
+	if err := activator.writeStatus(req, "retrying", req.MaxAttempts-1, "previous failure", "transient", &next); err != nil {
 		t.Fatal(err)
 	}
 
-	if err := activator.activate(context.Background()); err == nil || !strings.Contains(err.Error(), "retry budget") {
+	if err := activator.activate(context.Background()); err == nil || !strings.Contains(err.Error(), "health verification") {
 		t.Fatalf("retry exhaustion error=%v", err)
 	}
 	status, err := readControlPlaneStatus(paths.Status)
@@ -608,7 +715,7 @@ func TestControlPlaneActivatorExhaustsBoundedRetryBudget(t *testing.T) {
 	}
 }
 
-func TestControlPlaneActivatorIgnoresAttemptFromDifferentJob(t *testing.T) {
+func TestControlPlaneActivatorRejectsStatusFromDifferentJob(t *testing.T) {
 	dir := t.TempDir()
 	paths := testActivationPaths(dir)
 	req := writeActivationFixture(t, paths, []byte("same-binary"))
@@ -618,15 +725,16 @@ func TestControlPlaneActivatorIgnoresAttemptFromDifferentJob(t *testing.T) {
 	activator := newTestActivator(paths, &activationRunner{}, func() Health { return targetActivationHealth(req) })
 	stale := req
 	stale.JobID = "stale-activation-job"
-	if err := activator.writeStatus(stale, "retrying", 4, "stale failure", "transient", nil); err != nil {
+	next := time.Now().UTC().Add(time.Minute)
+	if err := activator.writeStatus(stale, "retrying", 4, "stale failure", "transient", &next); err != nil {
 		t.Fatal(err)
 	}
 
-	if err := activator.activate(context.Background()); err != nil {
-		t.Fatal(err)
+	if err := activator.activate(context.Background()); err == nil || !strings.Contains(err.Error(), "transaction evidence") {
+		t.Fatalf("stale status error=%v", err)
 	}
 	status, err := readControlPlaneStatus(paths.Status)
-	if err != nil || status.Status != "succeeded" || status.Attempt != 1 || status.JobID != req.JobID {
+	if err != nil || status.Status != "failed" || status.Attempt != 1 || status.JobID != req.JobID {
 		t.Fatalf("status=%+v err=%v", status, err)
 	}
 }
@@ -882,6 +990,7 @@ func writeActivationFixture(t *testing.T, paths controlPlaneActivationPaths, tar
 		}},
 	}
 	writeActivationRequest(t, paths.Request, req)
+	writePendingActivationStatus(t, paths.Status, req)
 	state := State{
 		ActiveContainer:   req.ContainerName,
 		ActiveContainerID: req.ContainerID,
@@ -894,6 +1003,24 @@ func writeActivationFixture(t *testing.T, paths controlPlaneActivationPaths, tar
 		t.Fatal(err)
 	}
 	return req
+}
+
+func writePendingActivationStatus(t *testing.T, path string, req controlPlaneActivationRequest) {
+	t.Helper()
+	now := time.Now().UTC()
+	status := controlPlaneUpgradeStatus{
+		Schema:        controlPlaneStatusSchema,
+		JobID:         req.JobID,
+		ContainerID:   req.ContainerID,
+		TargetVersion: req.TargetVersion,
+		Status:        "pending",
+		MaxAttempts:   req.MaxAttempts,
+		UpdatedAt:     &now,
+	}
+	data, _ := json.Marshal(status)
+	if err := os.WriteFile(path, append(data, '\n'), 0600); err != nil {
+		t.Fatal(err)
+	}
 }
 
 func writeActivationRequest(t *testing.T, path string, req controlPlaneActivationRequest) {

@@ -87,7 +87,12 @@ grep -Fq 'docker exec --user "$APPLICATION_UID" "$INSPECTED_CONTAINER_ID" sh -ce
 grep -Fq 'package-sub2api-deployer-bundles.sh" "$CANDIDATE_DIR/release-assets"' "$CANDIDATE_PREPARER"
 grep -Fq 'control_plane_upgrade_ready == true' "$BUNDLE_README"
 grep -Fq 'sub2api-deployer-upgrade.timer' "$INSTALLER"
-grep -Fq 'systemctl enable --now sub2api-deployer-upgrade.timer' "$INSTALLER"
+grep -Fq 'validate_docker_server_version' "$INSTALLER"
+grep -Fq 'systemctl stop sub2api-deployer-upgrade.timer' "$INSTALLER"
+grep -Fq 'systemctl stop sub2api-deployer-upgrade.service' "$INSTALLER"
+grep -Fq 'EXISTING_CONTROL_PLANE_UPGRADE_REQUEST=$(jq -er' "$INSTALLER"
+grep -Fq 'EXISTING_ACTIVATION_LOCK_FILE="$(dirname -- "$EXISTING_CONTROL_PLANE_UPGRADE_REQUEST")/control-plane-activation.lock"' "$INSTALLER"
+grep -Fq 'acquire_root_lock "$EXISTING_ACTIVATION_LOCK_FILE" ACTIVATION_LOCK_FD' "$INSTALLER"
 grep -Fq 'ExecStart=/usr/local/sbin/sub2api-deployer --activate-staged-control-plane' "$REPO_ROOT/deploy/sub2api-deployer-upgrade.service"
 grep -Fq 'EFFECTIVE_UPGRADE_EXEC=$(systemctl show --property=ExecStart --value sub2api-deployer-upgrade.service)' "$INSTALLER"
 grep -Fq 'rm -f -- "$INSTALLED_UPGRADER"' "$INSTALLER"
@@ -159,13 +164,23 @@ if grep -Fq '"${CANDIDATE_IMAGE}@${IMAGE_DIGEST}"' <<<"$promotion_block"; then
 fi
 grep -Fq 'assert-image-digest-matches' "$PROMOTE_WORKFLOW"
 grep -Fq 'verify-completion-candidate' "$RELEASE_WORKFLOW"
+grep -Fq 'verify-release-audit-assets' "$RELEASE_WORKFLOW"
+grep -Fq 'sub2api-build-once-candidate.json' "$RELEASE_WORKFLOW"
+grep -Fq 'sub2api-build-once-MANIFEST.sha256' "$RELEASE_WORKFLOW"
+grep -Fq 'sub2api-control-plane-MANIFEST.json' "$RELEASE_WORKFLOW"
 grep -Fq 'WORKFLOW_SHA: ${{ github.workflow_sha }}' "$RELEASE_WORKFLOW"
-grep -Fq 'schema: 4' "$RELEASE_WORKFLOW"
-grep -Fq 'workflow_commit: $c.workflow_commit' "$RELEASE_WORKFLOW"
-grep -Fq 'workflow_blobs: $c.workflow_blobs' "$RELEASE_WORKFLOW"
+grep -Fq 'schema: 3' "$RELEASE_WORKFLOW"
+if grep -Fq 'workflow_commit: $c.workflow_commit' "$RELEASE_WORKFLOW"; then
+  fail "ts.3 completion ledger must remain schema-3 compatible with the ts.2 application"
+fi
+grep -Fq '.workflow_commit == $expected_sha' "$PROMOTE_WORKFLOW"
+grep -Fq '.workflow_blobs["release.yml"] == $release_blob' "$PROMOTE_WORKFLOW"
 grep -Fq 'WORKFLOW_SHA: ${{ github.workflow_sha }}' "$PROMOTE_WORKFLOW"
 grep -Fq "go test -tags integration ./internal/deployer -run '^TestRealDockerControlPlaneStaging$'" "$PREFLIGHT_WORKFLOW"
 test -f "$REPO_ROOT/backend/internal/deployer/control_plane_upgrade_integration_test.go"
+test -x "$REPO_ROOT/deploy/tests/systemd-control-plane-activation-test.sh"
+grep -Fq 'SUB2API_SYSTEMD_TEST_EPHEMERAL=1' "$PREFLIGHT_WORKFLOW"
+grep -Fq 'systemd-control-plane-activation-test.sh' "$PREFLIGHT_WORKFLOW"
 grep -Fq 'release-safety.sh publish-release-with-latest \' "$RELEASE_WORKFLOW"
 if [[ $(grep -Fc 'gh release view "$RELEASE_TAG"' "$RELEASE_WORKFLOW") -lt 3 ]]; then
   echo "draft and published release states must be verified through GitHub CLI" >&2
@@ -240,8 +255,8 @@ for predicate in \
   fi
 done
 
-quiesce_line=$(grep -n 'systemctl stop sub2api-deployer.service' "$INSTALLER" | tail -1 | cut -d: -f1)
 install_line=$(grep -n 'install -m 0755 "$TEMP_DIR/sub2api-deployer" "$INSTALLED_BINARY"' "$INSTALLER" | cut -d: -f1)
+quiesce_line=$(grep -n 'systemctl stop sub2api-deployer.service' "$INSTALLER" | cut -d: -f1 | awk -v install="$install_line" '$1 < install { line=$1 } END { print line }')
 if [[ -z "$quiesce_line" || -z "$install_line" || "$quiesce_line" -ge "$install_line" ]]; then
   echo "an existing deployer must be stopped before managed files are replaced" >&2
   exit 1

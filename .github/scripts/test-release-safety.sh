@@ -335,6 +335,48 @@ expect_failure 'does not match the checksum manifest' bash "$SAFETY_SCRIPT" \
   "$TEST_ROOT/bad-schema4-deployer-asset.json" "$DEPLOYER_CHECKSUMS_FILE"
 bash "$SAFETY_SCRIPT" verify-completion-candidate \
   "$TEST_ROOT/completion-schema4.json" "$CANDIDATE_DIR"
+
+AUDIT_CANDIDATE="$TEST_ROOT/sub2api-build-once-candidate.json"
+AUDIT_MANIFEST="$TEST_ROOT/sub2api-build-once-MANIFEST.sha256"
+AUDIT_CONTROL_MANIFEST="$TEST_ROOT/sub2api-control-plane-MANIFEST.json"
+AUDIT_COMPLETION="$TEST_ROOT/sub2api-release-complete-audit.json"
+cp "$CANDIDATE_DIR/candidate.json" "$AUDIT_CANDIDATE"
+jq -n \
+  --arg version "$(jq -er '.version' "$AUDIT_CANDIDATE")" \
+  --arg commit "$MAIN_COMMIT" '
+    {
+      schema: 2,
+      version: $version,
+      commit: $commit,
+      runtime_payload: {
+        "linux/amd64": {assets: [{type: "sub2api-deployer"}]},
+        "linux/arm64": {assets: [{type: "sub2api-deployer"}]}
+      }
+    }
+  ' > "$AUDIT_CONTROL_MANIFEST"
+AUDIT_CONTROL_SHA="sha256:$(sha256sum "$AUDIT_CONTROL_MANIFEST" | awk '{print $1}')"
+jq --arg digest "$AUDIT_CONTROL_SHA" '.control_plane_manifest_sha256 = $digest' \
+  "$AUDIT_CANDIDATE" > "$AUDIT_CANDIDATE.next"
+mv "$AUDIT_CANDIDATE.next" "$AUDIT_CANDIDATE"
+AUDIT_CANDIDATE_SHA=$(sha256sum "$AUDIT_CANDIDATE" | awk '{print $1}')
+printf '%s  candidate.json\n' "$AUDIT_CANDIDATE_SHA" > "$AUDIT_MANIFEST"
+AUDIT_MANIFEST_SHA="sha256:$(sha256sum "$AUDIT_MANIFEST" | awk '{print $1}')"
+jq \
+  --arg control_digest "$AUDIT_CONTROL_SHA" \
+  --arg candidate_manifest_digest "$AUDIT_MANIFEST_SHA" '
+    .schema = 3
+    | .control_plane_manifest_sha256 = $control_digest
+    | .candidate_manifest_sha256 = $candidate_manifest_digest
+    | del(.workflow_commit, .workflow_blobs)
+  ' "$COMPLETION_FILE" > "$AUDIT_COMPLETION"
+bash "$SAFETY_SCRIPT" verify-release-audit-assets \
+  "$AUDIT_COMPLETION" "$AUDIT_CANDIDATE" "$AUDIT_MANIFEST" "$AUDIT_CONTROL_MANIFEST"
+cp "$AUDIT_CANDIDATE" "$TEST_ROOT/tampered-audit-candidate.json"
+printf '\n' >> "$TEST_ROOT/tampered-audit-candidate.json"
+expect_failure 'does not match its manifest' bash "$SAFETY_SCRIPT" \
+  verify-release-audit-assets \
+  "$AUDIT_COMPLETION" "$TEST_ROOT/tampered-audit-candidate.json" "$AUDIT_MANIFEST" "$AUDIT_CONTROL_MANIFEST"
+
 jq '.workflow_blobs["release.yml"] = "bad"' \
   "$TEST_ROOT/completion-schema4.json" > "$TEST_ROOT/bad-workflow-completion.json"
 expect_failure 'does not match' bash "$SAFETY_SCRIPT" verify-completion-json \

@@ -125,9 +125,17 @@ ancestry, release ordering, committed `VERSION`, and absence of same-version
 GitHub Releases and registry images again. GoReleaser creates a draft release.
 The workflow binds each registry version tag to the digest recorded by that
 exact GoReleaser build, then verifies the amd64 and arm64 manifests, deployer
-checksums, and schema-4 completion ledger. The ledger binds the exact commit
-and Git blob IDs of the preflight, promotion, and release workflows audited
-before tag creation. Before mutating a registry, its
+checksums, and the release completion ledger. The `v0.1.168-ts.3` bridge release
+keeps that public ledger at schema `3` so the `ts.2` application can verify and
+start the update. Its schema-2 Build Once candidate still binds the exact commit
+and Git blob IDs of the preflight, promotion, and release workflows, and every
+workflow verifies that identity before tag creation or publication. Releases
+after all managed hosts can parse schema `4` may carry the same workflow identity
+in the completion ledger itself. To keep the bridge release independently
+auditable after the temporary Actions artifact expires, the Release permanently
+stores the exact Build Once `candidate.json`, its checksum manifest, and the
+control-plane manifest; the release job downloads those assets again and verifies
+their digest chain before publication. Before mutating a registry, its
 current `latest` must equal the digest bound to the preceding completed release,
 or the pinned one-time bootstrap digest; missing or drifted tags fail closed.
 It promotes only those verified `latest` tags and restores the same authenticated
