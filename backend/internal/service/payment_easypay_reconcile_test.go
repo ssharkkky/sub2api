@@ -110,7 +110,7 @@ func TestReconcilePendingEasyPayOrderOverlappingWebhookCreditsOnce(t *testing.T)
 			return
 		}
 		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write([]byte(`{"code":1,"trade_status":"TRADE_SUCCESS","money":"50.00","trade_no":"easypay-overlap"}`))
+		_, _ = w.Write([]byte(`{"code":1,"trade_status":"TRADE_SUCCESS","money":"50.00","trade_no":"easypay-overlap","out_trade_no":"sub2_easypay_safety","pid":"pid-safety"}`))
 	})
 
 	type reconcileResult struct {
@@ -164,7 +164,7 @@ func TestReconcilePendingEasyPayOrderLeavesExplicitUnpaidPending(t *testing.T) {
 func TestReconcilePendingEasyPayOrderRejectsAmountMismatch(t *testing.T) {
 	fixture := newEasyPayReconcileFixture(t, func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write([]byte(`{"code":1,"trade_status":"TRADE_SUCCESS","money":"49.00","trade_no":"easypay-wrong-amount"}`))
+		_, _ = w.Write([]byte(`{"code":1,"trade_status":"TRADE_SUCCESS","money":"49.00","trade_no":"easypay-wrong-amount","out_trade_no":"sub2_easypay_safety","pid":"pid-safety"}`))
 	})
 
 	recovered, err := fixture.service.ReconcilePendingEasyPayOrders(context.Background())
@@ -184,4 +184,56 @@ func TestReconcilePendingEasyPayOrderRejectsAmountMismatch(t *testing.T) {
 		All(context.Background())
 	require.NoError(t, err)
 	require.Len(t, logs, 1)
+}
+
+func TestReconcilePendingEasyPayOrderRejectsMismatchedOrderIdentity(t *testing.T) {
+	fixture := newEasyPayReconcileFixture(t, func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"code":1,"trade_status":"TRADE_SUCCESS","money":"50.00","trade_no":"easypay-wrong-order","out_trade_no":"another-order","pid":"pid-safety"}`))
+	})
+
+	recovered, err := fixture.service.ReconcilePendingEasyPayOrders(context.Background())
+	require.NoError(t, err)
+	require.Zero(t, recovered)
+	reloaded, err := fixture.client.PaymentOrder.Get(context.Background(), fixture.order.ID)
+	require.NoError(t, err)
+	require.Equal(t, OrderStatusPending, reloaded.Status)
+	require.Zero(t, fixture.userRepo.getByIDUser.Balance)
+	require.Empty(t, fixture.redeemRepo.useCalls)
+
+	logs, err := fixture.client.PaymentAuditLog.Query().
+		Where(
+			paymentauditlog.OrderIDEQ(strconv.FormatInt(fixture.order.ID, 10)),
+			paymentauditlog.ActionEQ("PAYMENT_QUERY_IDENTITY_MISMATCH"),
+		).
+		All(context.Background())
+	require.NoError(t, err)
+	require.Len(t, logs, 1)
+}
+
+func TestReconcilePendingEasyPayOrderRollsBackWhenRecoveryAuditFails(t *testing.T) {
+	fixture := newEasyPayReconcileFixture(t, func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"code":1,"trade_status":"TRADE_SUCCESS","money":"50.00","trade_no":"easypay-audit-failure","out_trade_no":"sub2_easypay_safety","pid":"pid-safety"}`))
+	})
+	exec, ok := fixture.client.Driver().(refundNotificationSQLExecutor)
+	require.True(t, ok)
+	_, err := exec.ExecContext(context.Background(), `
+		CREATE TRIGGER fail_recovery_audit
+		BEFORE INSERT ON payment_audit_logs
+		WHEN NEW.action = 'ORDER_RECOVERED_BY_RECONCILE'
+		BEGIN
+			SELECT RAISE(FAIL, 'recovery audit unavailable');
+		END;
+	`)
+	require.NoError(t, err)
+
+	recovered, err := fixture.service.ReconcilePendingEasyPayOrders(context.Background())
+	require.NoError(t, err)
+	require.Zero(t, recovered)
+	reloaded, err := fixture.client.PaymentOrder.Get(context.Background(), fixture.order.ID)
+	require.NoError(t, err)
+	require.Equal(t, OrderStatusPending, reloaded.Status)
+	require.Zero(t, fixture.userRepo.getByIDUser.Balance)
+	require.Empty(t, fixture.redeemRepo.useCalls)
 }

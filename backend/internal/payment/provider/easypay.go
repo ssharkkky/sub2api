@@ -20,6 +20,10 @@ import (
 	"github.com/Wei-Shaw/sub2api/internal/payment"
 )
 
+// ErrEasyPayQueryIdentityMismatch means the query response cannot be bound to
+// the exact merchant order that was requested. Callers must fail closed.
+var ErrEasyPayQueryIdentityMismatch = errors.New("easypay query identity mismatch")
+
 // EasyPay constants.
 const (
 	easypayCodeSuccess     = 1
@@ -272,6 +276,8 @@ func (e *EasyPay) QueryOrder(ctx context.Context, tradeNo string) (*payment.Quer
 		Status      *int    `json:"status"`
 		Money       *string `json:"money"`
 		TradeNo     *string `json:"trade_no"`
+		OutTradeNo  *string `json:"out_trade_no"`
+		PID         *string `json:"pid"`
 	}
 	var resp struct {
 		Code        *int             `json:"code"`
@@ -280,6 +286,8 @@ func (e *EasyPay) QueryOrder(ctx context.Context, tradeNo string) (*payment.Quer
 		Status      *int             `json:"status"`
 		Money       *string          `json:"money"`
 		TradeNo     *string          `json:"trade_no"`
+		OutTradeNo  *string          `json:"out_trade_no"`
+		PID         *string          `json:"pid"`
 		Data        easyPayQueryData `json:"data"`
 	}
 	if err := json.Unmarshal(body, &resp); err != nil {
@@ -294,6 +302,23 @@ func (e *EasyPay) QueryOrder(ctx context.Context, tradeNo string) (*payment.Quer
 	status, err := classifyEasyPayQueryStatus(tradeStatus, numericStatus)
 	if err != nil {
 		return nil, err
+	}
+	responseOutTradeNo := firstNonEmptyStringPointer(resp.OutTradeNo, resp.Data.OutTradeNo)
+	responsePID := firstNonEmptyStringPointer(resp.PID, resp.Data.PID)
+	if responseOutTradeNo != nil && strings.TrimSpace(*responseOutTradeNo) != strings.TrimSpace(tradeNo) {
+		return nil, fmt.Errorf("%w: response out_trade_no differs from the requested order", ErrEasyPayQueryIdentityMismatch)
+	}
+	expectedPID := strings.TrimSpace(e.config["pid"])
+	if responsePID != nil && strings.TrimSpace(*responsePID) != expectedPID {
+		return nil, fmt.Errorf("%w: response merchant pid differs from the configured merchant", ErrEasyPayQueryIdentityMismatch)
+	}
+	if status == payment.ProviderStatusPaid {
+		if responseOutTradeNo == nil {
+			return nil, fmt.Errorf("%w: paid response is missing out_trade_no", ErrEasyPayQueryIdentityMismatch)
+		}
+		if responsePID == nil {
+			return nil, fmt.Errorf("%w: paid response is missing merchant pid", ErrEasyPayQueryIdentityMismatch)
+		}
 	}
 
 	money := ""
@@ -318,11 +343,15 @@ func (e *EasyPay) QueryOrder(ctx context.Context, tradeNo string) (*payment.Quer
 			return nil, fmt.Errorf("easypay query returned invalid amount: %w", err)
 		}
 	}
+	metadata := e.MerchantIdentityMetadata()
+	if responsePID != nil {
+		metadata = map[string]string{"pid": strings.TrimSpace(*responsePID)}
+	}
 	return &payment.QueryOrderResponse{
 		TradeNo:  responseTradeNo,
 		Status:   status,
 		Amount:   amount,
-		Metadata: e.MerchantIdentityMetadata(),
+		Metadata: metadata,
 	}, nil
 }
 

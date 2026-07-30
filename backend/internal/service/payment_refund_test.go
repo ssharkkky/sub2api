@@ -6,7 +6,9 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"strconv"
+	"strings"
 	"testing"
 	"time"
 
@@ -72,7 +74,6 @@ func TestRejectRefundRequestRestoresCompletedAndNotifiesUser(t *testing.T) {
 		notificationEmailService:    notificationSvc,
 		notificationEmailDispatcher: NewNotificationEmailDispatcher(deliveryRepo, notificationSvc),
 	}
-
 	require.NoError(t, svc.RejectRefundRequest(ctx, order.ID, 42, "不符合退款条件"))
 
 	reloaded, err := client.PaymentOrder.Get(ctx, order.ID)
@@ -175,14 +176,48 @@ func TestRejectRefundRequestMakesPreparedApprovalStale(t *testing.T) {
 	require.NoError(t, err)
 
 	svc := &PaymentService{entClient: client}
-	staleApproval := &RefundPlan{OrderID: order.ID, Order: order}
+	firstRequest := order
+	staleApproval := &RefundPlan{OrderID: order.ID, Order: firstRequest}
 	require.NoError(t, svc.RejectRefundRequest(ctx, order.ID, 42, "not eligible"))
+
+	secondRequestedAt := time.Now().Add(time.Second)
+	secondRequestIdentity, identityErr := newRefundRequestIdentity()
+	require.NoError(t, identityErr)
+	updated, err := client.PaymentOrder.UpdateOneID(order.ID).
+		SetStatus(OrderStatusRefundRequested).
+		SetRefundAmount(7).
+		SetRefundRequestedAt(secondRequestedAt).
+		SetRefundRequestReason("second request").
+		SetRefundRequestedBy(secondRequestIdentity).
+		Save(ctx)
+	require.NoError(t, err)
+	require.Equal(t, OrderStatusRefundRequested, updated.Status)
 
 	_, err = svc.ExecuteRefund(ctx, staleApproval)
 	require.Error(t, err)
+	require.Error(t, svc.rejectRefundRequestDecision(ctx, firstRequest, 42, "stale rejection"))
 	reloaded, reloadErr := client.PaymentOrder.Get(ctx, order.ID)
 	require.NoError(t, reloadErr)
-	require.Equal(t, OrderStatusCompleted, reloaded.Status)
+	require.Equal(t, OrderStatusRefundRequested, reloaded.Status)
+	require.Equal(t, 7.0, reloaded.RefundAmount)
+	require.Equal(t, "second request", psStringValue(reloaded.RefundRequestReason))
+
+	exec, ok := client.Driver().(refundNotificationSQLExecutor)
+	require.True(t, ok)
+	_, err = exec.ExecContext(ctx, `
+		CREATE TRIGGER fail_reject_audit
+		BEFORE INSERT ON payment_audit_logs
+		WHEN NEW.action = 'REFUND_REQUEST_REJECTED'
+		BEGIN
+			SELECT RAISE(FAIL, 'refund rejection audit unavailable');
+		END;
+	`)
+	require.NoError(t, err)
+	require.Error(t, svc.RejectRefundRequest(ctx, order.ID, 42, "current rejection"))
+	reloaded, reloadErr = client.PaymentOrder.Get(ctx, order.ID)
+	require.NoError(t, reloadErr)
+	require.Equal(t, OrderStatusRefundRequested, reloaded.Status)
+	require.Equal(t, "second request", psStringValue(reloaded.RefundRequestReason))
 }
 
 func TestRequestRefundQueuesDurablyWithoutRollingBackOrDuplicatingRequest(t *testing.T) {
@@ -255,6 +290,15 @@ func TestRequestRefundQueuesDurablyWithoutRollingBackOrDuplicatingRequest(t *tes
 	reloaded, err := client.PaymentOrder.Get(ctx, order.ID)
 	require.NoError(t, err)
 	require.Equal(t, OrderStatusRefundRequested, reloaded.Status)
+	require.NotNil(t, reloaded.RefundRequestedBy)
+	require.True(t, strings.HasPrefix(*reloaded.RefundRequestedBy, "r:"))
+	require.Len(t, *reloaded.RefundRequestedBy, 18)
+	requestAudits, err := client.PaymentAuditLog.Query().
+		Where(paymentauditlog.OrderIDEQ(strconv.FormatInt(order.ID, 10)), paymentauditlog.ActionEQ("REFUND_REQUESTED")).
+		All(ctx)
+	require.NoError(t, err)
+	require.Len(t, requestAudits, 1)
+	require.Equal(t, fmt.Sprintf("user:%d", user.ID), requestAudits[0].Operator)
 	require.Error(t, svc.RequestRefund(ctx, order.ID, user.ID, "duplicate charge"))
 
 	deliveryRepo.mu.Lock()

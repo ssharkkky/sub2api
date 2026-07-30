@@ -13,6 +13,7 @@ import (
 	"github.com/Wei-Shaw/sub2api/ent/paymentauditlog"
 	"github.com/Wei-Shaw/sub2api/ent/paymentorder"
 	"github.com/Wei-Shaw/sub2api/internal/payment"
+	paymentprovider "github.com/Wei-Shaw/sub2api/internal/payment/provider"
 	infraerrors "github.com/Wei-Shaw/sub2api/internal/pkg/errors"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/servertiming"
 )
@@ -232,6 +233,13 @@ func (s *PaymentService) checkPaidWithOptions(ctx context.Context, o *dbent.Paym
 	resp, err := prov.QueryOrder(ctx, queryRef)
 	finishProviderCall()
 	if err != nil {
+		if errors.Is(err, paymentprovider.ErrEasyPayQueryIdentityMismatch) {
+			s.writeAuditLog(ctx, o.ID, "PAYMENT_QUERY_IDENTITY_MISMATCH", prov.ProviderKey(), map[string]any{
+				"query_ref": queryRef,
+				"detail":    err.Error(),
+			})
+			return checkPaidResult{outcome: checkPaidResultRejected}
+		}
 		slog.Warn("query upstream failed", "orderID", o.ID, "error", err)
 		return checkPaidResult{outcome: checkPaidResultUnknown}
 	}

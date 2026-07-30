@@ -150,18 +150,11 @@ func expectedNotificationProviderKey(registry *payment.Registry, orderPaymentTyp
 func (s *PaymentService) toPaid(ctx context.Context, o *dbent.PaymentOrder, tradeNo string, paid float64, pk string) error {
 	previousStatus := o.Status
 	now := time.Now()
-	grace := now.Add(-paymentGraceMinutes * time.Minute)
-	c, err := s.entClient.PaymentOrder.Update().Where(
-		paymentorder.IDEQ(o.ID),
-		paymentorder.Or(
-			paymentorder.StatusEQ(OrderStatusPending),
-			paymentorder.StatusEQ(OrderStatusCancelled),
-			paymentorder.And(
-				paymentorder.StatusEQ(OrderStatusExpired),
-				paymentorder.UpdatedAtGTE(grace),
-			),
-		),
-	).SetStatus(OrderStatusPaid).SetPayAmount(paid).SetPaymentTradeNo(tradeNo).SetPaidAt(now).ClearFailedAt().ClearFailedReason().Save(ctx)
+	var recovery *paymentRecoveryContextValue
+	if value, ok := paymentRecoveryContextFrom(ctx); ok {
+		recovery = &value
+	}
+	c, err := s.transitionOrderToPaid(ctx, o, tradeNo, paid, pk, now, recovery)
 	if err != nil {
 		return fmt.Errorf("update to PAID: %w", err)
 	}
@@ -186,20 +179,69 @@ func (s *PaymentService) toPaid(ctx context.Context, o *dbent.PaymentOrder, trad
 	if err := s.executeFulfillment(ctx, o.ID); err != nil {
 		return err
 	}
-	if recovery, ok := paymentRecoveryContextFrom(ctx); ok {
-		if recovery.trace != nil {
-			recovery.trace.recovered = true
+	if recovery != nil && recovery.trace != nil {
+		recovery.trace.recovered = true
+	}
+	return nil
+}
+
+func (s *PaymentService) transitionOrderToPaid(ctx context.Context, o *dbent.PaymentOrder, tradeNo string, paid float64, pk string, now time.Time, recovery *paymentRecoveryContextValue) (int, error) {
+	grace := now.Add(-paymentGraceMinutes * time.Minute)
+	update := func(callCtx context.Context, client *dbent.Client) (int, error) {
+		return client.PaymentOrder.Update().Where(
+			paymentorder.IDEQ(o.ID),
+			paymentorder.Or(
+				paymentorder.StatusEQ(OrderStatusPending),
+				paymentorder.StatusEQ(OrderStatusCancelled),
+				paymentorder.And(
+					paymentorder.StatusEQ(OrderStatusExpired),
+					paymentorder.UpdatedAtGTE(grace),
+				),
+			),
+		).SetStatus(OrderStatusPaid).SetPayAmount(paid).SetPaymentTradeNo(tradeNo).SetPaidAt(now).ClearFailedAt().ClearFailedReason().Save(callCtx)
+	}
+	if recovery == nil {
+		return update(ctx, s.entClient)
+	}
+
+	writeRecovery := func(callCtx context.Context, client *dbent.Client) (int, error) {
+		updated, err := update(callCtx, client)
+		if err != nil || updated == 0 {
+			return updated, err
 		}
-		s.writeAuditLog(ctx, o.ID, "ORDER_RECOVERED_BY_RECONCILE", pk, map[string]any{
+		delay := now.Sub(o.CreatedAt)
+		if delay < 0 {
+			delay = 0
+		}
+		if err := createPaymentAuditLog(callCtx, client, o.ID, "ORDER_RECOVERED_BY_RECONCILE", pk, map[string]any{
 			"order_id":               o.ID,
 			"queried_at":             recovery.queriedAt.UTC().Format(time.RFC3339Nano),
 			"provider_trade_no":      tradeNo,
 			"paid_amount":            paid,
-			"recovery_delay_seconds": int64(time.Since(o.CreatedAt).Seconds()),
+			"recovery_delay_seconds": int64(delay.Seconds()),
 			"source":                 recovery.source,
-		})
+		}); err != nil {
+			return 0, fmt.Errorf("record reconciled payment recovery: %w", err)
+		}
+		return updated, nil
 	}
-	return nil
+	if tx := dbent.TxFromContext(ctx); tx != nil {
+		return writeRecovery(ctx, tx.Client())
+	}
+	tx, err := s.entClient.Tx(ctx)
+	if err != nil {
+		return 0, fmt.Errorf("begin reconciled payment transaction: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+	txCtx := dbent.NewTxContext(ctx, tx)
+	updated, err := writeRecovery(txCtx, tx.Client())
+	if err != nil {
+		return 0, err
+	}
+	if err := tx.Commit(); err != nil {
+		return 0, fmt.Errorf("commit reconciled payment transaction: %w", err)
+	}
+	return updated, nil
 }
 
 func (s *PaymentService) alreadyProcessed(ctx context.Context, o *dbent.PaymentOrder) error {

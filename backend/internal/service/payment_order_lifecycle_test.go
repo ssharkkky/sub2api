@@ -680,7 +680,7 @@ func TestReconcilePendingEasyPayOrdersBackfillsPaidAlipayOrder(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		queryCalls++
 		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write([]byte(`{"code":1,"trade_status":"TRADE_SUCCESS","money":"50.00","trade_no":"easypay-upstream-123"}`))
+		_, _ = w.Write([]byte(`{"code":1,"trade_status":"TRADE_SUCCESS","money":"50.00","trade_no":"easypay-upstream-123","out_trade_no":"sub2_easypay_reconcile","pid":"pid-1"}`))
 	}))
 	defer server.Close()
 

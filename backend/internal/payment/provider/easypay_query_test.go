@@ -25,7 +25,7 @@ func TestEasyPayQueryOrderStatusMapping(t *testing.T) {
 	}{
 		{
 			name:        "top level trade success is paid",
-			body:        `{"code":1,"trade_status":"TRADE_SUCCESS","status":0,"money":"12.34","trade_no":"gateway-123"}`,
+			body:        `{"code":1,"trade_status":"TRADE_SUCCESS","status":0,"money":"12.34","trade_no":"gateway-123","out_trade_no":"order-123","pid":"pid-1"}`,
 			wantStatus:  payment.ProviderStatusPaid,
 			wantTradeNo: "gateway-123",
 			wantAmount:  12.34,
@@ -44,21 +44,21 @@ func TestEasyPayQueryOrderStatusMapping(t *testing.T) {
 		},
 		{
 			name:        "empty trade status falls back to paid numeric status",
-			body:        `{"code":1,"trade_status":"","status":1,"money":"12.34"}`,
+			body:        `{"code":1,"trade_status":"","status":1,"money":"12.34","out_trade_no":"order-123","pid":"pid-1"}`,
 			wantStatus:  payment.ProviderStatusPaid,
 			wantTradeNo: orderID,
 			wantAmount:  12.34,
 		},
 		{
 			name:        "nested data trade success is paid",
-			body:        `{"code":1,"data":{"trade_status":"TRADE_SUCCESS","status":0,"money":"9.99","trade_no":"data-456"}}`,
+			body:        `{"code":1,"data":{"trade_status":"TRADE_SUCCESS","status":0,"money":"9.99","trade_no":"data-456","out_trade_no":"order-123","pid":"pid-1"}}`,
 			wantStatus:  payment.ProviderStatusPaid,
 			wantTradeNo: "data-456",
 			wantAmount:  9.99,
 		},
 		{
 			name:        "legacy numeric paid status remains compatible",
-			body:        `{"code":1,"status":1,"money":"3.21"}`,
+			body:        `{"code":1,"status":1,"money":"3.21","out_trade_no":"order-123","pid":"pid-1"}`,
 			wantStatus:  payment.ProviderStatusPaid,
 			wantTradeNo: orderID,
 			wantAmount:  3.21,
@@ -93,7 +93,22 @@ func TestEasyPayQueryOrderStatusMapping(t *testing.T) {
 		},
 		{
 			name:    "paid response with malformed amount is unknown",
-			body:    `{"code":1,"status":1,"money":"not-a-number"}`,
+			body:    `{"code":1,"status":1,"money":"not-a-number","out_trade_no":"order-123","pid":"pid-1"}`,
+			wantErr: true,
+		},
+		{
+			name:    "paid response for another order is rejected",
+			body:    `{"code":1,"status":1,"money":"12.34","out_trade_no":"other-order","pid":"pid-1"}`,
+			wantErr: true,
+		},
+		{
+			name:    "paid response for another merchant is rejected",
+			body:    `{"code":1,"status":1,"money":"12.34","out_trade_no":"order-123","pid":"pid-other"}`,
+			wantErr: true,
+		},
+		{
+			name:    "paid response without upstream identity is rejected",
+			body:    `{"code":1,"status":1,"money":"12.34"}`,
 			wantErr: true,
 		},
 	}
