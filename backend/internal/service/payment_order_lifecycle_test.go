@@ -771,6 +771,12 @@ func TestReconcilePendingEasyPayOrdersBackfillsPaidAlipayOrder(t *testing.T) {
 	require.Equal(t, 50.0, userRepo.getByIDUser.Balance)
 	require.Len(t, redeemRepo.useCalls, 1)
 
+	detectedLogs, err := client.PaymentAuditLog.Query().
+		Where(paymentauditlog.OrderIDEQ(strconv.FormatInt(order.ID, 10)), paymentauditlog.ActionEQ(paymentDetectedByReconcileAction)).
+		All(ctx)
+	require.NoError(t, err)
+	require.Len(t, detectedLogs, 1)
+
 	logs, err := client.PaymentAuditLog.Query().
 		Where(paymentauditlog.OrderIDEQ(strconv.FormatInt(order.ID, 10)), paymentauditlog.ActionEQ("ORDER_RECOVERED_BY_RECONCILE")).
 		All(ctx)

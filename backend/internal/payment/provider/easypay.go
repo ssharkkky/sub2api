@@ -305,6 +305,7 @@ func (e *EasyPay) QueryOrder(ctx context.Context, tradeNo string) (*payment.Quer
 	}
 	responseOutTradeNo := firstNonEmptyStringPointer(resp.OutTradeNo, resp.Data.OutTradeNo)
 	responsePID := firstNonEmptyStringPointer(resp.PID, resp.Data.PID)
+	responseTradeNo := firstNonEmptyStringPointer(resp.TradeNo, resp.Data.TradeNo)
 	if responseOutTradeNo != nil && strings.TrimSpace(*responseOutTradeNo) != strings.TrimSpace(tradeNo) {
 		return nil, fmt.Errorf("%w: response out_trade_no differs from the requested order", ErrEasyPayQueryIdentityMismatch)
 	}
@@ -319,6 +320,9 @@ func (e *EasyPay) QueryOrder(ctx context.Context, tradeNo string) (*payment.Quer
 		if responsePID == nil {
 			return nil, fmt.Errorf("%w: paid response is missing merchant pid", ErrEasyPayQueryIdentityMismatch)
 		}
+		if responseTradeNo == nil {
+			return nil, fmt.Errorf("%w: paid response is missing provider trade_no", ErrEasyPayQueryIdentityMismatch)
+		}
 	}
 
 	money := ""
@@ -327,13 +331,9 @@ func (e *EasyPay) QueryOrder(ctx context.Context, tradeNo string) (*payment.Quer
 	} else if resp.Data.Money != nil {
 		money = *resp.Data.Money
 	}
-	responseTradeNo := tradeNo
-	if resp.TradeNo != nil {
-		if *resp.TradeNo != "" {
-			responseTradeNo = *resp.TradeNo
-		}
-	} else if resp.Data.TradeNo != nil && *resp.Data.TradeNo != "" {
-		responseTradeNo = *resp.Data.TradeNo
+	resolvedTradeNo := tradeNo
+	if responseTradeNo != nil {
+		resolvedTradeNo = strings.TrimSpace(*responseTradeNo)
 	}
 
 	amount := 0.0
@@ -348,7 +348,7 @@ func (e *EasyPay) QueryOrder(ctx context.Context, tradeNo string) (*payment.Quer
 		metadata = map[string]string{"pid": strings.TrimSpace(*responsePID)}
 	}
 	return &payment.QueryOrderResponse{
-		TradeNo:  responseTradeNo,
+		TradeNo:  resolvedTradeNo,
 		Status:   status,
 		Amount:   amount,
 		Metadata: metadata,

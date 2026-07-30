@@ -44,9 +44,9 @@ func TestEasyPayQueryOrderStatusMapping(t *testing.T) {
 		},
 		{
 			name:        "empty trade status falls back to paid numeric status",
-			body:        `{"code":1,"trade_status":"","status":1,"money":"12.34","out_trade_no":"order-123","pid":"pid-1"}`,
+			body:        `{"code":1,"trade_status":"","status":1,"money":"12.34","trade_no":"gateway-numeric-123","out_trade_no":"order-123","pid":"pid-1"}`,
 			wantStatus:  payment.ProviderStatusPaid,
-			wantTradeNo: orderID,
+			wantTradeNo: "gateway-numeric-123",
 			wantAmount:  12.34,
 		},
 		{
@@ -58,9 +58,9 @@ func TestEasyPayQueryOrderStatusMapping(t *testing.T) {
 		},
 		{
 			name:        "legacy numeric paid status remains compatible",
-			body:        `{"code":1,"status":1,"money":"3.21","out_trade_no":"order-123","pid":"pid-1"}`,
+			body:        `{"code":1,"status":1,"money":"3.21","trade_no":"gateway-legacy-123","out_trade_no":"order-123","pid":"pid-1"}`,
 			wantStatus:  payment.ProviderStatusPaid,
-			wantTradeNo: orderID,
+			wantTradeNo: "gateway-legacy-123",
 			wantAmount:  3.21,
 		},
 		{
@@ -109,6 +109,11 @@ func TestEasyPayQueryOrderStatusMapping(t *testing.T) {
 		{
 			name:    "paid response without upstream identity is rejected",
 			body:    `{"code":1,"status":1,"money":"12.34"}`,
+			wantErr: true,
+		},
+		{
+			name:    "paid response without provider trade number is rejected",
+			body:    `{"code":1,"status":1,"money":"12.34","out_trade_no":"order-123","pid":"pid-1"}`,
 			wantErr: true,
 		},
 	}

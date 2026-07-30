@@ -2,6 +2,7 @@ package admin
 
 import (
 	"strconv"
+	"strings"
 	"time"
 
 	dbent "github.com/Wei-Shaw/sub2api/ent"
@@ -203,7 +204,7 @@ func sanitizeAdminPaymentOrderForResponse(order *dbent.PaymentOrder) *AdminPayme
 		ForceRefund:         order.ForceRefund,
 		RefundRequestedAt:   order.RefundRequestedAt,
 		RefundRequestReason: order.RefundRequestReason,
-		RefundRequestedBy:   order.RefundRequestedBy,
+		RefundRequestedBy:   refundRequestedByForAdminResponse(order),
 		ExpiresAt:           order.ExpiresAt,
 		PaidAt:              order.PaidAt,
 		CompletedAt:         order.CompletedAt,
@@ -215,6 +216,18 @@ func sanitizeAdminPaymentOrderForResponse(order *dbent.PaymentOrder) *AdminPayme
 		CreatedAt:           order.CreatedAt,
 		UpdatedAt:           order.UpdatedAt,
 	}
+}
+
+func refundRequestedByForAdminResponse(order *dbent.PaymentOrder) *string {
+	if order == nil || order.RefundRequestedBy == nil {
+		return nil
+	}
+	value := strings.TrimSpace(*order.RefundRequestedBy)
+	if strings.HasPrefix(value, "r:") {
+		requester := strconv.FormatInt(order.UserID, 10)
+		return &requester
+	}
+	return order.RefundRequestedBy
 }
 
 // AdminProcessRefundRequest is the request body for admin refund processing.

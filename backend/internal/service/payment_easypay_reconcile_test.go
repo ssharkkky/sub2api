@@ -4,6 +4,7 @@ package service
 
 import (
 	"context"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strconv"
@@ -211,7 +212,42 @@ func TestReconcilePendingEasyPayOrderRejectsMismatchedOrderIdentity(t *testing.T
 	require.Len(t, logs, 1)
 }
 
-func TestReconcilePendingEasyPayOrderRollsBackWhenRecoveryAuditFails(t *testing.T) {
+func TestReconcilePendingEasyPayOrderDoesNotClaimRecoveryBeforeFulfillment(t *testing.T) {
+	fixture := newEasyPayReconcileFixture(t, func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"code":1,"trade_status":"TRADE_SUCCESS","money":"50.00","trade_no":"easypay-fulfillment-failure","out_trade_no":"sub2_easypay_safety","pid":"pid-safety"}`))
+	})
+	fixture.userRepo.updateBalanceFn = func(context.Context, int64, float64) error {
+		return errors.New("balance store unavailable")
+	}
+
+	recovered, err := fixture.service.ReconcilePendingEasyPayOrders(context.Background())
+	require.NoError(t, err)
+	require.Zero(t, recovered)
+
+	reloaded, err := fixture.client.PaymentOrder.Get(context.Background(), fixture.order.ID)
+	require.NoError(t, err)
+	require.Equal(t, OrderStatusFailed, reloaded.Status)
+
+	detected, err := fixture.client.PaymentAuditLog.Query().
+		Where(
+			paymentauditlog.OrderIDEQ(strconv.FormatInt(fixture.order.ID, 10)),
+			paymentauditlog.ActionEQ(paymentDetectedByReconcileAction),
+		).
+		Count(context.Background())
+	require.NoError(t, err)
+	require.Equal(t, 1, detected)
+	completed, err := fixture.client.PaymentAuditLog.Query().
+		Where(
+			paymentauditlog.OrderIDEQ(strconv.FormatInt(fixture.order.ID, 10)),
+			paymentauditlog.ActionEQ(orderRecoveredByReconcileAction),
+		).
+		Count(context.Background())
+	require.NoError(t, err)
+	require.Zero(t, completed)
+}
+
+func TestReconcilePendingEasyPayOrderRollsBackWhenDetectionAuditFails(t *testing.T) {
 	fixture := newEasyPayReconcileFixture(t, func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		_, _ = w.Write([]byte(`{"code":1,"trade_status":"TRADE_SUCCESS","money":"50.00","trade_no":"easypay-audit-failure","out_trade_no":"sub2_easypay_safety","pid":"pid-safety"}`))
@@ -221,7 +257,7 @@ func TestReconcilePendingEasyPayOrderRollsBackWhenRecoveryAuditFails(t *testing.
 	_, err := exec.ExecContext(context.Background(), `
 		CREATE TRIGGER fail_recovery_audit
 		BEFORE INSERT ON payment_audit_logs
-		WHEN NEW.action = 'ORDER_RECOVERED_BY_RECONCILE'
+			WHEN NEW.action = 'PAYMENT_DETECTED_BY_RECONCILE'
 		BEGIN
 			SELECT RAISE(FAIL, 'recovery audit unavailable');
 		END;
@@ -236,4 +272,49 @@ func TestReconcilePendingEasyPayOrderRollsBackWhenRecoveryAuditFails(t *testing.
 	require.Equal(t, OrderStatusPending, reloaded.Status)
 	require.Zero(t, fixture.userRepo.getByIDUser.Balance)
 	require.Empty(t, fixture.redeemRepo.useCalls)
+}
+
+func TestReconcilePendingEasyPayOrderRetriesCompletionAuditWithoutDoubleCredit(t *testing.T) {
+	fixture := newEasyPayReconcileFixture(t, func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"code":1,"trade_status":"TRADE_SUCCESS","money":"50.00","trade_no":"easypay-completion-audit","out_trade_no":"sub2_easypay_safety","pid":"pid-safety"}`))
+	})
+	exec, ok := fixture.client.Driver().(refundNotificationSQLExecutor)
+	require.True(t, ok)
+	_, err := exec.ExecContext(context.Background(), `
+		CREATE TRIGGER fail_recovery_completion_audit
+		BEFORE INSERT ON payment_audit_logs
+		WHEN NEW.action = 'ORDER_RECOVERED_BY_RECONCILE'
+		BEGIN
+			SELECT RAISE(FAIL, 'recovery completion audit unavailable');
+		END;
+	`)
+	require.NoError(t, err)
+
+	recovered, err := fixture.service.ReconcilePendingEasyPayOrders(context.Background())
+	require.NoError(t, err)
+	require.Zero(t, recovered)
+	reloaded, err := fixture.client.PaymentOrder.Get(context.Background(), fixture.order.ID)
+	require.NoError(t, err)
+	require.Equal(t, OrderStatusFailed, reloaded.Status)
+	require.Equal(t, 50.0, fixture.userRepo.getByIDUser.Balance)
+	require.Len(t, fixture.redeemRepo.useCalls, 1)
+
+	_, err = exec.ExecContext(context.Background(), `DROP TRIGGER fail_recovery_completion_audit`)
+	require.NoError(t, err)
+	require.NoError(t, fixture.service.ExecuteBalanceFulfillment(context.Background(), fixture.order.ID))
+	reloaded, err = fixture.client.PaymentOrder.Get(context.Background(), fixture.order.ID)
+	require.NoError(t, err)
+	require.Equal(t, OrderStatusCompleted, reloaded.Status)
+	require.Equal(t, 50.0, fixture.userRepo.getByIDUser.Balance)
+	require.Len(t, fixture.redeemRepo.useCalls, 1)
+
+	logs, err := fixture.client.PaymentAuditLog.Query().
+		Where(
+			paymentauditlog.OrderIDEQ(strconv.FormatInt(fixture.order.ID, 10)),
+			paymentauditlog.ActionEQ(orderRecoveredByReconcileAction),
+		).
+		All(context.Background())
+	require.NoError(t, err)
+	require.Len(t, logs, 1)
 }

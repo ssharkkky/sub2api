@@ -89,7 +89,7 @@
               </div>
               <div>
                 <p class="text-xs text-gray-500 dark:text-gray-400">{{ t('payment.admin.refundRequestedBy') }}</p>
-                <p class="text-sm text-gray-700 dark:text-gray-300">#{{ selectedOrder.refund_requested_by }}</p>
+                <p class="text-sm text-gray-700 dark:text-gray-300">#{{ selectedOrder.user_id }}</p>
               </div>
               <div class="col-span-2">
                 <p class="text-xs text-gray-500 dark:text-gray-400">{{ t('payment.admin.refundRequestReason') }}</p>

@@ -53,7 +53,7 @@ const refundRequestedOrder = {
   refund_amount: 10,
   refund_requested_at: '2026-07-30T00:00:00Z',
   refund_request_reason: 'duplicate payment',
-  refund_requested_by: 9,
+  refund_requested_by: 'r:abcdefghijklmnop',
   created_at: '2026-07-30T00:00:00Z',
   updated_at: '2026-07-30T00:00:00Z',
   expires_at: '2026-07-30T01:00:00Z',
@@ -135,5 +135,20 @@ describe('AdminOrdersView refund rejection', () => {
     expect(rejectRefundRequest).toHaveBeenCalledWith(157, '不符合退款条件')
     expect(showSuccess).toHaveBeenCalledWith('payment.admin.rejectRefundSuccess')
     expect(getOrders).toHaveBeenCalledTimes(2)
+  })
+
+  it('shows the requesting user ID instead of the internal refund generation token', async () => {
+    const wrapper = mountView()
+    await flushPromises()
+
+    const viewButton = wrapper.findAll('button').find((button) =>
+      button.text().includes('common.view'),
+    )
+    expect(viewButton).toBeTruthy()
+    await viewButton!.trigger('click')
+    await flushPromises()
+
+    expect(wrapper.text()).toContain('#9')
+    expect(wrapper.text()).not.toContain('r:abcdefghijklmnop')
   })
 })
