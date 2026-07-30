@@ -2913,7 +2913,7 @@ func TestPrepareControlPlaneUpgradeSharesActivatorLock(t *testing.T) {
 	if err != nil || !acquired {
 		t.Fatalf("hold activation lock: acquired=%v err=%v", acquired, err)
 	}
-	defer lock.Close()
+	defer func() { _ = lock.Close() }()
 
 	prepared, activationLock, err := manager.prepareControlPlaneUpgrade(job)
 	if err == nil || !strings.Contains(err.Error(), "already in progress") || prepared || activationLock != nil {

@@ -339,7 +339,7 @@ func TestControlPlaneActivatorSkipsWhenActivationLockIsHeld(t *testing.T) {
 	if err != nil || !acquired {
 		t.Fatalf("acquire first lock: acquired=%v err=%v", acquired, err)
 	}
-	defer lock.Close()
+	defer func() { _ = lock.Close() }()
 	activator := newTestActivator(paths, &activationRunner{}, func() Health { return Health{} })
 	if err := activator.activate(context.Background()); err != nil {
 		t.Fatal(err)
@@ -983,7 +983,7 @@ func TestControlPlaneOperatorRecoveryRespectsActivationLock(t *testing.T) {
 	if err != nil || !acquired {
 		t.Fatalf("hold activation lock: acquired=%v err=%v", acquired, err)
 	}
-	defer lock.Close()
+	defer func() { _ = lock.Close() }()
 
 	err = retryControlPlaneUpgrade(context.Background(), activator, req.JobID)
 	if err == nil || !strings.Contains(err.Error(), "already in progress") {

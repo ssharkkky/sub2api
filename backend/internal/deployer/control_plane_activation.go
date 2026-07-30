@@ -14,7 +14,6 @@ import (
 	"path/filepath"
 	"regexp"
 	"runtime"
-	"strconv"
 	"strings"
 	"syscall"
 	"time"
@@ -152,7 +151,7 @@ func (a *controlPlaneActivator) activate(ctx context.Context) error {
 	if !acquired {
 		return nil
 	}
-	defer lock.Close()
+	defer func() { _ = lock.Close() }()
 	return a.activateLocked(ctx)
 }
 
@@ -363,7 +362,7 @@ func (a *controlPlaneActivator) readHealth(ctx context.Context) (Health, error) 
 	if err != nil {
 		return Health{}, err
 	}
-	defer response.Body.Close()
+	defer func() { _ = response.Body.Close() }()
 	if response.StatusCode != http.StatusOK {
 		return Health{}, fmt.Errorf("health returned HTTP %d", response.StatusCode)
 	}
@@ -620,7 +619,7 @@ func readRegularFile(path string, uid, gid int) ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
-	defer file.Close()
+	defer func() { _ = file.Close() }()
 	return io.ReadAll(file)
 }
 
@@ -629,7 +628,7 @@ func readRegularFileMode(path string, uid, gid int, expectedMode os.FileMode) ([
 	if err != nil {
 		return nil, err
 	}
-	defer file.Close()
+	defer func() { _ = file.Close() }()
 	if info.Mode().Perm() != expectedMode.Perm() {
 		return nil, fmt.Errorf("unexpected mode %04o", info.Mode().Perm())
 	}
@@ -703,7 +702,7 @@ func digestRegularFile(path string, uid, gid int, expectedMode os.FileMode) (str
 	if err != nil {
 		return "", err
 	}
-	defer file.Close()
+	defer func() { _ = file.Close() }()
 	if info.Mode().Perm() != expectedMode.Perm() {
 		return "", fmt.Errorf("unexpected mode %04o", info.Mode().Perm())
 	}
@@ -735,7 +734,7 @@ func syncDirectory(path string) error {
 	if err != nil {
 		return err
 	}
-	defer dir.Close()
+	defer func() { _ = dir.Close() }()
 	return dir.Sync()
 }
 
@@ -746,9 +745,9 @@ func safeFilename(value string) string {
 	var builder strings.Builder
 	for _, char := range value {
 		if (char >= 'a' && char <= 'z') || (char >= 'A' && char <= 'Z') || (char >= '0' && char <= '9') || strings.ContainsRune("._-", char) {
-			builder.WriteRune(char)
+			_, _ = builder.WriteRune(char)
 		} else {
-			builder.WriteByte('_')
+			_ = builder.WriteByte('_')
 		}
 	}
 	return builder.String()
@@ -829,7 +828,7 @@ func retryControlPlaneUpgrade(ctx context.Context, activator *controlPlaneActiva
 	if !acquired {
 		return errors.New("control-plane activation is already in progress")
 	}
-	defer lock.Close()
+	defer func() { _ = lock.Close() }()
 	status, err := readControlPlaneStatus(paths.Status)
 	if err != nil || status.JobID != jobID || status.ErrorClass != "transient" || (status.Status != "failed" && status.Status != "retrying") {
 		return errors.New("control-plane status is not a retryable error for the requested job")
@@ -929,7 +928,7 @@ func quarantineControlPlaneUpgrade(activator *controlPlaneActivator, jobID, reas
 	if !acquired {
 		return errors.New("control-plane activation is already in progress")
 	}
-	defer lock.Close()
+	defer func() { _ = lock.Close() }()
 	req, err := activator.readRequest()
 	requestAlreadyQuarantined := false
 	requestMissing := false
@@ -1083,9 +1082,4 @@ func CurrentExecutableSHA256() (string, error) {
 	}
 	digest := sha256.Sum256(data)
 	return "sha256:" + hex.EncodeToString(digest[:]), nil
-}
-
-func parseMode(value string) (uint32, error) {
-	parsed, err := strconv.ParseUint(value, 8, 32)
-	return uint32(parsed), err
 }
