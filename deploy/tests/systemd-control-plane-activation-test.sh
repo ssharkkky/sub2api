@@ -103,6 +103,7 @@ DAEMON_PID=$(systemctl show --property=MainPID --value sub2api-deployer.service)
 [[ "$DAEMON_PID" =~ ^[1-9][0-9]*$ ]]
 
 EFFECTIVE=$(systemctl show --property=ExecStart --value sub2api-deployer-upgrade.service)
+[[ -z "$(systemctl show --property=DropInPaths --value sub2api-deployer-upgrade.service)" ]]
 [[ $(grep -oF 'argv[]=' <<<"$EFFECTIVE" | wc -l) == 1 ]]
 [[ $(grep -oE '(^|[;{][[:space:]]*)path=' <<<"$EFFECTIVE" | wc -l) == 1 ]]
 [[ "$EFFECTIVE" == *'path=/usr/local/sbin/sub2api-deployer ;'* ]]

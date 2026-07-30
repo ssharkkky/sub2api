@@ -1272,6 +1272,9 @@ done
 EFFECTIVE_UPGRADE_EXEC=$(systemctl show --property=ExecStart --value sub2api-deployer-upgrade.service)
 validate_effective_activator_exec "$EFFECTIVE_UPGRADE_EXEC" || \
   fail "Effective control-plane activator ExecStart does not exactly match the stable deployer flag contract"
+EFFECTIVE_UPGRADE_DROPINS=$(systemctl show --property=DropInPaths --value sub2api-deployer-upgrade.service)
+[[ -z "${EFFECTIVE_UPGRADE_DROPINS//[[:space:]]/}" ]] || \
+  fail "Effective control-plane activator must not use systemd drop-ins"
 [[ ! -e "$CONTROL_PLANE_UPGRADE_REQUEST" && ! -L "$CONTROL_PLANE_UPGRADE_REQUEST" ]] || \
   fail "Refusing to validate the new activator while an activation request is pending; inspect it with the deployer control-plane status command"
 release_activation_lock

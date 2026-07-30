@@ -121,6 +121,10 @@ case "$command_name" in
       else
         printf '%s\n' '{ path=/usr/local/sbin/sub2api-deployer ; argv[]=/usr/local/sbin/sub2api-deployer --activate-staged-control-plane ; ignore_errors=no ; start_time=[n/a] ; stop_time=[n/a] ; pid=0 ; code=(null) ; status=0/0 }'
       fi
+    elif [[ " $* " == *" --property=DropInPaths "* ]]; then
+      if [[ "${FAKE_UPGRADE_DROPIN:-0}" == 1 ]]; then
+        printf '%s\n' '/etc/systemd/system/sub2api-deployer-upgrade.service.d/override.conf'
+      fi
     elif [[ " $* " == *" --property=ActiveState "* ]]; then
       if [[ -f "$FAKE_CONTROL_DIR/active" ]]; then echo active; else echo inactive; fi
     elif [[ " $* " == *" --property=MainPID "* ]]; then
@@ -469,6 +473,16 @@ cmp -s "$EXEC_ROOT/original-site.conf" "$EXEC_ROOT/nginx/site.conf"
 [[ ! -e "$EXEC_ROOT/usr/local/sbin/sub2api-deployer-upgrade" ]]
 grep -Fq 'Effective control-plane activator ExecStart' "$EXEC_ROOT/output.log"
 assert_no_application_mutation "$EXEC_ROOT/docker.log"
+
+DROPIN_ROOT="$TEST_DIR/effective-dropin-failure"
+make_root "$DROPIN_ROOT"
+make_deployer_binary "$DROPIN_ROOT/deployer-v1" v1
+if FAKE_UPGRADE_DROPIN=1 run_installer "$DROPIN_ROOT" "$DROPIN_ROOT/deployer-v1" >"$DROPIN_ROOT/output.log" 2>&1; then
+  echo "activator systemd drop-in unexpectedly passed installer validation" >&2
+  exit 1
+fi
+grep -Fq 'must not use systemd drop-ins' "$DROPIN_ROOT/output.log"
+assert_no_application_mutation "$DROPIN_ROOT/docker.log"
 
 for invalid_exec in FAKE_EXTRA_UPGRADE_EXEC_ARG FAKE_MULTIPLE_UPGRADE_EXEC; do
   INVALID_EXEC_ROOT="$TEST_DIR/invalid-exec-$invalid_exec"

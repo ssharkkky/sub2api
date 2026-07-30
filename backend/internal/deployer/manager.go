@@ -220,6 +220,10 @@ func (m *Manager) controlPlaneUpgradeReady() bool {
 	if err != nil || !validControlPlaneActivatorExecStart(effective) {
 		return false
 	}
+	dropIns, err := m.runner.Run(ctx, nil, systemctl, "show", "--property=DropInPaths", "--value", "sub2api-deployer-upgrade.service")
+	if err != nil || strings.TrimSpace(dropIns) != "" {
+		return false
+	}
 	if _, err := m.runner.Run(ctx, nil, systemctl, "is-enabled", "--quiet", "sub2api-deployer-upgrade.timer"); err != nil {
 		return false
 	}

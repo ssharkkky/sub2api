@@ -78,6 +78,11 @@ func TestControlPlaneUpgradeReadyProvesLiveSystemdCapability(t *testing.T) {
 		t.Fatal("activator with an extra argument was reported ready")
 	}
 	runner.effective = exact
+	runner.dropIns = "/etc/systemd/system/sub2api-deployer-upgrade.service.d/override.conf"
+	if manager.controlPlaneUpgradeReady() {
+		t.Fatal("activator with a systemd drop-in was reported ready")
+	}
+	runner.dropIns = ""
 	runner.active = false
 	if manager.controlPlaneUpgradeReady() {
 		t.Fatal("inactive timer was reported ready")
@@ -91,6 +96,7 @@ func TestControlPlaneUpgradeReadyProvesLiveSystemdCapability(t *testing.T) {
 
 type controlPlaneCapabilityRunner struct {
 	effective string
+	dropIns   string
 	enabled   bool
 	active    bool
 }
@@ -100,6 +106,8 @@ func (r *controlPlaneCapabilityRunner) Run(_ context.Context, _ map[string]strin
 	switch command {
 	case "show --property=ExecStart --value sub2api-deployer-upgrade.service":
 		return r.effective, nil
+	case "show --property=DropInPaths --value sub2api-deployer-upgrade.service":
+		return r.dropIns, nil
 	case "is-enabled --quiet sub2api-deployer-upgrade.timer":
 		if r.enabled {
 			return "", nil

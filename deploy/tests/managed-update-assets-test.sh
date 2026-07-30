@@ -95,6 +95,7 @@ grep -Fq 'EXISTING_ACTIVATION_LOCK_FILE="$(dirname -- "$EXISTING_CONTROL_PLANE_U
 grep -Fq 'acquire_root_lock "$EXISTING_ACTIVATION_LOCK_FILE" ACTIVATION_LOCK_FD' "$INSTALLER"
 grep -Fq 'ExecStart=/usr/local/sbin/sub2api-deployer --activate-staged-control-plane' "$REPO_ROOT/deploy/sub2api-deployer-upgrade.service"
 grep -Fq 'EFFECTIVE_UPGRADE_EXEC=$(systemctl show --property=ExecStart --value sub2api-deployer-upgrade.service)' "$INSTALLER"
+grep -Fq 'EFFECTIVE_UPGRADE_DROPINS=$(systemctl show --property=DropInPaths --value sub2api-deployer-upgrade.service)' "$INSTALLER"
 grep -Fq 'rm -f -- "$INSTALLED_UPGRADER"' "$INSTALLER"
 if grep -Fq 'install -m 0755 "$ASSET_DIR/sub2api-deployer-upgrade.sh"' "$INSTALLER"; then
   echo "installer must not reinstall the retired shell activator" >&2
