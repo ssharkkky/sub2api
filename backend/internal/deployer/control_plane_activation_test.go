@@ -879,6 +879,51 @@ func TestControlPlaneOperatorRetryRejectsPermanentFailure(t *testing.T) {
 	}
 }
 
+func TestControlPlaneOperatorRetryRejectsUnsafeSystemctlWithoutMutation(t *testing.T) {
+	dir := t.TempDir()
+	paths := testActivationPaths(dir)
+	runner := &activationRunner{}
+	req := writeActivationFixture(t, paths, []byte("target-binary"))
+	installed := []byte("installed-binary")
+	if err := os.WriteFile(paths.InstalledAssets[controlPlaneAssetDeployer], installed, 0755); err != nil {
+		t.Fatal(err)
+	}
+	activator := newTestActivator(paths, runner, func() Health { return targetActivationHealth(req) })
+	activator.systemctl = ""
+	if err := activator.writeStatus(req, "failed", 1, "temporary failure", "transient", nil); err != nil {
+		t.Fatal(err)
+	}
+	requestBefore, err := os.ReadFile(paths.Request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	statusBefore, err := os.ReadFile(paths.Status)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	err = retryControlPlaneUpgrade(context.Background(), activator, req.JobID)
+	if err == nil || !strings.Contains(err.Error(), "systemctl command is not safely configured") {
+		t.Fatalf("unsafe systemctl retry error=%v", err)
+	}
+	for path, expected := range map[string][]byte{
+		paths.Request: requestBefore,
+		paths.Status:  statusBefore,
+		paths.InstalledAssets[controlPlaneAssetDeployer]: installed,
+	} {
+		actual, readErr := os.ReadFile(path)
+		if readErr != nil || string(actual) != string(expected) {
+			t.Fatalf("retry mutated %s: data=%q err=%v", path, actual, readErr)
+		}
+	}
+	if runner.restartCount() != 0 {
+		t.Fatalf("unsafe systemctl retry restarted the deployer %d times", runner.restartCount())
+	}
+	if _, err := os.Lstat(paths.Lock); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("unsafe systemctl retry created the activation lock: %v", err)
+	}
+}
+
 func TestControlPlaneOperatorRetryRequiresHealthyMatchingApplication(t *testing.T) {
 	dir := t.TempDir()
 	paths := testActivationPaths(dir)

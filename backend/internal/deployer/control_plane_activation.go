@@ -139,8 +139,8 @@ func (a *controlPlaneActivator) activate(ctx context.Context) error {
 	} else if err != nil {
 		return fmt.Errorf("inspect activation request: %w", err)
 	}
-	if a.systemctl == "" {
-		return errors.New("control-plane activation systemctl command is not safely configured")
+	if err := a.requireSafeSystemctl(); err != nil {
+		return err
 	}
 	if err := validateOwnedDirectory(filepath.Dir(a.paths.Request), a.expectedUID, a.expectedGID, 0700); err != nil {
 		return fmt.Errorf("activation state directory is unsafe: %w", err)
@@ -157,6 +157,9 @@ func (a *controlPlaneActivator) activate(ctx context.Context) error {
 }
 
 func (a *controlPlaneActivator) activateLocked(ctx context.Context) error {
+	if err := a.requireSafeSystemctl(); err != nil {
+		return err
+	}
 	req, err := a.readRequest()
 	if err != nil {
 		return a.failMalformed(err)
@@ -812,6 +815,9 @@ func retryControlPlaneUpgrade(ctx context.Context, activator *controlPlaneActiva
 	if !requestIDPattern.MatchString(jobID) {
 		return errors.New("retry requires a valid job id")
 	}
+	if err := activator.requireSafeSystemctl(); err != nil {
+		return err
+	}
 	paths := activator.paths
 	if err := validateOwnedDirectory(filepath.Dir(paths.Request), activator.expectedUID, activator.expectedGID, 0700); err != nil {
 		return fmt.Errorf("activation state directory is unsafe: %w", err)
@@ -891,6 +897,13 @@ func retryControlPlaneUpgrade(ctx context.Context, activator *controlPlaneActiva
 		return err
 	}
 	return activator.activateLocked(ctx)
+}
+
+func (a *controlPlaneActivator) requireSafeSystemctl() error {
+	if a.systemctl == "" {
+		return errors.New("control-plane activation systemctl command is not safely configured")
+	}
+	return nil
 }
 
 func QuarantineControlPlaneUpgrade(cfg Config, jobID, reason string) error {
