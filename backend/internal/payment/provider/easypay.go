@@ -7,6 +7,7 @@ import (
 	"crypto/md5"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -27,6 +28,7 @@ const (
 	maxEasypayResponseSize = 1 << 20 // 1MB
 	maxEasypayErrorSummary = 512
 	tradeStatusSuccess     = "TRADE_SUCCESS"
+	tradeStatusFinished    = "TRADE_FINISHED"
 	signTypeMD5            = "MD5"
 	paymentModePopup       = "popup"
 	deviceMobile           = "mobile"
@@ -258,9 +260,12 @@ func (e *EasyPay) QueryOrder(ctx context.Context, tradeNo string) (*payment.Quer
 		"act": "order", "pid": e.config["pid"],
 		"key": e.config["pkey"], "out_trade_no": tradeNo,
 	}
-	body, err := e.post(ctx, e.apiBase()+"/api.php", params)
+	body, httpStatus, err := e.postRaw(ctx, e.apiBase()+"/api.php", params)
 	if err != nil {
 		return nil, fmt.Errorf("easypay query: %w", err)
+	}
+	if httpStatus < http.StatusOK || httpStatus >= http.StatusMultipleChoices {
+		return nil, fmt.Errorf("easypay query returned HTTP %d", httpStatus)
 	}
 	type easyPayQueryData struct {
 		TradeStatus *string `json:"trade_status"`
@@ -269,7 +274,7 @@ func (e *EasyPay) QueryOrder(ctx context.Context, tradeNo string) (*payment.Quer
 		TradeNo     *string `json:"trade_no"`
 	}
 	var resp struct {
-		Code        int              `json:"code"`
+		Code        *int             `json:"code"`
 		Msg         string           `json:"msg"`
 		TradeStatus *string          `json:"trade_status"`
 		Status      *int             `json:"status"`
@@ -280,21 +285,15 @@ func (e *EasyPay) QueryOrder(ctx context.Context, tradeNo string) (*payment.Quer
 	if err := json.Unmarshal(body, &resp); err != nil {
 		return nil, fmt.Errorf("easypay parse query: %w", err)
 	}
-	status := payment.ProviderStatusPending
-	if resp.TradeStatus != nil {
-		if *resp.TradeStatus == tradeStatusSuccess {
-			status = payment.ProviderStatusPaid
-		}
-	} else if resp.Data.TradeStatus != nil {
-		if *resp.Data.TradeStatus == tradeStatusSuccess {
-			status = payment.ProviderStatusPaid
-		}
-	} else if resp.Status != nil {
-		if *resp.Status == easypayStatusPaid {
-			status = payment.ProviderStatusPaid
-		}
-	} else if resp.Data.Status != nil && *resp.Data.Status == easypayStatusPaid {
-		status = payment.ProviderStatusPaid
+	if resp.Code != nil && *resp.Code != easypayCodeSuccess {
+		return nil, fmt.Errorf("easypay query rejected: code=%d msg=%s", *resp.Code, strings.TrimSpace(resp.Msg))
+	}
+
+	tradeStatus := firstNonEmptyStringPointer(resp.TradeStatus, resp.Data.TradeStatus)
+	numericStatus := firstNonNilIntPointer(resp.Status, resp.Data.Status)
+	status, err := classifyEasyPayQueryStatus(tradeStatus, numericStatus)
+	if err != nil {
+		return nil, err
 	}
 
 	money := ""
@@ -312,13 +311,62 @@ func (e *EasyPay) QueryOrder(ctx context.Context, tradeNo string) (*payment.Quer
 		responseTradeNo = *resp.Data.TradeNo
 	}
 
-	amount, _ := strconv.ParseFloat(money, 64)
+	amount := 0.0
+	if strings.TrimSpace(money) != "" {
+		amount, err = strconv.ParseFloat(strings.TrimSpace(money), 64)
+		if err != nil {
+			return nil, fmt.Errorf("easypay query returned invalid amount: %w", err)
+		}
+	}
 	return &payment.QueryOrderResponse{
 		TradeNo:  responseTradeNo,
 		Status:   status,
 		Amount:   amount,
 		Metadata: e.MerchantIdentityMetadata(),
 	}, nil
+}
+
+func firstNonEmptyStringPointer(values ...*string) *string {
+	for _, value := range values {
+		if value != nil && strings.TrimSpace(*value) != "" {
+			return value
+		}
+	}
+	return nil
+}
+
+func firstNonNilIntPointer(values ...*int) *int {
+	for _, value := range values {
+		if value != nil {
+			return value
+		}
+	}
+	return nil
+}
+
+func classifyEasyPayQueryStatus(tradeStatus *string, numericStatus *int) (string, error) {
+	if tradeStatus != nil {
+		value := strings.ToUpper(strings.TrimSpace(*tradeStatus))
+		switch value {
+		case tradeStatusSuccess, tradeStatusFinished, "SUCCESS", "PAID":
+			return payment.ProviderStatusPaid, nil
+		case "WAIT_BUYER_PAY", "TRADE_PENDING", "PENDING", "WAITING", "UNPAID", "NOTPAY", "TRADE_CLOSED", "CLOSED", "TRADE_FAILED", "FAILED":
+			return payment.ProviderStatusPending, nil
+		default:
+			return "", fmt.Errorf("easypay query returned unknown trade status: %s", value)
+		}
+	}
+	if numericStatus != nil {
+		switch *numericStatus {
+		case easypayStatusPaid:
+			return payment.ProviderStatusPaid, nil
+		case 0:
+			return payment.ProviderStatusPending, nil
+		default:
+			return "", fmt.Errorf("easypay query returned unknown numeric status: %d", *numericStatus)
+		}
+	}
+	return "", errors.New("easypay query response is missing payment status")
 }
 
 func (e *EasyPay) VerifyNotification(_ context.Context, rawBody string, _ map[string]string) (*payment.PaymentNotification, error) {

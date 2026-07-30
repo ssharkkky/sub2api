@@ -273,6 +273,30 @@ func (h *PaymentHandler) QueryAndFinalizeRefund(c *gin.Context) {
 	response.Success(c, result)
 }
 
+type AdminRejectRefundRequest struct {
+	Reason string `json:"reason" binding:"required"`
+}
+
+// RejectRefundRequest rejects a user refund request without touching the
+// payment gateway or user balance.
+// POST /api/v1/admin/payment/orders/:id/refund/reject
+func (h *PaymentHandler) RejectRefundRequest(c *gin.Context) {
+	orderID, ok := parseIDParam(c, "id")
+	if !ok {
+		return
+	}
+	var req AdminRejectRefundRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		response.BadRequest(c, "Invalid request: "+err.Error())
+		return
+	}
+	if err := h.paymentService.RejectRefundRequest(c.Request.Context(), orderID, getAdminIDFromContext(c), req.Reason); err != nil {
+		response.ErrorFrom(c, err)
+		return
+	}
+	response.Success(c, gin.H{"message": "refund request rejected"})
+}
+
 // --- Subscription Plans ---
 
 // ListPlans returns all subscription plans.

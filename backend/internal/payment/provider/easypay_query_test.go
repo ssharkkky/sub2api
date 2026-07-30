@@ -17,9 +17,11 @@ func TestEasyPayQueryOrderStatusMapping(t *testing.T) {
 	tests := []struct {
 		name        string
 		body        string
+		httpStatus  int
 		wantStatus  string
 		wantTradeNo string
 		wantAmount  float64
+		wantErr     bool
 	}{
 		{
 			name:        "top level trade success is paid",
@@ -36,9 +38,14 @@ func TestEasyPayQueryOrderStatusMapping(t *testing.T) {
 			wantAmount:  12.34,
 		},
 		{
-			name:        "empty trade status with paid numeric status stays pending",
+			name:    "unknown textual status is unknown even with paid numeric fallback",
+			body:    `{"code":1,"trade_status":"NEW_PROVIDER_STATE","status":1,"money":"12.34"}`,
+			wantErr: true,
+		},
+		{
+			name:        "empty trade status falls back to paid numeric status",
 			body:        `{"code":1,"trade_status":"","status":1,"money":"12.34"}`,
-			wantStatus:  payment.ProviderStatusPending,
+			wantStatus:  payment.ProviderStatusPaid,
 			wantTradeNo: orderID,
 			wantAmount:  12.34,
 		},
@@ -64,16 +71,30 @@ func TestEasyPayQueryOrderStatusMapping(t *testing.T) {
 			wantAmount:  3.21,
 		},
 		{
-			name:        "query failure with missing status is pending",
-			body:        `{"code":0,"msg":"订单不存在"}`,
-			wantStatus:  payment.ProviderStatusPending,
-			wantTradeNo: orderID,
+			name:    "application failure is unknown",
+			body:    `{"code":0,"msg":"订单不存在"}`,
+			wantErr: true,
 		},
 		{
-			name:        "missing fields are pending",
-			body:        `{}`,
-			wantStatus:  payment.ProviderStatusPending,
-			wantTradeNo: orderID,
+			name:    "missing fields are unknown",
+			body:    `{}`,
+			wantErr: true,
+		},
+		{
+			name:       "http failure is unknown",
+			body:       `{"code":1,"status":0}`,
+			httpStatus: http.StatusBadGateway,
+			wantErr:    true,
+		},
+		{
+			name:    "unknown numeric status is unknown",
+			body:    `{"code":1,"status":9}`,
+			wantErr: true,
+		},
+		{
+			name:    "paid response with malformed amount is unknown",
+			body:    `{"code":1,"status":1,"money":"not-a-number"}`,
+			wantErr: true,
 		},
 	}
 
@@ -98,12 +119,21 @@ func TestEasyPayQueryOrderStatusMapping(t *testing.T) {
 					gotForm[key] = append([]string(nil), values...)
 				}
 				w.Header().Set("Content-Type", "application/json")
+				if tt.httpStatus != 0 {
+					w.WriteHeader(tt.httpStatus)
+				}
 				_, _ = w.Write([]byte(tt.body))
 			}))
 			defer server.Close()
 
 			provider := newTestEasyPay(t, server.URL)
 			resp, err := provider.QueryOrder(context.Background(), orderID)
+			if tt.wantErr {
+				if err == nil {
+					t.Fatalf("QueryOrder returned no error, response=%+v", resp)
+				}
+				return
+			}
 			if err != nil {
 				t.Fatalf("QueryOrder returned error: %v", err)
 			}

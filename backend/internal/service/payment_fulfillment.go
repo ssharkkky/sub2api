@@ -183,7 +183,23 @@ func (s *PaymentService) toPaid(ctx context.Context, o *dbent.PaymentOrder, trad
 		})
 	}
 	s.writeAuditLog(ctx, o.ID, "ORDER_PAID", pk, map[string]any{"tradeNo": tradeNo, "paidAmount": paid})
-	return s.executeFulfillment(ctx, o.ID)
+	if err := s.executeFulfillment(ctx, o.ID); err != nil {
+		return err
+	}
+	if recovery, ok := paymentRecoveryContextFrom(ctx); ok {
+		if recovery.trace != nil {
+			recovery.trace.recovered = true
+		}
+		s.writeAuditLog(ctx, o.ID, "ORDER_RECOVERED_BY_RECONCILE", pk, map[string]any{
+			"order_id":               o.ID,
+			"queried_at":             recovery.queriedAt.UTC().Format(time.RFC3339Nano),
+			"provider_trade_no":      tradeNo,
+			"paid_amount":            paid,
+			"recovery_delay_seconds": int64(time.Since(o.CreatedAt).Seconds()),
+			"source":                 recovery.source,
+		})
+	}
+	return nil
 }
 
 func (s *PaymentService) alreadyProcessed(ctx context.Context, o *dbent.PaymentOrder) error {
