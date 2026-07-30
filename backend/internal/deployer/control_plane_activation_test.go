@@ -20,12 +20,17 @@ type activationRunner struct {
 	restarts       int
 	restartErrors  []error
 	currentVersion string
+	systemctlPath  string
 }
 
 func (r *activationRunner) Run(_ context.Context, _ map[string]string, name string, args ...string) (string, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	if name == "/bin/systemctl" && strings.Join(args, " ") == "restart sub2api-deployer.service" {
+	systemctlPath := r.systemctlPath
+	if systemctlPath == "" {
+		systemctlPath = "/bin/systemctl"
+	}
+	if name == systemctlPath && strings.Join(args, " ") == "restart sub2api-deployer.service" {
 		r.restarts++
 		if r.restarts <= len(r.restartErrors) && r.restartErrors[r.restarts-1] != nil {
 			return "", r.restartErrors[r.restarts-1]
@@ -64,6 +69,25 @@ func TestControlPlaneActivatorNoRequestIsSilentNoOp(t *testing.T) {
 		if _, err := os.Lstat(path); !os.IsNotExist(err) {
 			t.Fatalf("no-request activation created %s", path)
 		}
+	}
+}
+
+func TestControlPlaneActivatorUsesConfiguredUsrBinSystemctl(t *testing.T) {
+	dir := t.TempDir()
+	paths := testActivationPaths(dir)
+	runner := &activationRunner{systemctlPath: "/usr/bin/systemctl"}
+	req := writeActivationFixture(t, paths, []byte("new-binary"))
+	if err := os.WriteFile(paths.InstalledAssets[controlPlaneAssetDeployer], []byte("old-binary"), 0755); err != nil {
+		t.Fatal(err)
+	}
+	activator := newTestActivator(paths, runner, func() Health { return targetActivationHealth(req) })
+	activator.systemctl = "/usr/bin/systemctl"
+
+	if err := activator.activate(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if runner.restartCount() != 1 {
+		t.Fatalf("expected one restart through configured /usr/bin/systemctl, got %d", runner.restartCount())
 	}
 }
 
@@ -1034,6 +1058,7 @@ func writeActivationRequest(t *testing.T, path string, req controlPlaneActivatio
 func newTestActivator(paths controlPlaneActivationPaths, runner CommandRunner, health func() Health) *controlPlaneActivator {
 	return &controlPlaneActivator{
 		runner:       runner,
+		systemctl:    "/bin/systemctl",
 		paths:        paths,
 		now:          time.Now,
 		sleep:        func(time.Duration) {},

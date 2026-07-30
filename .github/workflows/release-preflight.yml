@@ -96,10 +96,19 @@ jobs:
 
       - name: Exercise the activator with real systemd
         run: |
-          go build -trimpath -o "$RUNNER_TEMP/sub2api-deployer-systemd-test" ./cmd/deployer
+          for release in 1 2 3 4; do
+            commit=$(printf '%040d' "$release")
+            go build -trimpath \
+              -ldflags="-s -w -X main.Version=0.1.168-ts.$release -X main.Commit=$commit -X main.Date=2026-07-30T00:00:00Z -X main.BuildType=release" \
+              -o "$RUNNER_TEMP/sub2api-deployer-systemd-test-$release" \
+              ./cmd/deployer
+          done
           sudo env SUB2API_SYSTEMD_TEST_EPHEMERAL=1 \
             ../deploy/tests/systemd-control-plane-activation-test.sh \
-            "$RUNNER_TEMP/sub2api-deployer-systemd-test"
+            "$RUNNER_TEMP/sub2api-deployer-systemd-test-1" \
+            "$RUNNER_TEMP/sub2api-deployer-systemd-test-2" \
+            "$RUNNER_TEMP/sub2api-deployer-systemd-test-3" \
+            "$RUNNER_TEMP/sub2api-deployer-systemd-test-4"
         working-directory: backend
 
   frontend-release:

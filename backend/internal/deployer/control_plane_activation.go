@@ -71,6 +71,7 @@ type controlPlaneActivationPaths struct {
 type controlPlaneActivator struct {
 	cfg          Config
 	runner       CommandRunner
+	systemctl    string
 	paths        controlPlaneActivationPaths
 	now          func() time.Time
 	sleep        func(time.Duration)
@@ -138,6 +139,9 @@ func (a *controlPlaneActivator) activate(ctx context.Context) error {
 	} else if err != nil {
 		return fmt.Errorf("inspect activation request: %w", err)
 	}
+	if a.systemctl == "" {
+		return errors.New("control-plane activation systemctl command is not safely configured")
+	}
 	if err := validateOwnedDirectory(filepath.Dir(a.paths.Request), a.expectedUID, a.expectedGID, 0700); err != nil {
 		return fmt.Errorf("activation state directory is unsafe: %w", err)
 	}
@@ -198,7 +202,7 @@ func (a *controlPlaneActivator) activateLocked(ctx context.Context) error {
 		if _, err := digestRegularFile(backupPath, a.expectedUID, a.expectedGID, 0755); err != nil {
 			return a.failRequest(req, attempt, "installed deployer matches the target but no safe rollback copy exists", "permanent", false)
 		}
-		if _, err := a.runner.Run(ctx, nil, "/bin/systemctl", "restart", "sub2api-deployer.service"); err != nil {
+		if _, err := a.runner.Run(ctx, nil, a.systemctl, "restart", "sub2api-deployer.service"); err != nil {
 			return a.rollback(req, attempt, backupPath, "resume interrupted deployer restart: "+err.Error())
 		}
 		if err := a.waitForHealth(ctx, req, true); err != nil {
@@ -232,7 +236,7 @@ func (a *controlPlaneActivator) activateLocked(ctx context.Context) error {
 		return a.failRequest(req, attempt, "install staged deployer: "+err.Error(), "transient", true)
 	}
 
-	if _, err := a.runner.Run(ctx, nil, "/bin/systemctl", "restart", "sub2api-deployer.service"); err != nil {
+	if _, err := a.runner.Run(ctx, nil, a.systemctl, "restart", "sub2api-deployer.service"); err != nil {
 		return a.rollback(req, attempt, backupPath, "restart new deployer: "+err.Error())
 	}
 	if err := a.waitForHealth(ctx, req, true); err != nil {
@@ -374,7 +378,7 @@ func (a *controlPlaneActivator) rollback(req controlPlaneActivationRequest, atte
 		message := cause + "; previous deployer could not be restored: " + err.Error()
 		return errors.Join(errors.New(message), a.writeStatus(req, "rollback_failed", attempt, message, "permanent", nil))
 	}
-	if _, err := a.runner.Run(context.Background(), nil, "/bin/systemctl", "restart", "sub2api-deployer.service"); err != nil {
+	if _, err := a.runner.Run(context.Background(), nil, a.systemctl, "restart", "sub2api-deployer.service"); err != nil {
 		message := cause + "; restored deployer could not be restarted: " + err.Error()
 		return errors.Join(errors.New(message), a.writeStatus(req, "rollback_failed", attempt, message, "permanent", nil))
 	}
@@ -1025,6 +1029,10 @@ func quarantineControlPlaneUpgrade(activator *controlPlaneActivator, jobID, reas
 }
 
 func newRuntimeControlPlaneActivator(cfg Config, runner CommandRunner) *controlPlaneActivator {
+	systemctl := ""
+	if validControlPlaneUpgradeCommand(cfg.ControlPlaneUpgradeCommand) {
+		systemctl = filepath.Clean(cfg.ControlPlaneUpgradeCommand[0])
+	}
 	transport := &http.Transport{
 		DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
 			return (&net.Dialer{}).DialContext(ctx, "unix", cfg.SocketPath)
@@ -1033,6 +1041,7 @@ func newRuntimeControlPlaneActivator(cfg Config, runner CommandRunner) *controlP
 	return &controlPlaneActivator{
 		cfg:          cfg,
 		runner:       runner,
+		systemctl:    systemctl,
 		paths:        defaultControlPlaneActivationPaths(cfg),
 		now:          time.Now,
 		sleep:        time.Sleep,
