@@ -1711,6 +1711,17 @@ func TestForwardGrokResponsesAPIKeyUsesXAIResponses(t *testing.T) {
 	body := []byte(`{"model":"grok","input":"hi","stream":true}`)
 	c.Request = httptest.NewRequest(http.MethodPost, "/v1/responses", bytes.NewReader(body))
 	c.Request.Header.Set("Content-Type", "application/json")
+	tierConfig := DefaultChannelServiceTierConfig()
+	tierConfig.Standard.Multiplier = 1.25
+	c.Set(openAIServiceTierSnapshotContextKey, openAIServiceTierSnapshotLookup{
+		Found: true,
+		Snapshot: &ChannelServiceTierSnapshot{
+			ChannelID:   53,
+			GroupID:     7,
+			ChannelName: "grok-api-key",
+			Config:      tierConfig,
+		},
+	})
 
 	account := &Account{
 		ID:          53,
@@ -1734,7 +1745,7 @@ func TestForwardGrokResponsesAPIKeyUsesXAIResponses(t *testing.T) {
 		Header:     http.Header{"Content-Type": []string{"text/event-stream"}},
 		Body:       io.NopCloser(strings.NewReader(upstreamBody)),
 	}}
-	svc := &OpenAIGatewayService{httpUpstream: upstream}
+	svc := &OpenAIGatewayService{httpUpstream: upstream, channelService: &ChannelService{}}
 
 	result, err := svc.forwardGrokResponses(context.Background(), c, account, body, "grok", true, time.Now())
 	require.NoError(t, err)
@@ -1746,6 +1757,47 @@ func TestForwardGrokResponsesAPIKeyUsesXAIResponses(t *testing.T) {
 	require.Equal(t, "resp_grok_api_key", result.ResponseID)
 	require.Equal(t, 2, result.Usage.InputTokens)
 	require.Equal(t, 1, result.Usage.OutputTokens)
+	tierState := OpenAIServiceTierStateFromContext(c)
+	require.NotNil(t, tierState)
+	require.Equal(t, OpenAICommercialTierStandard, tierState.OutboundTier)
+	require.Equal(t, 1.25, tierState.Snapshot.Config.Standard.Multiplier)
+}
+
+func TestForwardGrokResponsesRejectsChannelDisabledStandardBeforeUpstream(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	recorder := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(recorder)
+	body := []byte(`{"model":"grok","input":"hi","stream":false}`)
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/responses", bytes.NewReader(body))
+	tierConfig := DefaultChannelServiceTierConfig()
+	tierConfig.Standard.Enabled = false
+	c.Set(openAIServiceTierSnapshotContextKey, openAIServiceTierSnapshotLookup{
+		Found: true,
+		Snapshot: &ChannelServiceTierSnapshot{
+			ChannelID:   54,
+			GroupID:     7,
+			ChannelName: "grok-disabled-standard",
+			Config:      tierConfig,
+		},
+	})
+	account := &Account{
+		ID:          54,
+		Name:        "grok-disabled-standard",
+		Platform:    PlatformGrok,
+		Type:        AccountTypeAPIKey,
+		Concurrency: 2,
+		Credentials: map[string]any{"api_key": "unused"},
+	}
+	upstream := &httpUpstreamRecorder{}
+	svc := &OpenAIGatewayService{httpUpstream: upstream, channelService: &ChannelService{}}
+
+	result, err := svc.forwardGrokResponses(context.Background(), c, account, body, "grok", false, time.Now())
+	require.Nil(t, result)
+	var blocked *OpenAIFastBlockedError
+	require.ErrorAs(t, err, &blocked)
+	require.Equal(t, "CHANNEL_SERVICE_TIER_NOT_ALLOWED", blocked.Code)
+	require.Nil(t, upstream.lastReq, "channel policy must reject before any upstream request")
 }
 
 func TestForwardGrokResponsesRetriesInvalidEncryptedContentOnce(t *testing.T) {
