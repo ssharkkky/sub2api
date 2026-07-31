@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
+	"time"
 
 	"github.com/gin-gonic/gin"
 	"github.com/stretchr/testify/require"
@@ -101,6 +102,65 @@ func TestOpenAIChannelAndPlatformPolicyKeepsNativeGrokStandardOnly(t *testing.T)
 		require.ErrorAs(t, err, &blocked)
 		require.Equal(t, "SERVICE_TIER_UNSUPPORTED_FOR_PLATFORM", blocked.Code)
 	})
+}
+
+func TestOpenAIWebSocketServiceTierRefreshesChannelSnapshotEachTurn(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	groupID := int64(10)
+	config := DefaultChannelServiceTierConfig()
+	channel := Channel{
+		ID:                1,
+		Name:              "ws-channel",
+		Status:            StatusActive,
+		GroupIDs:          []int64{groupID},
+		ServiceTierConfig: config,
+		UpdatedAt:         time.Now(),
+	}
+	repo := &mockChannelRepository{
+		listAllFn: func(_ context.Context) ([]Channel, error) {
+			return []Channel{channel}, nil
+		},
+		getGroupPlatformsFn: func(_ context.Context, _ []int64) (map[int64]string, error) {
+			return map[int64]string{groupID: PlatformOpenAI}, nil
+		},
+	}
+	channelService := newTestChannelService(repo)
+	svc := &OpenAIGatewayService{channelService: channelService}
+	c, _ := gin.CreateTestContext(httptest.NewRecorder())
+	c.Set("api_key", &APIKey{GroupID: &groupID})
+	frame := []byte(`{"type":"response.create","model":"gpt-5.4","service_tier":"priority"}`)
+	account := &Account{Platform: PlatformOpenAI, Type: AccountTypeAPIKey}
+
+	updated, blocked, err := svc.applyOpenAIFastAndChannelPolicyToWSResponseCreate(context.Background(), c, account, "gpt-5.4", frame)
+	require.NoError(t, err)
+	require.Nil(t, blocked)
+	require.Equal(t, "priority", gjson.GetBytes(updated, "service_tier").String())
+	firstState := OpenAIServiceTierStateFromContext(c)
+	require.NotNil(t, firstState)
+	require.True(t, firstState.Snapshot.Config.Priority.Enabled)
+
+	config.Priority.Enabled = false
+	channel.ServiceTierConfig = config
+	channel.UpdatedAt = channel.UpdatedAt.Add(time.Second)
+	channelService.invalidateCache()
+
+	_, blocked, err = svc.applyOpenAIFastAndChannelPolicyToWSResponseCreate(context.Background(), c, account, "gpt-5.4", frame)
+	require.NoError(t, err)
+	require.NotNil(t, blocked)
+	require.Equal(t, "CHANNEL_SERVICE_TIER_NOT_ALLOWED", blocked.Code)
+	secondState := OpenAIServiceTierStateFromContext(c)
+	require.NotNil(t, secondState)
+	require.False(t, secondState.Snapshot.Config.Priority.Enabled)
+
+	cached, ok := channelService.cache.Load().(*channelCache)
+	require.True(t, ok)
+	cached.loadedAt = time.Now().Add(-(channelCacheMaxTierStale + time.Second))
+	channelService.cacheRefreshAfter.Store(time.Now().Add(time.Minute).UnixNano())
+
+	_, blocked, err = svc.applyOpenAIFastAndChannelPolicyToWSResponseCreate(context.Background(), c, account, "gpt-5.4", frame)
+	require.ErrorIs(t, err, ErrChannelServiceTierSnapshotStale)
+	require.Nil(t, blocked)
+	require.Nil(t, OpenAIServiceTierStateFromContext(c), "failed refresh must not retain the previous turn snapshot")
 }
 
 func TestClassifyOpenAIServiceTierMismatch(t *testing.T) {

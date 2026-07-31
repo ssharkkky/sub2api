@@ -103,22 +103,25 @@ func TestRecordCyberPolicyUsageLog_BillsRealUpstreamTokens(t *testing.T) {
 	require.InDelta(t, expected.ActualCost, userRepo.lastAmount, 1e-12)
 }
 
-func TestRecordCyberPolicyUsageLog_PreservesChannelServiceTierSnapshot(t *testing.T) {
+func TestRecordCyberPolicyUsageLog_ActualTierOverridesOutboundUsingSnapshot(t *testing.T) {
 	usageRepo := &openAIRecordUsageLogRepoStub{inserted: true}
 	userRepo := &openAIRecordUsageUserRepoStub{}
 	svc := newOpenAIRecordUsageServiceForTest(usageRepo, userRepo, &openAIRecordUsageSubRepoStub{}, nil)
 	usage := OpenAIUsage{InputTokens: 1200, OutputTokens: 300}
 	config := DefaultChannelServiceTierConfig()
+	config.Standard.Multiplier = 1.25
 	config.Priority.Multiplier = 3
+	actualTier := "standard"
 
 	svc.RecordCyberPolicyUsageLog(context.Background(), CyberPolicyUsageInput{
-		APIKey:       &APIKey{ID: 2, User: &User{ID: 1}},
-		Account:      &Account{ID: 3},
-		RequestID:    "rid-cyber-priority",
-		Model:        "gpt-5.1",
-		Stream:       true,
-		InputTokens:  usage.InputTokens,
-		OutputTokens: usage.OutputTokens,
+		APIKey:            &APIKey{ID: 2, User: &User{ID: 1}},
+		Account:           &Account{ID: 3},
+		RequestID:         "rid-cyber-priority",
+		Model:             "gpt-5.1",
+		Stream:            true,
+		InputTokens:       usage.InputTokens,
+		OutputTokens:      usage.OutputTokens,
+		ActualServiceTier: &actualTier,
 		ServiceTierState: &OpenAIServiceTierRequestState{
 			Snapshot: &ChannelServiceTierSnapshot{
 				ChannelID: 1,
@@ -133,7 +136,7 @@ func TestRecordCyberPolicyUsageLog_PreservesChannelServiceTierSnapshot(t *testin
 	})
 
 	require.Equal(t, 1, usageRepo.calls)
-	expected := expectedOpenAICost(t, svc, "gpt-5.1", usage, 1.1*3)
+	expected := expectedOpenAICost(t, svc, "gpt-5.1", usage, 1.1*1.25)
 	require.InDelta(t, expected.ActualCost, usageRepo.lastLog.ActualCost, 1e-12)
 	require.InDelta(t, expected.ActualCost, userRepo.lastAmount, 1e-12)
 }

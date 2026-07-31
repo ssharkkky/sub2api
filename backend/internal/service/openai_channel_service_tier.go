@@ -124,6 +124,16 @@ func (s *OpenAIGatewayService) openAIServiceTierSnapshotForRequest(ctx context.C
 		lookup, _ := value.(openAIServiceTierSnapshotLookup)
 		return lookup.Snapshot, nil
 	}
+	return s.refreshOpenAIServiceTierSnapshot(ctx, c)
+}
+
+// refreshOpenAIServiceTierSnapshot starts a new request/turn snapshot. HTTP
+// requests use the cached wrapper above; each WebSocket response.create is a
+// separate billable turn and must observe the channel cache's freshness rules.
+func (s *OpenAIGatewayService) refreshOpenAIServiceTierSnapshot(ctx context.Context, c *gin.Context) (*ChannelServiceTierSnapshot, error) {
+	if c == nil || s == nil || s.channelService == nil {
+		return nil, nil
+	}
 	groupID := getOpenAIGroupIDFromContext(c)
 	if groupID <= 0 {
 		c.Set(openAIServiceTierSnapshotContextKey, openAIServiceTierSnapshotLookup{})
@@ -245,11 +255,15 @@ func (s *OpenAIGatewayService) applyOpenAIFastAndChannelPolicyToWSResponseCreate
 	model string,
 	frame []byte,
 ) ([]byte, *OpenAIFastBlockedError, error) {
+	isResponseCreate := strings.TrimSpace(gjson.GetBytes(frame, "type").String()) == "response.create"
+	if isResponseCreate && c != nil {
+		c.Set(openAIServiceTierStateContextKey, (*OpenAIServiceTierRequestState)(nil))
+	}
 	updated, blocked, err := s.applyOpenAIFastPolicyToWSResponseCreate(ctx, account, model, frame)
-	if err != nil || blocked != nil || strings.TrimSpace(gjson.GetBytes(frame, "type").String()) != "response.create" {
+	if err != nil || blocked != nil || !isResponseCreate {
 		return updated, blocked, err
 	}
-	snapshot, err := s.openAIServiceTierSnapshotForRequest(ctx, c)
+	snapshot, err := s.refreshOpenAIServiceTierSnapshot(ctx, c)
 	if err != nil {
 		return frame, nil, fmt.Errorf("load channel service tier configuration: %w", err)
 	}

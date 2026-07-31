@@ -211,7 +211,6 @@ func TestForwardAsAnthropic_ForceChatCompletionsTierRejectionMarksOpsBusinessLim
 			Config:    tierConfig,
 		},
 	})
-
 	upstream := &httpUpstreamRecorder{}
 	svc := &OpenAIGatewayService{
 		cfg:            rawChatCompletionsTestConfig(),
@@ -227,6 +226,10 @@ func TestForwardAsAnthropic_ForceChatCompletionsTierRejectionMarksOpsBusinessLim
 	require.Equal(t, http.StatusForbidden, rec.Code)
 	require.True(t, HasOpsClientBusinessLimited(c))
 	require.Nil(t, upstream.lastReq, "local tier policy must reject before any upstream request")
+	reason, ok := c.Get(OpsClientBusinessLimitedReasonKey)
+	require.True(t, ok)
+	require.Equal(t, OpsClientBusinessLimitedReasonLocalPolicyDenied, reason)
+	require.Equal(t, blocked.Code, gjson.Get(rec.Body.String(), "error.code").String())
 }
 
 // Covers the fully-new streaming composition: text block is still open when

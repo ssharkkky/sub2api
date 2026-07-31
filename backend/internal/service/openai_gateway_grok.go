@@ -218,6 +218,7 @@ func (s *OpenAIGatewayService) forwardGrokResponses(
 		firstTokenMs = streamResult.firstTokenMs
 		actualServiceTier = streamResult.actualServiceTier
 		responseID = strings.TrimSpace(streamResult.responseID)
+		actualServiceTier = streamResult.actualServiceTier
 	} else {
 		nonStreamResult, err := s.handleNonStreamingResponse(ctx, resp, c, account, originalModel, upstreamModel)
 		if err != nil {
@@ -226,6 +227,7 @@ func (s *OpenAIGatewayService) forwardGrokResponses(
 		usage = nonStreamResult.usage
 		actualServiceTier = nonStreamResult.actualServiceTier
 		responseID = strings.TrimSpace(nonStreamResult.responseID)
+		actualServiceTier = nonStreamResult.actualServiceTier
 	}
 
 	if usage == nil {
