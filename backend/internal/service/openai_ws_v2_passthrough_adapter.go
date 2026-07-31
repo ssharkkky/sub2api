@@ -134,10 +134,11 @@ func openAIWSPassthroughPolicyModelFromSessionFrame(account *Account, payload []
 }
 
 type openAIWSPassthroughUsageMeta struct {
-	serviceTier     atomic.Pointer[string]
-	reasoningEffort atomic.Pointer[string]
-	requestModel    atomic.Pointer[string]
-	upstreamModel   atomic.Pointer[string]
+	serviceTier       atomic.Pointer[string]
+	actualServiceTier atomic.Pointer[string]
+	reasoningEffort   atomic.Pointer[string]
+	requestModel      atomic.Pointer[string]
+	upstreamModel     atomic.Pointer[string]
 
 	// 仅在 client->upstream filter goroutine 中读写；Load 侧通过上方原子指针同步。
 	sessionRequestModel string
@@ -158,6 +159,7 @@ func (m *openAIWSPassthroughUsageMeta) initFromFirstFrame(policyOutput []byte, m
 		return
 	}
 	m.serviceTier.Store(extractOpenAIServiceTierFromBody(policyOutput))
+	m.actualServiceTier.Store(nil)
 	m.reasoningEffort.Store(extractOpenAIReasoningEffortFromBody(policyOutput, mappedModel, m.sessionRequestModel))
 	m.storeTurnModels(m.sessionRequestModel, policyOutput)
 }
@@ -186,6 +188,7 @@ func (m *openAIWSPassthroughUsageMeta) updateFromResponseCreate(policyOutput []b
 		return
 	}
 	m.serviceTier.Store(extractOpenAIServiceTierFromBody(policyOutput))
+	m.actualServiceTier.Store(nil)
 	m.reasoningEffort.Store(extractOpenAIReasoningEffortFromBody(policyOutput, mappedModel, requestModelForFrame))
 	m.storeTurnModels(requestModelForFrame, policyOutput)
 }
@@ -730,7 +733,7 @@ func (s *OpenAIGatewayService) proxyResponsesWebSocketV2Passthrough(
 		firstClientMessage = s.ReplaceModelInBody(firstClientMessage, capturedSessionModel)
 	}
 	usageMeta := newOpenAIWSPassthroughUsageMeta(initialRequestModel, firstClientMessage)
-	updatedFirst, blocked, policyErr := s.applyOpenAIFastPolicyToWSResponseCreate(ctx, account, capturedSessionModel, firstClientMessage)
+	updatedFirst, blocked, policyErr := s.applyOpenAIFastAndChannelPolicyToWSResponseCreate(ctx, c, account, capturedSessionModel, firstClientMessage)
 	if policyErr != nil {
 		return fmt.Errorf("apply openai fast policy on first ws frame: %w", policyErr)
 	}
@@ -1006,7 +1009,7 @@ func (s *OpenAIGatewayService) proxyResponsesWebSocketV2Passthrough(
 			if isResponseCreate && model != "" && model != strings.TrimSpace(gjson.GetBytes(payload, "model").String()) {
 				payload = s.ReplaceModelInBody(payload, model)
 			}
-			out, blocked, policyErr := s.applyOpenAIFastPolicyToWSResponseCreate(ctx, account, model, payload)
+			out, blocked, policyErr := s.applyOpenAIFastAndChannelPolicyToWSResponseCreate(ctx, c, account, model, payload)
 			// 多轮 passthrough usage：仅在成功（non-block / non-err）
 			// 的 response.create 帧上更新 usageMeta，使用
 			// filter 处理后的 payload，与首帧 policy-after-extract 语义
@@ -1106,6 +1109,7 @@ func (s *OpenAIGatewayService) proxyResponsesWebSocketV2Passthrough(
 					Model:                 turnRequestModel,
 					UpstreamModel:         openAIWSDifferentModel(turnRequestModel, turnUpstreamModel),
 					ServiceTier:           usageMeta.serviceTier.Load(),
+					ActualServiceTier:     usageMeta.actualServiceTier.Load(),
 					ReasoningEffort:       usageMeta.reasoningEffort.Load(),
 					Stream:                true,
 					OpenAIWSMode:          true,
@@ -1133,6 +1137,11 @@ func (s *OpenAIGatewayService) proxyResponsesWebSocketV2Passthrough(
 				}
 			},
 			BeforeClientWrite: func(msgType coderws.MessageType, payload []byte) {
+				if msgType == coderws.MessageText {
+					if tier := extractOpenAIActualServiceTierFromJSONBytes(payload); tier != nil {
+						usageMeta.actualServiceTier.Store(tier)
+					}
+				}
 				if msgType == coderws.MessageText && openAIWSPassthroughIsTerminalOutput(payload) {
 					turnLifecycle.beginTerminalWrite()
 				}
@@ -1225,6 +1234,7 @@ func (s *OpenAIGatewayService) proxyResponsesWebSocketV2Passthrough(
 		Model:                 resultRequestModel,
 		UpstreamModel:         openAIWSDifferentModel(resultRequestModel, resultUpstreamModel),
 		ServiceTier:           usageMeta.serviceTier.Load(),
+		ActualServiceTier:     usageMeta.actualServiceTier.Load(),
 		ReasoningEffort:       usageMeta.reasoningEffort.Load(),
 		Stream:                true,
 		OpenAIWSMode:          true,

@@ -10,7 +10,7 @@ import (
 
 // opsCyberPolicyKey 在 gin context 中携带 cyber_policy 命中标记。
 // 由 gateway 服务层在检测到上游 error.code=="cyber_policy" 时设置，
-// handler 在 Forward 返回后读取以触发风控记录、邮件与 tokens=0 用量行。
+// handler 在 Forward 返回后读取以触发风控记录、邮件与 cyber 用量行。
 const opsCyberPolicyKey = "ops_cyber_policy"
 
 // errOpenAICyberPolicyForwarded 表示 cyber_policy 已按当前端点格式透传给客户端

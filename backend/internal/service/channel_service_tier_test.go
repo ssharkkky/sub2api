@@ -1,0 +1,183 @@
+//go:build unit
+
+package service
+
+import (
+	"math"
+	"testing"
+
+	"github.com/stretchr/testify/require"
+)
+
+func TestChannelServiceTierConfigDefaultsAndValidation(t *testing.T) {
+	config := DefaultChannelServiceTierConfig()
+	require.NoError(t, config.Validate())
+	require.Equal(t, ChannelServiceTierOption{Enabled: true, Multiplier: 1}, config.Standard)
+	require.Equal(t, ChannelServiceTierOption{Enabled: true, Multiplier: 2}, config.Priority)
+	require.Equal(t, ChannelServiceTierOption{Enabled: true, Multiplier: 0.5}, config.Flex)
+
+	allDisabled := config
+	allDisabled.Standard.Enabled = false
+	allDisabled.Priority.Enabled = false
+	allDisabled.Flex.Enabled = false
+	require.ErrorContains(t, allDisabled.Validate(), "at least one")
+
+	for _, multiplier := range []float64{0, 100.01, math.NaN(), math.Inf(1)} {
+		invalid := config
+		invalid.Priority.Multiplier = multiplier
+		require.Error(t, invalid.Validate())
+	}
+}
+
+func TestNormalizeOpenAICommercialTier(t *testing.T) {
+	tests := []struct {
+		raw  string
+		want OpenAICommercialServiceTier
+		ok   bool
+	}{
+		{"", OpenAICommercialTierStandard, true},
+		{"auto", OpenAICommercialTierStandard, true},
+		{"default", OpenAICommercialTierStandard, true},
+		{"scale", OpenAICommercialTierStandard, true},
+		{"standard", OpenAICommercialTierStandard, true},
+		{"fast", OpenAICommercialTierPriority, true},
+		{" PRIORITY ", OpenAICommercialTierPriority, true},
+		{"flex", OpenAICommercialTierFlex, true},
+		{"turbo", "", false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.raw, func(t *testing.T) {
+			got, ok := NormalizeOpenAICommercialTier(tt.raw)
+			require.Equal(t, tt.ok, ok)
+			require.Equal(t, tt.want, got)
+		})
+	}
+}
+
+func TestEnforceOpenAIChannelServiceTierUsesOutboundTier(t *testing.T) {
+	config := DefaultChannelServiceTierConfig()
+	config.Standard.Enabled = false
+	config.Priority.Enabled = true
+	config.Flex.Enabled = false
+	snapshot := &ChannelServiceTierSnapshot{ChannelID: 9, GroupID: 7, ChannelName: "paid", Config: config}
+
+	state, err := enforceOpenAIChannelServiceTier(snapshot,
+		[]byte(`{"service_tier":"fast"}`),
+		[]byte(`{"service_tier":"priority"}`),
+	)
+	require.NoError(t, err)
+	require.Equal(t, "fast", state.RequestedProtocolTier)
+	require.Equal(t, "priority", state.OutboundProtocolTier)
+	require.Equal(t, OpenAICommercialTierPriority, state.OutboundTier)
+
+	_, err = enforceOpenAIChannelServiceTier(snapshot,
+		[]byte(`{"service_tier":"flex"}`),
+		[]byte(`{"service_tier":"flex"}`),
+	)
+	var blocked *OpenAIFastBlockedError
+	require.ErrorAs(t, err, &blocked)
+	require.Equal(t, "CHANNEL_SERVICE_TIER_NOT_ALLOWED", blocked.Code)
+
+	// A global filter can remove priority. Permission is checked against the
+	// final outbound Standard tier, not the original client request.
+	_, err = enforceOpenAIChannelServiceTier(snapshot,
+		[]byte(`{"service_tier":"priority"}`),
+		[]byte(`{}`),
+	)
+	require.ErrorAs(t, err, &blocked)
+
+	// Scale remains a protocol value but belongs to the Standard commercial tier.
+	_, err = enforceOpenAIChannelServiceTier(snapshot,
+		[]byte(`{"service_tier":"scale"}`),
+		[]byte(`{"service_tier":"scale"}`),
+	)
+	require.ErrorAs(t, err, &blocked)
+}
+
+func TestApplyChannelServiceTierRateMultiplierOverridesLegacyPolicyOnce(t *testing.T) {
+	snapshot := &ChannelServiceTierSnapshot{Config: ChannelServiceTierConfig{
+		Standard: ChannelServiceTierOption{Enabled: true, Multiplier: 1.25},
+		Priority: ChannelServiceTierOption{Enabled: true, Multiplier: 3},
+		Flex:     ChannelServiceTierOption{Enabled: true, Multiplier: 0.4},
+	}}
+
+	rate, legacyTier := applyChannelServiceTierRateMultiplier(2, "priority", snapshot)
+	require.InDelta(t, 6, rate, 1e-12)
+	require.Empty(t, legacyTier, "legacy priority pricing must be disabled after applying the channel multiplier")
+
+	rate, legacyTier = applyChannelServiceTierRateMultiplier(2, "priority", nil)
+	require.InDelta(t, 2, rate, 1e-12)
+	require.Equal(t, "priority", legacyTier)
+}
+
+func TestResolveOpenAIServiceTierBillingDecisionPrefersKnownActualTier(t *testing.T) {
+	snapshot := &ChannelServiceTierSnapshot{ChannelID: 3, GroupID: 4, Config: DefaultChannelServiceTierConfig()}
+	state := &OpenAIServiceTierRequestState{
+		Snapshot:              snapshot,
+		RequestedProtocolTier: "fast",
+		OutboundProtocolTier:  "priority",
+		RequestedTier:         OpenAICommercialTierPriority,
+		OutboundTier:          OpenAICommercialTierPriority,
+	}
+	actual := "standard"
+	result := &OpenAIForwardResult{ActualServiceTier: &actual}
+	decision := resolveOpenAIServiceTierBillingDecision(result, state)
+
+	require.True(t, decision.ActualWasUsed)
+	require.Equal(t, OpenAICommercialTierStandard, decision.CommercialTier)
+	require.Equal(t, "standard", decision.ProtocolTier)
+	require.NotNil(t, result.BillingServiceTier)
+	require.Equal(t, "standard", *result.BillingServiceTier)
+
+	unknown := "turbo"
+	result = &OpenAIForwardResult{ActualServiceTier: &unknown}
+	decision = resolveOpenAIServiceTierBillingDecision(result, state)
+	require.True(t, decision.ActualWasUnknown)
+	require.False(t, decision.ActualWasUsed)
+	require.Equal(t, OpenAICommercialTierPriority, decision.CommercialTier)
+	require.Equal(t, "priority", decision.ProtocolTier)
+}
+
+func TestExtractOpenAIActualServiceTier(t *testing.T) {
+	require.Equal(t, "priority", *extractOpenAIActualServiceTierFromJSONBytes([]byte(`{"service_tier":"priority"}`)))
+	require.Equal(t, "flex", *extractOpenAIActualServiceTierFromJSONBytes([]byte(`{"response":{"service_tier":"flex"}}`)))
+	require.Nil(t, extractOpenAIActualServiceTierFromJSONBytes([]byte(`{"service_tier":3}`)))
+	require.Nil(t, extractOpenAIActualServiceTierFromJSONBytes([]byte(`not-json`)))
+}
+
+func TestCalculateCostUnifiedAppliesChannelTierMultiplierToFallbackAndPerRequest(t *testing.T) {
+	bs := newTestBillingServiceForResolver()
+	resolver := NewModelPricingResolver(nil, bs)
+	snapshot := &ChannelServiceTierSnapshot{Config: ChannelServiceTierConfig{
+		Standard: ChannelServiceTierOption{Enabled: true, Multiplier: 1.25},
+		Priority: ChannelServiceTierOption{Enabled: true, Multiplier: 3},
+		Flex:     ChannelServiceTierOption{Enabled: true, Multiplier: 0.4},
+	}}
+
+	tokenCost, err := bs.CalculateCostUnified(CostInput{
+		Model:               "claude-sonnet-4",
+		Tokens:              UsageTokens{InputTokens: 1000, OutputTokens: 1000},
+		RateMultiplier:      2,
+		ServiceTier:         "priority",
+		ServiceTierSnapshot: snapshot,
+		Resolver:            resolver,
+	})
+	require.NoError(t, err)
+	require.InDelta(t, tokenCost.TotalCost*6, tokenCost.ActualCost, 1e-12)
+
+	perRequestCost, err := bs.CalculateCostUnified(CostInput{
+		Model:               "custom-image",
+		RequestCount:        2,
+		RateMultiplier:      2,
+		ServiceTier:         "priority",
+		ServiceTierSnapshot: snapshot,
+		Resolver:            resolver,
+		Resolved: &ResolvedPricing{
+			Mode:                   BillingModePerRequest,
+			DefaultPerRequestPrice: 0.1,
+		},
+	})
+	require.NoError(t, err)
+	require.InDelta(t, 0.2, perRequestCost.TotalCost, 1e-12)
+	require.InDelta(t, 1.2, perRequestCost.ActualCost, 1e-12)
+}

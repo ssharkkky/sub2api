@@ -1,7 +1,6 @@
 package service
 
-// 本文件由 openai_gateway_service.go 纯移动拆分而来：用量记录、计费成本计算与
-// Codex 用量快照。仅做代码搬迁，无任何行为变更。
+// 本文件承载 OpenAI 用量记录、计费成本计算与 Codex 用量快照。
 
 import (
 	"context"
@@ -34,7 +33,8 @@ type OpenAIRecordUsageInput struct {
 	APIKeyService      APIKeyQuotaUpdater
 	QuotaPlatform      string // user×platform quota platform resolved by the handler before async billing.
 	// CyberBlocked 为 true 时把该用量行标记为 cyber（request_type=cyber），计费逻辑不变。
-	CyberBlocked bool
+	CyberBlocked     bool
+	ServiceTierState *OpenAIServiceTierRequestState
 	ChannelUsageFields
 }
 
@@ -59,6 +59,7 @@ type CyberPolicyUsageInput struct {
 	SessionID          string
 	RequestPayloadHash string
 	APIKeyService      APIKeyQuotaUpdater
+	ServiceTierState   *OpenAIServiceTierRequestState
 	ChannelUsageFields
 }
 
@@ -94,6 +95,7 @@ func (s *OpenAIGatewayService) RecordCyberPolicyUsageLog(ctx context.Context, in
 		SessionID:          in.SessionID,
 		RequestPayloadHash: in.RequestPayloadHash,
 		APIKeyService:      in.APIKeyService,
+		ServiceTierState:   in.ServiceTierState,
 		ChannelUsageFields: in.ChannelUsageFields,
 		CyberBlocked:       true,
 	}); err != nil {
@@ -185,9 +187,35 @@ func (s *OpenAIGatewayService) RecordUsage(ctx context.Context, input *OpenAIRec
 		result.UpstreamModel,
 		result.Model,
 	)
-	serviceTier := ""
-	if result.ServiceTier != nil {
-		serviceTier = strings.TrimSpace(*result.ServiceTier)
+	serviceTierDecision := resolveOpenAIServiceTierBillingDecision(result, input.ServiceTierState)
+	serviceTier := serviceTierDecision.ProtocolTier
+	if serviceTierDecision.ActualWasUnknown {
+		logger.L().With(
+			zap.String("component", "service.openai_gateway"),
+			zap.String("actual_service_tier", serviceTierDecision.ActualProtocolTier),
+			zap.String("fallback_service_tier", serviceTier),
+			zap.Int64("account_id", account.ID),
+		).Warn("openai_usage.unknown_actual_service_tier")
+	}
+	if serviceTierDecision.ActualWasUsed && input.ServiceTierState != nil &&
+		serviceTierDecision.CommercialTier != input.ServiceTierState.OutboundTier {
+		fields := []zap.Field{
+			zap.String("component", "service.openai_gateway"),
+			zap.String("requested_service_tier", input.ServiceTierState.RequestedProtocolTier),
+			zap.String("outbound_service_tier", input.ServiceTierState.OutboundProtocolTier),
+			zap.String("actual_service_tier", serviceTierDecision.ActualProtocolTier),
+			zap.String("billing_service_tier", string(serviceTierDecision.CommercialTier)),
+			zap.String("model", billingModel),
+			zap.Int64("account_id", account.ID),
+		}
+		if serviceTierDecision.Snapshot != nil {
+			fields = append(fields,
+				zap.Int64("channel_id", serviceTierDecision.Snapshot.ChannelID),
+				zap.Int64("group_id", serviceTierDecision.Snapshot.GroupID),
+				zap.String("service_tier_config_revision", serviceTierDecision.Snapshot.ConfigRevision),
+			)
+		}
+		logger.L().With(fields...).Warn("openai_usage.service_tier_degraded")
 	}
 	billingAccount := account
 	if account.IsShadow() {
@@ -208,6 +236,7 @@ func (s *OpenAIGatewayService) RecordUsage(ctx context.Context, input *OpenAIRec
 		baseMultiplier,
 		tokens,
 		serviceTier,
+		serviceTierDecision.Snapshot,
 		longContextBillingEnabled,
 	)
 	if err != nil {
@@ -257,7 +286,7 @@ func (s *OpenAIGatewayService) RecordUsage(ctx context.Context, input *OpenAIRec
 		Model:               result.Model,
 		RequestedModel:      requestedModel,
 		UpstreamModel:       optionalTrimmedStringPtr(result.UpstreamModel),
-		ServiceTier:         result.ServiceTier,
+		ServiceTier:         optionalOpenAIProtocolTier(serviceTier),
 		ReasoningEffort:     result.ReasoningEffort,
 		InboundEndpoint:     optionalTrimmedStringPtr(input.InboundEndpoint),
 		UpstreamEndpoint:    optionalTrimmedStringPtr(input.UpstreamEndpoint),
@@ -403,25 +432,27 @@ func (s *OpenAIGatewayService) calculateOpenAIRecordUsageCost(
 	webSearchMultiplier float64,
 	tokens UsageTokens,
 	serviceTier string,
+	serviceTierSnapshot *ChannelServiceTierSnapshot,
 	longContextBillingEnabled bool,
 ) (*CostBreakdown, error) {
+	tierAdjustedWebSearchMultiplier, _ := applyChannelServiceTierRateMultiplier(webSearchMultiplier, serviceTier, serviceTierSnapshot)
 	billingModel := firstUsageBillingModel(billingModels)
 	if result != nil && result.WebSearchCalls > 0 {
 		// Codex alpha/search 网页搜索按次计费：上游不返回 usage/token 字段，单价只取
 		// 分组覆盖价（nil 时默认 0.01 = 官方 $10/1000 次），不参与渠道级模型定价。
 		// 倍率与 image/video 按次口径一致：使用不含高峰因子的基础倍率
 		//（用户专属 > 分组 rate_multiplier > 系统默认），与分组表单的价格预览承诺一致。
-		return s.billingService.CalculateWebSearchCost(result.WebSearchCalls, webSearchPricePerCallFromAPIKey(apiKey), webSearchMultiplier), nil
+		return s.billingService.CalculateWebSearchCost(result.WebSearchCalls, webSearchPricePerCallFromAPIKey(apiKey), tierAdjustedWebSearchMultiplier), nil
 	}
 	if isGrokVideoUsageResult(result, billingModels) {
-		if resolved := s.resolveOpenAIChannelPricing(ctx, billingModel, apiKey); resolved == nil || resolved.Mode != BillingModeToken {
-			return s.calculateOpenAIVideoCost(ctx, billingModel, apiKey, result, videoMultiplier), nil
+		if resolved := s.resolveOpenAIChannelPricing(ctx, billingModel, apiKey, serviceTierSnapshot); resolved == nil || resolved.Mode != BillingModeToken {
+			return s.calculateOpenAIVideoCost(ctx, billingModel, apiKey, result, videoMultiplier, serviceTier, serviceTierSnapshot), nil
 		}
 	}
 	if result != nil && result.ImageCount > 0 {
 		// 渠道定价为 token 计费时走 token 路径，否则走图片计费
-		if resolved := s.resolveOpenAIChannelPricing(ctx, billingModel, apiKey); resolved == nil || resolved.Mode != BillingModeToken {
-			return s.calculateOpenAIImageCost(ctx, billingModel, apiKey, result, imageMultiplier), nil
+		if resolved := s.resolveOpenAIChannelPricing(ctx, billingModel, apiKey, serviceTierSnapshot); resolved == nil || resolved.Mode != BillingModeToken {
+			return s.calculateOpenAIImageCost(ctx, billingModel, apiKey, result, imageMultiplier, serviceTier, serviceTierSnapshot), nil
 		}
 	}
 	if len(billingModels) == 0 || billingModel == "" {
@@ -440,6 +471,7 @@ func (s *OpenAIGatewayService) calculateOpenAIRecordUsageCost(
 			multiplier,
 			tokens,
 			serviceTier,
+			serviceTierSnapshot,
 			longContextBillingEnabled,
 		)
 		if err == nil {
@@ -489,6 +521,7 @@ func (s *OpenAIGatewayService) calculateOpenAIRecordUsageTokenCost(
 	multiplier float64,
 	tokens UsageTokens,
 	serviceTier string,
+	serviceTierSnapshot *ChannelServiceTierSnapshot,
 	longContextBillingEnabled bool,
 ) (*CostBreakdown, error) {
 	if s.resolver != nil && apiKey.Group != nil {
@@ -501,15 +534,17 @@ func (s *OpenAIGatewayService) calculateOpenAIRecordUsageTokenCost(
 			RequestCount:              1,
 			RateMultiplier:            multiplier,
 			ServiceTier:               serviceTier,
+			ServiceTierSnapshot:       serviceTierSnapshot,
 			Resolver:                  s.resolver,
 			LongContextBillingEnabled: &longContextBillingEnabled,
 		})
 	}
+	tierAdjustedMultiplier, legacyServiceTier := applyChannelServiceTierRateMultiplier(multiplier, serviceTier, serviceTierSnapshot)
 	return s.billingService.calculateCostWithServiceTierPolicy(
 		billingModel,
 		tokens,
-		multiplier,
-		serviceTier,
+		tierAdjustedMultiplier,
+		legacyServiceTier,
 		longContextBillingEnabled,
 	)
 }
@@ -520,31 +555,36 @@ func (s *OpenAIGatewayService) calculateOpenAIImageCost(
 	apiKey *APIKey,
 	result *OpenAIForwardResult,
 	multiplier float64,
+	serviceTier string,
+	serviceTierSnapshot *ChannelServiceTierSnapshot,
 ) *CostBreakdown {
+	tierAdjustedMultiplier, _ := applyChannelServiceTierRateMultiplier(multiplier, serviceTier, serviceTierSnapshot)
 	sizeTier := NormalizeImageBillingTierOrDefault(result.ImageSize)
 	groupConfig := imagePriceConfigFromAPIKey(apiKey)
 	if apiKeyHasConfiguredImagePrice(apiKey, sizeTier) {
-		return s.billingService.CalculateImageCost(billingModel, sizeTier, result.ImageCount, groupConfig, multiplier)
+		return s.billingService.CalculateImageCost(billingModel, sizeTier, result.ImageCount, groupConfig, tierAdjustedMultiplier)
 	}
 	if refreshed := s.apiKeyWithFreshGroupMediaPricing(ctx, apiKey); refreshed != apiKey {
 		apiKey = refreshed
 		groupConfig = imagePriceConfigFromAPIKey(apiKey)
 		if apiKeyHasConfiguredImagePrice(apiKey, sizeTier) {
-			return s.billingService.CalculateImageCost(billingModel, sizeTier, result.ImageCount, groupConfig, multiplier)
+			return s.billingService.CalculateImageCost(billingModel, sizeTier, result.ImageCount, groupConfig, tierAdjustedMultiplier)
 		}
 	}
-	if resolved := s.resolveOpenAIChannelPricing(ctx, billingModel, apiKey); resolved != nil &&
+	if resolved := s.resolveOpenAIChannelPricing(ctx, billingModel, apiKey, serviceTierSnapshot); resolved != nil &&
 		(resolved.Mode == BillingModePerRequest || resolved.Mode == BillingModeImage) {
 		gid := apiKey.Group.ID
 		cost, err := s.billingService.CalculateCostUnified(CostInput{
-			Ctx:            ctx,
-			Model:          billingModel,
-			GroupID:        &gid,
-			RequestCount:   result.ImageCount,
-			SizeTier:       sizeTier,
-			RateMultiplier: multiplier,
-			Resolver:       s.resolver,
-			Resolved:       resolved,
+			Ctx:                 ctx,
+			Model:               billingModel,
+			GroupID:             &gid,
+			RequestCount:        result.ImageCount,
+			SizeTier:            sizeTier,
+			RateMultiplier:      multiplier,
+			ServiceTier:         serviceTier,
+			ServiceTierSnapshot: serviceTierSnapshot,
+			Resolver:            s.resolver,
+			Resolved:            resolved,
 		})
 		if err == nil {
 			return cost
@@ -552,7 +592,7 @@ func (s *OpenAIGatewayService) calculateOpenAIImageCost(
 		logger.LegacyPrintf("service.openai_gateway", "Calculate image channel cost failed: %v", err)
 	}
 
-	return s.billingService.CalculateImageCost(billingModel, sizeTier, result.ImageCount, groupConfig, multiplier)
+	return s.billingService.CalculateImageCost(billingModel, sizeTier, result.ImageCount, groupConfig, tierAdjustedMultiplier)
 }
 
 func (s *OpenAIGatewayService) calculateOpenAIVideoCost(
@@ -561,7 +601,10 @@ func (s *OpenAIGatewayService) calculateOpenAIVideoCost(
 	apiKey *APIKey,
 	result *OpenAIForwardResult,
 	multiplier float64,
+	serviceTier string,
+	serviceTierSnapshot *ChannelServiceTierSnapshot,
 ) *CostBreakdown {
+	tierAdjustedMultiplier, _ := applyChannelServiceTierRateMultiplier(multiplier, serviceTier, serviceTierSnapshot)
 	videoCount := result.VideoCount
 	if videoCount <= 0 {
 		videoCount = 1
@@ -570,28 +613,30 @@ func (s *OpenAIGatewayService) calculateOpenAIVideoCost(
 	durationSeconds := NormalizeVideoBillingDurationSecondsOrDefault(result.VideoDurationSeconds)
 	groupConfig := videoPriceConfigFromAPIKey(apiKey)
 	if apiKeyHasConfiguredVideoPrice(apiKey, resolution) {
-		return s.billingService.CalculateVideoCost(billingModel, resolution, videoCount, durationSeconds, groupConfig, multiplier)
+		return s.billingService.CalculateVideoCost(billingModel, resolution, videoCount, durationSeconds, groupConfig, tierAdjustedMultiplier)
 	}
 	if refreshed := s.apiKeyWithFreshGroupMediaPricing(ctx, apiKey); refreshed != apiKey {
 		apiKey = refreshed
 		groupConfig = videoPriceConfigFromAPIKey(apiKey)
 		if apiKeyHasConfiguredVideoPrice(apiKey, resolution) {
-			return s.billingService.CalculateVideoCost(billingModel, resolution, videoCount, durationSeconds, groupConfig, multiplier)
+			return s.billingService.CalculateVideoCost(billingModel, resolution, videoCount, durationSeconds, groupConfig, tierAdjustedMultiplier)
 		}
 	}
-	if resolved := s.resolveOpenAIChannelPricing(ctx, billingModel, apiKey); resolved != nil &&
+	if resolved := s.resolveOpenAIChannelPricing(ctx, billingModel, apiKey, serviceTierSnapshot); resolved != nil &&
 		(resolved.Mode == BillingModePerRequest || resolved.Mode == BillingModeImage) {
 		// 渠道 per_request/image 定价保持"按请求次数"口径（价格由管理员按次配置），不乘视频时长。
 		gid := apiKey.Group.ID
 		cost, err := s.billingService.CalculateCostUnified(CostInput{
-			Ctx:            ctx,
-			Model:          billingModel,
-			GroupID:        &gid,
-			RequestCount:   videoCount,
-			SizeTier:       resolution,
-			RateMultiplier: multiplier,
-			Resolver:       s.resolver,
-			Resolved:       resolved,
+			Ctx:                 ctx,
+			Model:               billingModel,
+			GroupID:             &gid,
+			RequestCount:        videoCount,
+			SizeTier:            resolution,
+			RateMultiplier:      multiplier,
+			ServiceTier:         serviceTier,
+			ServiceTierSnapshot: serviceTierSnapshot,
+			Resolver:            s.resolver,
+			Resolved:            resolved,
 		})
 		if err == nil {
 			cost.BillingMode = string(BillingModeVideo)
@@ -600,7 +645,7 @@ func (s *OpenAIGatewayService) calculateOpenAIVideoCost(
 		logger.LegacyPrintf("service.openai_gateway", "Calculate video channel cost failed: %v", err)
 	}
 
-	return s.billingService.CalculateVideoCost(billingModel, resolution, videoCount, durationSeconds, groupConfig, multiplier)
+	return s.billingService.CalculateVideoCost(billingModel, resolution, videoCount, durationSeconds, groupConfig, tierAdjustedMultiplier)
 }
 
 func (s *OpenAIGatewayService) apiKeyWithFreshGroupMediaPricing(ctx context.Context, apiKey *APIKey) *APIKey {
@@ -640,12 +685,21 @@ func groupMediaPricingLooksIncomplete(group *Group) bool {
 		group.VideoPrice480P == nil && group.VideoPrice720P == nil && group.VideoPrice1080P == nil
 }
 
-func (s *OpenAIGatewayService) resolveOpenAIChannelPricing(ctx context.Context, billingModel string, apiKey *APIKey) *ResolvedPricing {
+func (s *OpenAIGatewayService) resolveOpenAIChannelPricing(
+	ctx context.Context,
+	billingModel string,
+	apiKey *APIKey,
+	serviceTierSnapshot *ChannelServiceTierSnapshot,
+) *ResolvedPricing {
 	if s.resolver == nil || apiKey == nil || apiKey.Group == nil {
 		return nil
 	}
 	gid := apiKey.Group.ID
-	resolved := s.resolver.Resolve(ctx, PricingInput{Model: billingModel, GroupID: &gid})
+	resolved := s.resolver.Resolve(ctx, PricingInput{
+		Model:               billingModel,
+		GroupID:             &gid,
+		ServiceTierSnapshot: serviceTierSnapshot,
+	})
 	if resolved.Source == PricingSourceChannel {
 		return resolved
 	}

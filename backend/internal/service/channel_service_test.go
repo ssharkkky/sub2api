@@ -6,6 +6,7 @@ import (
 	"context"
 	"errors"
 	"testing"
+	"time"
 
 	"github.com/Wei-Shaw/sub2api/internal/pkg/pagination"
 	"github.com/stretchr/testify/require"
@@ -1168,22 +1169,16 @@ func TestBuildCache_DBError(t *testing.T) {
 	require.Contains(t, err.Error(), "database down")
 	require.Equal(t, 1, callCount)
 
-	// Second call within error-TTL should use error cache, but still return error
-	// Because buildCache stores error-TTL cache and returns error, the cached value
-	// is still within TTL and loadCache returns it (which is an empty cache).
-	// Actually, re-reading the code: buildCache returns nil, err, and the error cache
-	// only serves as a "don't retry immediately" mechanism. The singleflight.Do
-	// returns the error. On next call within error-TTL, the cache has an empty but
-	// valid entry, so loadCache returns it (with empty maps). GetChannelForGroup
-	// will find nothing and return nil, nil.
+	// Cold start must remain fail-closed. A transient DB error must not be turned
+	// into an empty cache, because that would silently bypass channel policy.
 	result, err := svc.GetChannelForGroup(context.Background(), 10)
-	require.NoError(t, err)
+	require.Error(t, err)
 	require.Nil(t, result)
-	// Should NOT have hit DB again (error-TTL cache is active)
-	require.Equal(t, 1, callCount)
+	require.Equal(t, 2, callCount)
 }
 
 func TestBuildCache_GroupPlatformError(t *testing.T) {
+	callCount := 0
 	ch := Channel{
 		ID:       1,
 		Status:   StatusActive,
@@ -1197,6 +1192,7 @@ func TestBuildCache_GroupPlatformError(t *testing.T) {
 			return []Channel{ch}, nil
 		},
 		getGroupPlatformsFn: func(_ context.Context, _ []int64) (map[int64]string, error) {
+			callCount++
 			return nil, errors.New("group platforms failed")
 		},
 	}
@@ -1207,10 +1203,51 @@ func TestBuildCache_GroupPlatformError(t *testing.T) {
 	require.Error(t, err)
 	require.Nil(t, result)
 
-	// Within error-TTL, second call should hit cache (empty) and return nil, nil
+	// Cold start retries and remains fail-closed; it never installs an empty cache.
 	result2, err2 := svc.GetChannelForGroup(context.Background(), 10)
-	require.NoError(t, err2)
+	require.Error(t, err2)
 	require.Nil(t, result2)
+	require.Equal(t, 2, callCount)
+}
+
+func TestLoadCache_RefreshFailureKeepsLastValidServiceTierSnapshot(t *testing.T) {
+	failRefresh := false
+	config := DefaultChannelServiceTierConfig()
+	config.Priority.Multiplier = 3
+	ch := Channel{
+		ID:                1,
+		Name:              "stable-channel",
+		Status:            StatusActive,
+		GroupIDs:          []int64{10},
+		ServiceTierConfig: config,
+	}
+	repo := &mockChannelRepository{
+		listAllFn: func(_ context.Context) ([]Channel, error) {
+			if failRefresh {
+				return nil, errors.New("database temporarily unavailable")
+			}
+			return []Channel{ch}, nil
+		},
+		getGroupPlatformsFn: func(_ context.Context, _ []int64) (map[int64]string, error) {
+			return map[int64]string{10: PlatformOpenAI}, nil
+		},
+	}
+	svc := newTestChannelService(repo)
+
+	snapshot, found, err := svc.GetServiceTierSnapshotForGroup(context.Background(), 10)
+	require.NoError(t, err)
+	require.True(t, found)
+	require.InDelta(t, 3, snapshot.Config.Priority.Multiplier, 1e-12)
+
+	cached, ok := svc.cache.Load().(*channelCache)
+	require.True(t, ok)
+	cached.loadedAt = time.Time{}
+	failRefresh = true
+
+	snapshot, found, err = svc.GetServiceTierSnapshotForGroup(context.Background(), 10)
+	require.NoError(t, err)
+	require.True(t, found)
+	require.InDelta(t, 3, snapshot.Config.Priority.Multiplier, 1e-12)
 }
 
 func TestBuildCache_MultipleGroupsSameChannel(t *testing.T) {
@@ -1332,6 +1369,39 @@ func TestInvalidateCache(t *testing.T) {
 	result = svc.GetChannelModelPricing(context.Background(), 10, "claude-opus-4")
 	require.NotNil(t, result)
 	require.Equal(t, 2, callCount) // rebuilt
+}
+
+func TestUpdate_NormalizesLegacyEmptyServiceTierConfig(t *testing.T) {
+	stored := Channel{
+		ID:       42,
+		Name:     "legacy-channel",
+		Status:   StatusActive,
+		GroupIDs: []int64{10},
+	}
+	repo := &mockChannelRepository{
+		getByIDFn: func(_ context.Context, id int64) (*Channel, error) {
+			require.Equal(t, int64(42), id)
+			return stored.Clone(), nil
+		},
+		updateFn: func(_ context.Context, channel *Channel) error {
+			stored = *channel.Clone()
+			return nil
+		},
+		listAllFn: func(_ context.Context) ([]Channel, error) {
+			return []Channel{stored}, nil
+		},
+		getGroupPlatformsFn: func(_ context.Context, _ []int64) (map[int64]string, error) {
+			return map[int64]string{10: PlatformOpenAI}, nil
+		},
+	}
+	svc := newTestChannelService(repo)
+
+	updated, err := svc.Update(context.Background(), 42, &UpdateChannelInput{
+		ModelMapping: map[string]map[string]string{PlatformOpenAI: {"alias": "gpt-5"}},
+	})
+	require.NoError(t, err)
+	require.Equal(t, DefaultChannelServiceTierConfig(), updated.ServiceTierConfig)
+	require.Equal(t, DefaultChannelServiceTierConfig(), stored.ServiceTierConfig)
 }
 
 // ===========================================================================

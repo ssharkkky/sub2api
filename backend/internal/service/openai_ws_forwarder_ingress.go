@@ -347,7 +347,7 @@ func (s *OpenAIGatewayService) ProxyResponsesWebSocketFromClient(
 		// follow-up response.create frames may omit it and then reuse
 		// ingressSessionOriginalModel. We always write a concrete upstream model
 		// before evaluating policy, so whitelist / filter behavior remains stable.
-		policyApplied, blocked, policyErr := s.applyOpenAIFastPolicyToWSResponseCreate(ctx, account, upstreamModel, normalized)
+		policyApplied, blocked, policyErr := s.applyOpenAIFastAndChannelPolicyToWSResponseCreate(ctx, c, account, upstreamModel, normalized)
 		if policyErr != nil {
 			return openAIWSClientPayload{}, NewOpenAIWSClientCloseError(coderws.StatusPolicyViolation, "invalid websocket request payload", policyErr)
 		}
@@ -1011,6 +1011,7 @@ func (s *OpenAIGatewayService) ProxyResponsesWebSocketFromClient(
 					Model:                 originalModel,
 					UpstreamModel:         mappedModel,
 					ServiceTier:           extractOpenAIServiceTierFromBody(payload),
+					ActualServiceTier:     extractOpenAIActualServiceTierFromJSONBytes(payload),
 					ReasoningEffort:       ApplyThinkingEnabledFallback(extractOpenAIReasoningEffortFromBody(payload, mappedModel, originalModel), payload, mappedModel),
 					Stream:                reqStream,
 					OpenAIWSMode:          true,

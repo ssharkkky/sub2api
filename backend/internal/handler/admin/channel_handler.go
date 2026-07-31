@@ -28,17 +28,18 @@ func NewChannelHandler(channelService *service.ChannelService, billingService *s
 // --- Request / Response types ---
 
 type createChannelRequest struct {
-	Name                       string                           `json:"name" binding:"required,max=100"`
-	Description                string                           `json:"description"`
-	GroupIDs                   []int64                          `json:"group_ids"`
-	ModelPricing               []channelModelPricingRequest     `json:"model_pricing"`
-	ModelMapping               map[string]map[string]string     `json:"model_mapping"`
-	BillingModelSource         string                           `json:"billing_model_source" binding:"omitempty,oneof=requested upstream channel_mapped"`
-	RestrictModels             bool                             `json:"restrict_models"`
-	Features                   string                           `json:"features"`
-	FeaturesConfig             map[string]any                   `json:"features_config"`
-	ApplyPricingToAccountStats bool                             `json:"apply_pricing_to_account_stats"`
-	AccountStatsPricingRules   []accountStatsPricingRuleRequest `json:"account_stats_pricing_rules"`
+	Name                       string                            `json:"name" binding:"required,max=100"`
+	Description                string                            `json:"description"`
+	GroupIDs                   []int64                           `json:"group_ids"`
+	ModelPricing               []channelModelPricingRequest      `json:"model_pricing"`
+	ModelMapping               map[string]map[string]string      `json:"model_mapping"`
+	BillingModelSource         string                            `json:"billing_model_source" binding:"omitempty,oneof=requested upstream channel_mapped"`
+	RestrictModels             bool                              `json:"restrict_models"`
+	Features                   string                            `json:"features"`
+	FeaturesConfig             map[string]any                    `json:"features_config"`
+	ServiceTierConfig          *service.ChannelServiceTierConfig `json:"service_tier_config"`
+	ApplyPricingToAccountStats bool                              `json:"apply_pricing_to_account_stats"`
+	AccountStatsPricingRules   []accountStatsPricingRuleRequest  `json:"account_stats_pricing_rules"`
 }
 
 type updateChannelRequest struct {
@@ -52,6 +53,7 @@ type updateChannelRequest struct {
 	RestrictModels             *bool                             `json:"restrict_models"`
 	Features                   *string                           `json:"features"`
 	FeaturesConfig             map[string]any                    `json:"features_config"`
+	ServiceTierConfig          *service.ChannelServiceTierConfig `json:"service_tier_config"`
 	ApplyPricingToAccountStats *bool                             `json:"apply_pricing_to_account_stats"`
 	AccountStatsPricingRules   *[]accountStatsPricingRuleRequest `json:"account_stats_pricing_rules"`
 }
@@ -98,6 +100,8 @@ type channelResponse struct {
 	RestrictModels             bool                              `json:"restrict_models"`
 	Features                   string                            `json:"features"`
 	FeaturesConfig             map[string]any                    `json:"features_config"`
+	ServiceTierConfig          service.ChannelServiceTierConfig  `json:"service_tier_config"`
+	ServiceTierConfigError     string                            `json:"service_tier_config_error,omitempty"`
 	GroupIDs                   []int64                           `json:"group_ids"`
 	ModelPricing               []channelModelPricingResponse     `json:"model_pricing"`
 	ModelMapping               map[string]map[string]string      `json:"model_mapping"`
@@ -148,17 +152,19 @@ func channelToResponse(ch *service.Channel) *channelResponse {
 		return nil
 	}
 	resp := &channelResponse{
-		ID:             ch.ID,
-		Name:           ch.Name,
-		Description:    ch.Description,
-		Status:         ch.Status,
-		RestrictModels: ch.RestrictModels,
-		Features:       ch.Features,
-		FeaturesConfig: ch.FeaturesConfig,
-		GroupIDs:       ch.GroupIDs,
-		ModelMapping:   ch.ModelMapping,
-		CreatedAt:      ch.CreatedAt.Format("2006-01-02T15:04:05Z"),
-		UpdatedAt:      ch.UpdatedAt.Format("2006-01-02T15:04:05Z"),
+		ID:                     ch.ID,
+		Name:                   ch.Name,
+		Description:            ch.Description,
+		Status:                 ch.Status,
+		RestrictModels:         ch.RestrictModels,
+		Features:               ch.Features,
+		FeaturesConfig:         ch.FeaturesConfig,
+		ServiceTierConfig:      ch.ServiceTierConfig,
+		ServiceTierConfigError: ch.ServiceTierConfigError,
+		GroupIDs:               ch.GroupIDs,
+		ModelMapping:           ch.ModelMapping,
+		CreatedAt:              ch.CreatedAt.Format("2006-01-02T15:04:05Z"),
+		UpdatedAt:              ch.UpdatedAt.Format("2006-01-02T15:04:05Z"),
 	}
 	resp.BillingModelSource = ch.BillingModelSource
 	if resp.GroupIDs == nil {
@@ -386,6 +392,7 @@ func (h *ChannelHandler) Create(c *gin.Context) {
 		RestrictModels:             req.RestrictModels,
 		Features:                   req.Features,
 		FeaturesConfig:             req.FeaturesConfig,
+		ServiceTierConfig:          req.ServiceTierConfig,
 		ApplyPricingToAccountStats: req.ApplyPricingToAccountStats,
 		AccountStatsPricingRules:   statsRules,
 	})
@@ -422,6 +429,7 @@ func (h *ChannelHandler) Update(c *gin.Context) {
 		RestrictModels:             req.RestrictModels,
 		Features:                   req.Features,
 		FeaturesConfig:             req.FeaturesConfig,
+		ServiceTierConfig:          req.ServiceTierConfig,
 		ApplyPricingToAccountStats: req.ApplyPricingToAccountStats,
 	}
 	if req.ModelPricing != nil {

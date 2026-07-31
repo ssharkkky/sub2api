@@ -17,8 +17,12 @@ import (
 )
 
 var (
-	ErrChannelNotFound       = infraerrors.NotFound("CHANNEL_NOT_FOUND", "channel not found")
-	ErrChannelExists         = infraerrors.Conflict("CHANNEL_EXISTS", "channel name already exists")
+	ErrChannelNotFound                 = infraerrors.NotFound("CHANNEL_NOT_FOUND", "channel not found")
+	ErrChannelExists                   = infraerrors.Conflict("CHANNEL_EXISTS", "channel name already exists")
+	ErrChannelServiceTierConfigInvalid = infraerrors.BadRequest(
+		"CHANNEL_SERVICE_TIER_CONFIG_INVALID",
+		"channel OpenAI service tier configuration is invalid",
+	)
 	ErrGroupAlreadyInChannel = infraerrors.Conflict(
 		"GROUP_ALREADY_IN_CHANNEL",
 		"one or more groups already belong to another channel",
@@ -145,7 +149,6 @@ func (r ChannelMappingResult) ToUsageFields(reqModel, upstreamModel string) Chan
 
 const (
 	channelCacheTTL       = 10 * time.Minute
-	channelErrorTTL       = 5 * time.Second // DB 错误时的短缓存
 	channelCacheDBTimeout = 10 * time.Second
 )
 
@@ -175,7 +178,8 @@ func NewChannelService(repo ChannelRepository, groupRepo GroupRepository, authCa
 
 // loadCache 加载或返回缓存的渠道数据
 func (s *ChannelService) loadCache(ctx context.Context) (*channelCache, error) {
-	if cached, ok := s.cache.Load().(*channelCache); ok && cached != nil {
+	cached, _ := s.cache.Load().(*channelCache)
+	if cached != nil {
 		if time.Since(cached.loadedAt) < channelCacheTTL {
 			return cached, nil
 		}
@@ -188,7 +192,12 @@ func (s *ChannelService) loadCache(ctx context.Context) (*channelCache, error) {
 				return cached, nil
 			}
 		}
-		return s.buildCache(ctx)
+		fresh, err := s.buildCache(ctx)
+		if err != nil && cached != nil {
+			slog.Warn("channel cache refresh failed; using last valid snapshot", "error", err, "loaded_at", cached.loadedAt)
+			return cached, nil
+		}
+		return fresh, err
 	})
 	if err != nil {
 		return nil, err
@@ -267,12 +276,6 @@ func expandMappingToCache(cache *channelCache, ch *Channel, gid int64, platform 
 
 // storeErrorCache 存入短 TTL 空缓存，防止 DB 错误后紧密重试。
 // 通过回退 loadedAt 使剩余 TTL = channelErrorTTL。
-func (s *ChannelService) storeErrorCache() {
-	errorCache := newEmptyChannelCache()
-	errorCache.loadedAt = time.Now().Add(-(channelCacheTTL - channelErrorTTL))
-	s.cache.Store(errorCache)
-}
-
 // buildCache 从数据库构建渠道缓存。
 // 使用独立 context 避免请求取消导致空值被长期缓存。
 func (s *ChannelService) buildCache(ctx context.Context) (*channelCache, error) {
@@ -294,7 +297,6 @@ func (s *ChannelService) fetchChannelData(ctx context.Context) ([]Channel, map[i
 	channels, err := s.repo.ListAll(ctx)
 	if err != nil {
 		slog.Warn("failed to build channel cache", "error", err)
-		s.storeErrorCache()
 		return nil, nil, fmt.Errorf("list all channels: %w", err)
 	}
 
@@ -308,7 +310,6 @@ func (s *ChannelService) fetchChannelData(ctx context.Context) ([]Channel, map[i
 		groupPlatforms, err = s.repo.GetGroupPlatforms(ctx, allGroupIDs)
 		if err != nil {
 			slog.Warn("failed to load group platforms for channel cache", "error", err)
-			s.storeErrorCache()
 			return nil, nil, fmt.Errorf("get group platforms: %w", err)
 		}
 	}
@@ -327,6 +328,7 @@ func populateChannelCache(channels []Channel, groupPlatforms map[int64]string) *
 
 	for i := range channels {
 		channels[i].normalizeBillingModelSource()
+		channels[i].normalizeServiceTierConfig()
 		ch := &channels[i]
 		cache.byID[ch.ID] = ch
 		for _, gid := range ch.GroupIDs {
@@ -376,7 +378,11 @@ func channelLookupPlatform(ctx context.Context, groupPlatform string) string {
 	return groupPlatform
 }
 func (s *ChannelService) invalidateCache() {
-	s.cache.Store((*channelCache)(nil))
+	if cached, ok := s.cache.Load().(*channelCache); ok && cached != nil {
+		expired := *cached
+		expired.loadedAt = time.Time{}
+		s.cache.Store(&expired)
+	}
 	s.cacheSF.Forget("channel_cache")
 
 	// 主动重建缓存，确保 CRUD 后立即生效
@@ -458,6 +464,36 @@ func (s *ChannelService) GetChannelForGroup(ctx context.Context, groupID int64) 
 	}
 
 	return ch.Clone(), nil
+}
+
+// GetServiceTierSnapshotForGroup returns an immutable request-scoped snapshot.
+// A damaged configuration is reported only for the affected channel.
+func (s *ChannelService) GetServiceTierSnapshotForGroup(ctx context.Context, groupID int64) (*ChannelServiceTierSnapshot, bool, error) {
+	cache, err := s.loadCache(ctx)
+	if err != nil {
+		return nil, false, err
+	}
+	ch, ok := cache.channelByGroupID[groupID]
+	if !ok || !ch.IsActive() {
+		return nil, false, nil
+	}
+	if ch.ServiceTierConfigError != "" {
+		return nil, true, fmt.Errorf("%w: channel %d: %s", ErrChannelServiceTierConfigInvalid, ch.ID, ch.ServiceTierConfigError)
+	}
+	config := ch.ServiceTierConfig
+	if config.IsZero() {
+		config = DefaultChannelServiceTierConfig()
+	}
+	if err := config.Validate(); err != nil {
+		return nil, true, fmt.Errorf("%w: channel %d: %v", ErrChannelServiceTierConfigInvalid, ch.ID, err)
+	}
+	return &ChannelServiceTierSnapshot{
+		ChannelID:      ch.ID,
+		GroupID:        groupID,
+		ChannelName:    ch.Name,
+		Config:         config,
+		ConfigRevision: ch.UpdatedAt.UTC().Format(time.RFC3339Nano),
+	}, true, nil
 }
 
 // GetGroupPlatform 获取分组的平台标识（从缓存）
@@ -740,11 +776,18 @@ func (s *ChannelService) Create(ctx context.Context, input *CreateChannelInput) 
 		ModelMapping:               input.ModelMapping,
 		Features:                   input.Features,
 		FeaturesConfig:             input.FeaturesConfig,
+		ServiceTierConfig:          DefaultChannelServiceTierConfig(),
 		ApplyPricingToAccountStats: input.ApplyPricingToAccountStats,
 		AccountStatsPricingRules:   input.AccountStatsPricingRules,
 	}
+	if input.ServiceTierConfig != nil {
+		channel.ServiceTierConfig = *input.ServiceTierConfig
+	}
 	channel.normalizeBillingModelSource()
 
+	if err := channel.ServiceTierConfig.Validate(); err != nil {
+		return nil, fmt.Errorf("%w: %v", ErrChannelServiceTierConfigInvalid, err)
+	}
 	if err := validateChannelConfig(channel.ModelPricing, channel.ModelMapping); err != nil {
 		return nil, err
 	}
@@ -775,6 +818,7 @@ func (s *ChannelService) GetByID(ctx context.Context, id int64) (*Channel, error
 		return nil, err
 	}
 	ch.normalizeBillingModelSource()
+	ch.normalizeServiceTierConfig()
 	return ch, nil
 }
 
@@ -784,6 +828,8 @@ func (s *ChannelService) Update(ctx context.Context, id int64, input *UpdateChan
 	if err != nil {
 		return nil, fmt.Errorf("get channel: %w", err)
 	}
+	channel.normalizeBillingModelSource()
+	channel.normalizeServiceTierConfig()
 
 	if err := s.applyUpdateInput(ctx, channel, input); err != nil {
 		return nil, err
@@ -791,6 +837,12 @@ func (s *ChannelService) Update(ctx context.Context, id int64, input *UpdateChan
 
 	if err := validateChannelConfig(channel.ModelPricing, channel.ModelMapping); err != nil {
 		return nil, err
+	}
+	if channel.ServiceTierConfigError != "" {
+		return nil, fmt.Errorf("%w: %s", ErrChannelServiceTierConfigInvalid, channel.ServiceTierConfigError)
+	}
+	if err := channel.ServiceTierConfig.Validate(); err != nil {
+		return nil, fmt.Errorf("%w: %v", ErrChannelServiceTierConfigInvalid, err)
 	}
 	for i, rule := range channel.AccountStatsPricingRules {
 		if err := validatePricingEntries(rule.Pricing); err != nil {
@@ -812,6 +864,7 @@ func (s *ChannelService) Update(ctx context.Context, id int64, input *UpdateChan
 		return nil, err
 	}
 	updated.normalizeBillingModelSource()
+	updated.normalizeServiceTierConfig()
 	return updated, nil
 }
 
@@ -856,6 +909,10 @@ func (s *ChannelService) applyUpdateInput(ctx context.Context, channel *Channel,
 	}
 	if input.FeaturesConfig != nil {
 		channel.FeaturesConfig = input.FeaturesConfig
+	}
+	if input.ServiceTierConfig != nil {
+		channel.ServiceTierConfig = *input.ServiceTierConfig
+		channel.ServiceTierConfigError = ""
 	}
 	if input.ApplyPricingToAccountStats != nil {
 		channel.ApplyPricingToAccountStats = *input.ApplyPricingToAccountStats
@@ -1040,6 +1097,7 @@ type CreateChannelInput struct {
 	RestrictModels             bool
 	Features                   string
 	FeaturesConfig             map[string]any
+	ServiceTierConfig          *ChannelServiceTierConfig
 	ApplyPricingToAccountStats bool
 	AccountStatsPricingRules   []AccountStatsPricingRule
 }
@@ -1056,6 +1114,7 @@ type UpdateChannelInput struct {
 	RestrictModels             *bool
 	Features                   *string
 	FeaturesConfig             map[string]any
+	ServiceTierConfig          *ChannelServiceTierConfig
 	ApplyPricingToAccountStats *bool
 	AccountStatsPricingRules   *[]AccountStatsPricingRule
 }
