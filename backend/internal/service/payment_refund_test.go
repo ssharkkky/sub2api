@@ -729,19 +729,31 @@ func TestGwRefundStandardEasyPayWithoutTradeNumberDoesNotLoadCurrentConfig(t *te
 
 func TestHistoricalEasyPayOrdersPinModeForQueryAndRefund(t *testing.T) {
 	for _, tc := range []struct {
-		name         string
-		snapshotMode string
-		currentMode  string
+		name          string
+		schemaVersion int
+		snapshotMode  string
+		currentMode   string
+		wantMode      string
 	}{
 		{
-			name:         "A5 order after instance switched to standard",
-			snapshotMode: provider.EasyPayCompatibilityA5,
-			currentMode:  provider.EasyPayCompatibilityStandard,
+			name:          "A5 order after instance switched to standard",
+			schemaVersion: 3,
+			snapshotMode:  provider.EasyPayCompatibilityA5,
+			currentMode:   provider.EasyPayCompatibilityStandard,
+			wantMode:      provider.EasyPayCompatibilityA5,
 		},
 		{
-			name:         "standard order after instance switched to A5",
-			snapshotMode: provider.EasyPayCompatibilityStandard,
-			currentMode:  provider.EasyPayCompatibilityA5,
+			name:          "standard order after instance switched to A5",
+			schemaVersion: 3,
+			snapshotMode:  provider.EasyPayCompatibilityStandard,
+			currentMode:   provider.EasyPayCompatibilityA5,
+			wantMode:      provider.EasyPayCompatibilityStandard,
+		},
+		{
+			name:          "ts3 order follows upgraded A5 instance",
+			schemaVersion: 2,
+			currentMode:   provider.EasyPayCompatibilityA5,
+			wantMode:      provider.EasyPayCompatibilityA5,
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -763,6 +775,14 @@ func TestHistoricalEasyPayOrdersPinModeForQueryAndRefund(t *testing.T) {
 				Save(ctx)
 			require.NoError(t, err)
 			instanceID := strconv.FormatInt(instance.ID, 10)
+			snapshot := map[string]any{
+				"schema_version":       tc.schemaVersion,
+				"provider_instance_id": instanceID,
+				"provider_key":         payment.TypeEasyPay,
+			}
+			if tc.snapshotMode != "" {
+				snapshot["compatibility_mode"] = tc.snapshotMode
+			}
 			order, err := client.PaymentOrder.Create().
 				SetUserID(user.ID).
 				SetUserEmail(user.Email).
@@ -780,12 +800,7 @@ func TestHistoricalEasyPayOrdersPinModeForQueryAndRefund(t *testing.T) {
 				SetSrcHost("api.example.com").
 				SetProviderInstanceID(instanceID).
 				SetProviderKey(payment.TypeEasyPay).
-				SetProviderSnapshot(map[string]any{
-					"schema_version":       3,
-					"provider_instance_id": instanceID,
-					"provider_key":         payment.TypeEasyPay,
-					"compatibility_mode":   tc.snapshotMode,
-				}).
+				SetProviderSnapshot(snapshot).
 				Save(ctx)
 			require.NoError(t, err)
 
@@ -806,9 +821,36 @@ func TestHistoricalEasyPayOrdersPinModeForQueryAndRefund(t *testing.T) {
 			require.NoError(t, err)
 			_, err = svc.getRefundProvider(ctx, order)
 			require.NoError(t, err)
-			require.Equal(t, []string{tc.snapshotMode, tc.snapshotMode}, capturedModes)
+			require.Equal(t, []string{tc.wantMode, tc.wantMode}, capturedModes)
 		})
 	}
+}
+
+func TestTS3EasyPayOrderUsesA5ProviderAfterUpgrade(t *testing.T) {
+	ctx := context.Background()
+	instance := &dbent.PaymentProviderInstance{ID: 73, ProviderKey: payment.TypeEasyPay}
+	order := &dbent.PaymentOrder{
+		ID: 84,
+		ProviderSnapshot: map[string]any{
+			"schema_version":       2,
+			"provider_instance_id": "73",
+			"provider_key":         payment.TypeEasyPay,
+		},
+	}
+	svc := &PaymentService{loadBalancer: &refundConfigLoadBalancer{config: map[string]string{
+		"pid":                                "merchant-ts3-upgrade",
+		"pkey":                               "test-key",
+		"apiBase":                            "https://pay.example.com",
+		"notifyUrl":                          "https://api.example.com/notify",
+		"returnUrl":                          "https://api.example.com/return",
+		provider.EasyPayCompatibilityModeKey: provider.EasyPayCompatibilityA5,
+	}}}
+
+	prov, err := svc.createOrderBoundProvider(ctx, instance, order)
+	require.NoError(t, err)
+	require.IsType(t, &provider.A5EasyPay{}, prov)
+	_, supportsQuery := prov.(payment.RefundQueryProvider)
+	require.True(t, supportsQuery)
 }
 
 func TestCalculateGatewayRefundAmountUsesCurrencyPrecision(t *testing.T) {
@@ -867,10 +909,10 @@ func TestFinishRefundPendingMarksOrderPendingAndRollsBackDeduction(t *testing.T)
 
 	var rolledBack float64
 	userRepo := &mockUserRepo{}
-	userRepo.updateBalanceFn = func(ctx context.Context, id int64, amount float64) error {
+	userRepo.adjustBalanceFn = func(ctx context.Context, id int64, amount float64) (BalanceChange, error) {
 		require.Equal(t, user.ID, id)
 		rolledBack += amount
-		return nil
+		return BalanceChange{}, nil
 	}
 	svc := &PaymentService{
 		entClient: client,
@@ -928,6 +970,8 @@ func TestFinishRefundPendingRequiresAtomicStateAudit(t *testing.T) {
 		SetEmail("refund-pending-audit@example.com").
 		SetPasswordHash("hash").
 		SetUsername("refund-pending-audit").
+		SetBalance(60).
+		SetTotalRecharged(100).
 		Save(ctx)
 	require.NoError(t, err)
 	order, err := client.PaymentOrder.Create().
@@ -959,10 +1003,26 @@ func TestFinishRefundPendingRequiresAtomicStateAudit(t *testing.T) {
 	`)
 	require.NoError(t, err)
 
-	svc := &PaymentService{entClient: client}
+	userRepo := &mockUserRepo{adjustBalanceFn: func(callCtx context.Context, id int64, delta float64) (BalanceChange, error) {
+		callClient := client
+		if tx := dbent.TxFromContext(callCtx); tx != nil {
+			callClient = tx.Client()
+		}
+		before, getErr := callClient.User.Get(callCtx, id)
+		if getErr != nil {
+			return BalanceChange{}, getErr
+		}
+		after, updateErr := callClient.User.UpdateOneID(id).AddBalance(delta).Save(callCtx)
+		if updateErr != nil {
+			return BalanceChange{}, updateErr
+		}
+		return BalanceChange{Old: before.Balance, New: after.Balance}, nil
+	}}
+	svc := &PaymentService{entClient: client, userRepo: userRepo}
 	plan := &RefundPlan{
 		OrderID: order.ID, Order: order, RefundAmount: 10, GatewayAmount: 10,
-		Reason: "pending audit failure", DeductionType: payment.DeductionTypeNone,
+		Reason: "pending audit failure", DeductBalance: true,
+		DeductionType: payment.DeductionTypeBalance, BalanceToDeduct: 10,
 	}
 	result, err := svc.finishRefund(ctx, plan, &payment.RefundResponse{Status: payment.ProviderStatusPending})
 	require.Nil(t, result)
@@ -970,6 +1030,10 @@ func TestFinishRefundPendingRequiresAtomicStateAudit(t *testing.T) {
 	reloaded, err := client.PaymentOrder.Get(ctx, order.ID)
 	require.NoError(t, err)
 	require.Equal(t, OrderStatusRefunding, reloaded.Status)
+	reloadedUser, err := client.User.Get(ctx, user.ID)
+	require.NoError(t, err)
+	require.Equal(t, 60.0, reloadedUser.Balance)
+	require.Equal(t, 100.0, reloadedUser.TotalRecharged)
 }
 
 func TestFinishRefundSuccessStatusesFinalize(t *testing.T) {
@@ -1152,6 +1216,61 @@ func TestQueryAndFinalizeRefundHonorsPersistedDeductionState(t *testing.T) {
 	}
 }
 
+func TestQueryAndFinalizeRefundSupportsTS3PendingAudit(t *testing.T) {
+	for index, tc := range []struct {
+		name       string
+		detail     string
+		wantDeduct float64
+	}{
+		{
+			name:       "successful balance rollback is deducted once after confirmation",
+			detail:     `{"refundID":"rf_legacy_ok","refundAmount":100,"balanceDeducted":0,"subDaysDeducted":0,"balanceRolledBack":37,"subDaysRolledBack":0,"deductionRollbackOK":true}`,
+			wantDeduct: 37,
+		},
+		{
+			name:       "failed balance rollback is not deducted again",
+			detail:     `{"refundID":"rf_legacy_failed","refundAmount":100,"balanceDeducted":37,"subDaysDeducted":0,"balanceRolledBack":37,"subDaysRolledBack":0,"deductionRollbackOK":false}`,
+			wantDeduct: 0,
+		},
+		{
+			name:       "administrator selected no deduction",
+			detail:     `{"refundID":"rf_legacy_none","refundAmount":100,"balanceDeducted":0,"subDaysDeducted":0,"balanceRolledBack":0,"subDaysRolledBack":0,"deductionRollbackOK":true}`,
+			wantDeduct: 0,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx := context.Background()
+			client := newPaymentConfigServiceTestClient(t)
+			order := createPendingRefundOrderForTest(t, ctx, client, fmt.Sprintf("legacy-pending-%d", index))
+			_, err := client.PaymentAuditLog.Update().
+				Where(paymentauditlog.OrderIDEQ(strconv.FormatInt(order.ID, 10)), paymentauditlog.ActionEQ("REFUND_PENDING")).
+				SetDetail(tc.detail).
+				Save(ctx)
+			require.NoError(t, err)
+
+			var deducted float64
+			userRepo := &mockUserRepo{deductBalanceFn: func(_ context.Context, _ int64, amount float64) error {
+				deducted += amount
+				return nil
+			}}
+			svc := &PaymentService{
+				entClient:    client,
+				loadBalancer: &captureLoadBalancer{},
+				userRepo:     userRepo,
+			}
+			restore := replacePaymentProviderFactoryForTest(t, &refundQueryProviderTestDouble{
+				refundResponse: &payment.RefundResponse{RefundID: "rf_legacy_final", Status: payment.ProviderStatusRefunded},
+			})
+			defer restore()
+
+			result, err := svc.QueryAndFinalizeRefund(ctx, order.ID)
+			require.NoError(t, err)
+			require.True(t, result.Success)
+			require.Equal(t, tc.wantDeduct, deducted)
+		})
+	}
+}
+
 func TestQueryAndFinalizeRefundFailsClosedWithoutValidPendingState(t *testing.T) {
 	for index, tc := range []struct {
 		name   string
@@ -1159,6 +1278,10 @@ func TestQueryAndFinalizeRefundFailsClosedWithoutValidPendingState(t *testing.T)
 	}{
 		{name: "missing audit"},
 		{name: "malformed audit", detail: func() *string { value := `{"deductionRollbackOK":true}`; return &value }()},
+		{name: "incomplete normalized audit", detail: func() *string {
+			value := `{"deductBalance":true,"deductionType":"balance","balanceToDeduct":100,"subDaysToDeduct":0,"balanceRolledBack":100,"subDaysRolledBack":0,"deductionRollbackOK":true}`
+			return &value
+		}()},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			ctx := context.Background()
@@ -1228,7 +1351,7 @@ func TestFinalizeQueriedRefundClaimsPendingOrderOnce(t *testing.T) {
 
 	pendingDetail, err := svc.latestRefundPendingDetail(ctx, order.ID)
 	require.NoError(t, err)
-	plan, err := refundFinalizePlan(order, pendingDetail)
+	plan, err := svc.refundFinalizePlan(ctx, order, pendingDetail)
 	require.NoError(t, err)
 	result, err := svc.finalizeQueriedRefund(ctx, order, plan, resp)
 	require.NoError(t, err)
@@ -1271,7 +1394,7 @@ func TestFinalizeQueriedRefundRollsBackBalanceWhenAuditFails(t *testing.T) {
 
 	pendingDetail, err := svc.latestRefundPendingDetail(ctx, order.ID)
 	require.NoError(t, err)
-	plan, err := refundFinalizePlan(order, pendingDetail)
+	plan, err := svc.refundFinalizePlan(ctx, order, pendingDetail)
 	require.NoError(t, err)
 	result, err := svc.finalizeQueriedRefund(ctx, order, plan, resp)
 	require.Nil(t, result)

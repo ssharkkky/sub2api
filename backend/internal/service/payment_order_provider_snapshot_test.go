@@ -191,21 +191,36 @@ func TestPinEasyPayCompatibilityModeToOrderUsesHistoricalSnapshot(t *testing.T) 
 			wantMode:    provider.EasyPayCompatibilityStandard,
 		},
 		{
-			name:        "legacy snapshot without mode stays standard",
+			name:        "legacy snapshot follows the current verified instance mode",
 			snapshot:    map[string]any{"schema_version": 2, "provider_key": payment.TypeEasyPay},
 			currentMode: provider.EasyPayCompatibilityA5,
-			wantMode:    provider.EasyPayCompatibilityStandard,
+			wantMode:    provider.EasyPayCompatibilityA5,
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 			original := map[string]string{provider.EasyPayCompatibilityModeKey: tc.currentMode, "pid": "merchant-test"}
-			pinned := pinEasyPayCompatibilityModeToOrder(instance, &dbent.PaymentOrder{ProviderSnapshot: tc.snapshot}, original)
+			pinned, err := pinEasyPayCompatibilityModeToOrder(instance, &dbent.PaymentOrder{ID: 42, ProviderSnapshot: tc.snapshot}, original)
+			require.NoError(t, err)
 			require.Equal(t, tc.wantMode, pinned[provider.EasyPayCompatibilityModeKey])
 			require.Equal(t, tc.currentMode, original[provider.EasyPayCompatibilityModeKey])
 			require.Equal(t, "merchant-test", pinned["pid"])
 		})
 	}
+}
+
+func TestPinEasyPayCompatibilityModeToOrderRejectsInvalidSchemaThreeMode(t *testing.T) {
+	t.Parallel()
+
+	instance := &dbent.PaymentProviderInstance{ID: 7, ProviderKey: payment.TypeEasyPay}
+	_, err := pinEasyPayCompatibilityModeToOrder(instance, &dbent.PaymentOrder{
+		ID: 99,
+		ProviderSnapshot: map[string]any{
+			"schema_version": 3,
+			"provider_key":   payment.TypeEasyPay,
+		},
+	}, map[string]string{provider.EasyPayCompatibilityModeKey: provider.EasyPayCompatibilityA5})
+	require.ErrorContains(t, err, "missing or invalid")
 }
 
 func TestBuildPaymentOrderProviderSnapshot_IncludesProviderCurrency(t *testing.T) {

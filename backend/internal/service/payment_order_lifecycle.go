@@ -674,7 +674,10 @@ func (s *PaymentService) createOrderBoundProvider(ctx context.Context, inst *dbe
 	if inst.PaymentMode != "" {
 		cfg["paymentMode"] = inst.PaymentMode
 	}
-	cfg = pinEasyPayCompatibilityModeToOrder(inst, order, cfg)
+	cfg, err = pinEasyPayCompatibilityModeToOrder(inst, order, cfg)
+	if err != nil {
+		return nil, err
+	}
 
 	instID := strconv.FormatInt(int64(inst.ID), 10)
 	prov, err := createPaymentProviderFromInstance(inst.ProviderKey, instID, cfg)
@@ -684,15 +687,25 @@ func (s *PaymentService) createOrderBoundProvider(ctx context.Context, inst *dbe
 	return prov, nil
 }
 
-func pinEasyPayCompatibilityModeToOrder(inst *dbent.PaymentProviderInstance, order *dbent.PaymentOrder, cfg map[string]string) map[string]string {
+func pinEasyPayCompatibilityModeToOrder(inst *dbent.PaymentProviderInstance, order *dbent.PaymentOrder, cfg map[string]string) (map[string]string, error) {
 	if inst == nil || strings.TrimSpace(inst.ProviderKey) != payment.TypeEasyPay || order == nil {
-		return cfg
+		return cfg, nil
 	}
-	mode := paymentprovider.EasyPayCompatibilityStandard
+	mode := paymentprovider.EasyPayCompatibilityMode(cfg)
+	if mode != paymentprovider.EasyPayCompatibilityStandard && mode != paymentprovider.EasyPayCompatibilityA5 {
+		return nil, fmt.Errorf("payment provider instance %d has invalid EasyPay compatibility mode", inst.ID)
+	}
 	if snapshot := psOrderProviderSnapshot(order); snapshot != nil {
-		snapshotMode := strings.ToLower(strings.TrimSpace(snapshot.CompatibilityMode))
-		if snapshotMode == paymentprovider.EasyPayCompatibilityA5 {
-			mode = paymentprovider.EasyPayCompatibilityA5
+		// ts.3 snapshots use schema v2 and do not identify the EasyPay dialect.
+		// They follow the instance's explicitly configured mode during the upgrade.
+		// Schema v3 orders pin the mode permanently so later instance changes cannot
+		// reinterpret an order under a different protocol.
+		if snapshot.SchemaVersion >= 3 {
+			snapshotMode := strings.ToLower(strings.TrimSpace(snapshot.CompatibilityMode))
+			if snapshotMode != paymentprovider.EasyPayCompatibilityStandard && snapshotMode != paymentprovider.EasyPayCompatibilityA5 {
+				return nil, fmt.Errorf("order %d EasyPay compatibility mode is missing or invalid", order.ID)
+			}
+			mode = snapshotMode
 		}
 	}
 	pinned := make(map[string]string, len(cfg)+1)
@@ -700,7 +713,7 @@ func pinEasyPayCompatibilityModeToOrder(inst *dbent.PaymentProviderInstance, ord
 		pinned[key] = value
 	}
 	pinned[paymentprovider.EasyPayCompatibilityModeKey] = mode
-	return pinned
+	return pinned, nil
 }
 
 func psStringValue(value *string) string {
