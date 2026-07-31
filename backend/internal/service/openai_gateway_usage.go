@@ -199,12 +199,17 @@ func (s *OpenAIGatewayService) RecordUsage(ctx context.Context, input *OpenAIRec
 	}
 	if serviceTierDecision.ActualWasUsed && input.ServiceTierState != nil &&
 		serviceTierDecision.CommercialTier != input.ServiceTierState.OutboundTier {
+		mismatchDirection := classifyOpenAIServiceTierMismatch(
+			input.ServiceTierState.OutboundTier,
+			serviceTierDecision.CommercialTier,
+		)
 		fields := []zap.Field{
 			zap.String("component", "service.openai_gateway"),
 			zap.String("requested_service_tier", input.ServiceTierState.RequestedProtocolTier),
 			zap.String("outbound_service_tier", input.ServiceTierState.OutboundProtocolTier),
 			zap.String("actual_service_tier", serviceTierDecision.ActualProtocolTier),
 			zap.String("billing_service_tier", string(serviceTierDecision.CommercialTier)),
+			zap.String("service_tier_mismatch_direction", mismatchDirection),
 			zap.String("model", billingModel),
 			zap.Int64("account_id", account.ID),
 		}
@@ -215,7 +220,12 @@ func (s *OpenAIGatewayService) RecordUsage(ctx context.Context, input *OpenAIRec
 				zap.String("service_tier_config_revision", serviceTierDecision.Snapshot.ConfigRevision),
 			)
 		}
-		logger.L().With(fields...).Warn("openai_usage.service_tier_degraded")
+		entry := logger.L().With(fields...)
+		if mismatchDirection == "upgraded" {
+			entry.Info("openai_usage.service_tier_mismatch")
+		} else {
+			entry.Warn("openai_usage.service_tier_mismatch")
+		}
 	}
 	billingAccount := account
 	if account.IsShadow() {

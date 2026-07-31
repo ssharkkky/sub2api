@@ -478,13 +478,13 @@ func (h *ChannelHandler) Update(c *gin.Context) {
 		input.AccountStatsPricingRules = &statsRules
 	}
 
-	channel, beforeConfig, err := h.channelService.UpdateWithPreviousServiceTierConfig(c.Request.Context(), id, input)
+	channel, auditSnapshot, err := h.channelService.UpdateWithServiceTierAuditSnapshot(c.Request.Context(), id, input)
 	if err != nil {
 		response.ErrorFrom(c, err)
 		return
 	}
 	if req.ServiceTierConfig != nil {
-		middleware.SetAuditExtra(c, channelServiceTierAuditExtra(beforeConfig, channel.ServiceTierConfig))
+		middleware.SetAuditExtra(c, channelServiceTierAuditExtra(auditSnapshot.Before, auditSnapshot.After))
 	}
 
 	response.Success(c, channelToResponse(channel))

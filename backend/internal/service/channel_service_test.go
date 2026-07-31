@@ -53,16 +53,19 @@ func (m *mockChannelRepository) GetByID(ctx context.Context, id int64) (*Channel
 	return nil, ErrChannelNotFound
 }
 
-func (m *mockChannelRepository) Update(ctx context.Context, channel *Channel) (ChannelServiceTierConfig, error) {
+func (m *mockChannelRepository) Update(ctx context.Context, channel *Channel) (ChannelServiceTierAuditSnapshot, error) {
 	if m.updateFn != nil {
 		if err := m.updateFn(ctx, channel); err != nil {
-			return ChannelServiceTierConfig{}, err
+			return ChannelServiceTierAuditSnapshot{}, err
 		}
 	}
+	audit := ChannelServiceTierAuditSnapshot{After: channel.ServiceTierConfig}
 	if m.updatePreviousConfig != nil {
-		return *m.updatePreviousConfig, nil
+		audit.Before = *m.updatePreviousConfig
+		return audit, nil
 	}
-	return channel.ServiceTierConfig, nil
+	audit.Before = channel.ServiceTierConfig
+	return audit, nil
 }
 
 func (m *mockChannelRepository) Delete(ctx context.Context, id int64) error {
@@ -1249,7 +1252,7 @@ func TestLoadCache_RefreshFailureKeepsLastValidServiceTierSnapshot(t *testing.T)
 
 	cached, ok := svc.cache.Load().(*channelCache)
 	require.True(t, ok)
-	cached.loadedAt = time.Time{}
+	cached.loadedAt = time.Now().Add(-(channelCacheTTL + time.Minute))
 	failRefresh = true
 
 	snapshot, found, err = svc.GetServiceTierSnapshotForGroup(context.Background(), 10)
@@ -1270,6 +1273,75 @@ func TestLoadCache_RefreshFailureKeepsLastValidServiceTierSnapshot(t *testing.T)
 	require.True(t, found)
 	require.InDelta(t, 3, snapshot.Config.Priority.Multiplier, 1e-12)
 	require.Equal(t, 3, listCalls, "refresh should be attempted again after the bounded backoff")
+}
+
+func TestGetServiceTierSnapshotForGroup_RefreshFailureRejectsExpiredSnapshot(t *testing.T) {
+	failRefresh := false
+	listCalls := 0
+	ch := Channel{
+		ID:                1,
+		Name:              "expired-channel",
+		Status:            StatusActive,
+		GroupIDs:          []int64{10},
+		ServiceTierConfig: DefaultChannelServiceTierConfig(),
+	}
+	repo := &mockChannelRepository{
+		listAllFn: func(_ context.Context) ([]Channel, error) {
+			listCalls++
+			if failRefresh {
+				return nil, errors.New("database temporarily unavailable")
+			}
+			return []Channel{ch}, nil
+		},
+		getGroupPlatformsFn: func(_ context.Context, _ []int64) (map[int64]string, error) {
+			return map[int64]string{10: PlatformOpenAI}, nil
+		},
+	}
+	svc := newTestChannelService(repo)
+
+	snapshot, found, err := svc.GetServiceTierSnapshotForGroup(context.Background(), 10)
+	require.NoError(t, err)
+	require.True(t, found)
+	require.NotNil(t, snapshot)
+
+	cached, ok := svc.cache.Load().(*channelCache)
+	require.True(t, ok)
+	cached.loadedAt = time.Now().Add(-(channelCacheMaxTierStale + time.Second))
+	failRefresh = true
+
+	snapshot, found, err = svc.GetServiceTierSnapshotForGroup(context.Background(), 10)
+	require.ErrorIs(t, err, ErrChannelServiceTierSnapshotStale)
+	require.False(t, found)
+	require.Nil(t, snapshot)
+	require.Equal(t, 2, listCalls)
+
+	// The refresh backoff must not turn an over-age snapshot back into an
+	// accepted service-tier policy on the next request.
+	snapshot, found, err = svc.GetServiceTierSnapshotForGroup(context.Background(), 10)
+	require.ErrorIs(t, err, ErrChannelServiceTierSnapshotStale)
+	require.False(t, found)
+	require.Nil(t, snapshot)
+	require.Equal(t, 2, listCalls)
+
+	// Groups outside the cached active-channel map preserve the legacy path;
+	// only groups that depend on the expired policy snapshot fail closed.
+	snapshot, found, err = svc.GetServiceTierSnapshotForGroup(context.Background(), 99)
+	require.NoError(t, err)
+	require.False(t, found)
+	require.Nil(t, snapshot)
+	require.Equal(t, 2, listCalls)
+
+	refreshedConfig := DefaultChannelServiceTierConfig()
+	refreshedConfig.Priority.Multiplier = 4
+	ch.ServiceTierConfig = refreshedConfig
+	failRefresh = false
+	svc.cacheRefreshAfter.Store(time.Now().Add(-time.Second).UnixNano())
+	snapshot, found, err = svc.GetServiceTierSnapshotForGroup(context.Background(), 10)
+	require.NoError(t, err)
+	require.True(t, found)
+	require.NotNil(t, snapshot)
+	require.InDelta(t, 4, snapshot.Config.Priority.Multiplier, 1e-12)
+	require.Equal(t, 3, listCalls, "a successful refresh must automatically restore the affected channel")
 }
 
 func TestBuildCache_MultipleGroupsSameChannel(t *testing.T) {
@@ -1426,7 +1498,7 @@ func TestUpdate_NormalizesLegacyEmptyServiceTierConfig(t *testing.T) {
 	require.Equal(t, DefaultChannelServiceTierConfig(), stored.ServiceTierConfig)
 }
 
-func TestUpdateWithPreviousServiceTierConfigUsesRepositoryTransactionSnapshot(t *testing.T) {
+func TestUpdateWithServiceTierAuditSnapshotUsesRepositoryTransactionSnapshot(t *testing.T) {
 	previous := DefaultChannelServiceTierConfig()
 	previous.Priority.Multiplier = 2.5
 	stored := Channel{ID: 42, Name: "channel", Status: StatusActive, ServiceTierConfig: previous}
@@ -1444,9 +1516,10 @@ func TestUpdateWithPreviousServiceTierConfigUsesRepositoryTransactionSnapshot(t 
 	after := DefaultChannelServiceTierConfig()
 	after.Priority.Multiplier = 3
 
-	updated, gotPrevious, err := svc.UpdateWithPreviousServiceTierConfig(context.Background(), 42, &UpdateChannelInput{ServiceTierConfig: &after})
+	updated, auditSnapshot, err := svc.UpdateWithServiceTierAuditSnapshot(context.Background(), 42, &UpdateChannelInput{ServiceTierConfig: &after})
 	require.NoError(t, err)
-	require.Equal(t, previous, gotPrevious)
+	require.Equal(t, previous, auditSnapshot.Before)
+	require.Equal(t, after, auditSnapshot.After)
 	require.Equal(t, after, updated.ServiceTierConfig)
 }
 

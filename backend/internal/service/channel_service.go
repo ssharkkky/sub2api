@@ -23,6 +23,14 @@ var (
 		"CHANNEL_SERVICE_TIER_CONFIG_INVALID",
 		"channel OpenAI service tier configuration is invalid",
 	)
+	ErrChannelServiceTierSnapshotStale = infraerrors.ServiceUnavailable(
+		"CHANNEL_SERVICE_TIER_SNAPSHOT_STALE",
+		"channel OpenAI service tier configuration is temporarily unavailable",
+	)
+	ErrChannelUpdateConflict = infraerrors.Conflict(
+		"CHANNEL_UPDATE_CONFLICT",
+		"channel was updated by another administrator; refresh and try again",
+	)
 	ErrGroupAlreadyInChannel = infraerrors.Conflict(
 		"GROUP_ALREADY_IN_CHANNEL",
 		"one or more groups already belong to another channel",
@@ -33,7 +41,7 @@ var (
 type ChannelRepository interface {
 	Create(ctx context.Context, channel *Channel) error
 	GetByID(ctx context.Context, id int64) (*Channel, error)
-	Update(ctx context.Context, channel *Channel) (ChannelServiceTierConfig, error)
+	Update(ctx context.Context, channel *Channel) (ChannelServiceTierAuditSnapshot, error)
 	Delete(ctx context.Context, id int64) error
 	List(ctx context.Context, params pagination.PaginationParams, status, search string) ([]Channel, *pagination.PaginationResult, error)
 	ListAll(ctx context.Context) ([]Channel, error)
@@ -151,6 +159,7 @@ const (
 	channelCacheTTL            = 10 * time.Minute
 	channelCacheDBTimeout      = 10 * time.Second
 	channelCacheRefreshBackoff = 30 * time.Second
+	channelCacheMaxTierStale   = 15 * time.Minute
 )
 
 // ChannelService 渠道管理服务
@@ -208,7 +217,14 @@ func (s *ChannelService) loadCache(ctx context.Context) (*channelCache, error) {
 			if lastValid != nil {
 				retryAt := time.Now().Add(channelCacheRefreshBackoff)
 				s.cacheRefreshAfter.Store(retryAt.UnixNano())
-				slog.Warn("channel cache refresh failed; using last valid snapshot", "error", err, "loaded_at", lastValid.loadedAt, "retry_at", retryAt)
+				age := time.Since(lastValid.loadedAt)
+				slog.Warn("channel cache refresh failed; using last valid snapshot",
+					"error", err,
+					"loaded_at", lastValid.loadedAt,
+					"snapshot_age", age,
+					"retry_at", retryAt,
+					"service_tier_fail_closed", age >= channelCacheMaxTierStale,
+				)
 				return lastValid, nil
 			}
 		}
@@ -493,6 +509,9 @@ func (s *ChannelService) GetServiceTierSnapshotForGroup(ctx context.Context, gro
 	ch, ok := cache.channelByGroupID[groupID]
 	if !ok || !ch.IsActive() {
 		return nil, false, nil
+	}
+	if time.Since(cache.loadedAt) >= channelCacheMaxTierStale {
+		return nil, false, ErrChannelServiceTierSnapshotStale
 	}
 	if ch.ServiceTierConfigError != "" {
 		return nil, true, fmt.Errorf("%w: channel %d: %s", ErrChannelServiceTierConfigInvalid, ch.ID, ch.ServiceTierConfigError)
@@ -841,45 +860,45 @@ func (s *ChannelService) GetByID(ctx context.Context, id int64) (*Channel, error
 
 // Update 更新渠道
 func (s *ChannelService) Update(ctx context.Context, id int64, input *UpdateChannelInput) (*Channel, error) {
-	updated, _, err := s.UpdateWithPreviousServiceTierConfig(ctx, id, input)
+	updated, _, err := s.UpdateWithServiceTierAuditSnapshot(ctx, id, input)
 	return updated, err
 }
 
-// UpdateWithPreviousServiceTierConfig returns the service-tier configuration
-// locked by the repository immediately before the update transaction writes.
-func (s *ChannelService) UpdateWithPreviousServiceTierConfig(ctx context.Context, id int64, input *UpdateChannelInput) (*Channel, ChannelServiceTierConfig, error) {
-	var previousConfig ChannelServiceTierConfig
+// UpdateWithServiceTierAuditSnapshot returns the service-tier configuration
+// immediately before and after the optimistic update in the same transaction.
+func (s *ChannelService) UpdateWithServiceTierAuditSnapshot(ctx context.Context, id int64, input *UpdateChannelInput) (*Channel, ChannelServiceTierAuditSnapshot, error) {
+	var auditSnapshot ChannelServiceTierAuditSnapshot
 	channel, err := s.repo.GetByID(ctx, id)
 	if err != nil {
-		return nil, previousConfig, fmt.Errorf("get channel: %w", err)
+		return nil, auditSnapshot, fmt.Errorf("get channel: %w", err)
 	}
 	channel.normalizeBillingModelSource()
 	channel.normalizeServiceTierConfig()
 
 	if err := s.applyUpdateInput(ctx, channel, input); err != nil {
-		return nil, previousConfig, err
+		return nil, auditSnapshot, err
 	}
 
 	if err := validateChannelConfig(channel.ModelPricing, channel.ModelMapping); err != nil {
-		return nil, previousConfig, err
+		return nil, auditSnapshot, err
 	}
 	if channel.ServiceTierConfigError != "" {
-		return nil, previousConfig, fmt.Errorf("%w: %s", ErrChannelServiceTierConfigInvalid, channel.ServiceTierConfigError)
+		return nil, auditSnapshot, fmt.Errorf("%w: %s", ErrChannelServiceTierConfigInvalid, channel.ServiceTierConfigError)
 	}
 	if err := channel.ServiceTierConfig.Validate(); err != nil {
-		return nil, previousConfig, fmt.Errorf("%w: %v", ErrChannelServiceTierConfigInvalid, err)
+		return nil, auditSnapshot, fmt.Errorf("%w: %v", ErrChannelServiceTierConfigInvalid, err)
 	}
 	for i, rule := range channel.AccountStatsPricingRules {
 		if err := validatePricingEntries(rule.Pricing); err != nil {
-			return nil, previousConfig, fmt.Errorf("account stats pricing rule #%d: %w", i+1, err)
+			return nil, auditSnapshot, fmt.Errorf("account stats pricing rule #%d: %w", i+1, err)
 		}
 	}
 
 	oldGroupIDs := s.getOldGroupIDs(ctx, id)
 
-	previousConfig, err = s.repo.Update(ctx, channel)
+	auditSnapshot, err = s.repo.Update(ctx, channel)
 	if err != nil {
-		return nil, previousConfig, fmt.Errorf("update channel: %w", err)
+		return nil, auditSnapshot, fmt.Errorf("update channel: %w", err)
 	}
 
 	s.invalidateCache()
@@ -887,11 +906,11 @@ func (s *ChannelService) UpdateWithPreviousServiceTierConfig(ctx context.Context
 
 	updated, err := s.repo.GetByID(ctx, id)
 	if err != nil {
-		return nil, previousConfig, err
+		return nil, auditSnapshot, err
 	}
 	updated.normalizeBillingModelSource()
 	updated.normalizeServiceTierConfig()
-	return updated, previousConfig, nil
+	return updated, auditSnapshot, nil
 }
 
 // applyUpdateInput 将更新请求的字段应用到渠道实体上。

@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/Wei-Shaw/sub2api/internal/pkg/pagination"
 	"github.com/Wei-Shaw/sub2api/internal/service"
@@ -124,20 +125,25 @@ func (r *channelRepository) GetByID(ctx context.Context, id int64) (*service.Cha
 	return ch, nil
 }
 
-func (r *channelRepository) Update(ctx context.Context, channel *service.Channel) (service.ChannelServiceTierConfig, error) {
-	var previousConfig service.ChannelServiceTierConfig
+func (r *channelRepository) Update(ctx context.Context, channel *service.Channel) (service.ChannelServiceTierAuditSnapshot, error) {
+	var auditSnapshot service.ChannelServiceTierAuditSnapshot
 	err := r.runInTx(ctx, func(tx *sql.Tx) error {
 		var previousConfigJSON []byte
+		var currentUpdatedAt time.Time
 		if err := tx.QueryRowContext(ctx,
-			`SELECT service_tier_config FROM channels WHERE id = $1 FOR UPDATE`,
+			`SELECT service_tier_config, updated_at FROM channels WHERE id = $1 FOR UPDATE`,
 			channel.ID,
-		).Scan(&previousConfigJSON); err != nil {
+		).Scan(&previousConfigJSON, &currentUpdatedAt); err != nil {
 			if err == sql.ErrNoRows {
 				return service.ErrChannelNotFound
 			}
-			return fmt.Errorf("lock channel service_tier_config: %w", err)
+			return fmt.Errorf("lock channel update revision: %w", err)
 		}
-		previousConfig, _ = unmarshalServiceTierConfig(previousConfigJSON)
+		if channel.UpdatedAt.IsZero() || !currentUpdatedAt.Equal(channel.UpdatedAt) {
+			return service.ErrChannelUpdateConflict
+		}
+		auditSnapshot.Before, _ = unmarshalServiceTierConfig(previousConfigJSON)
+		auditSnapshot.After = channel.ServiceTierConfig
 
 		modelMappingJSON, err := marshalModelMapping(channel.ModelMapping)
 		if err != nil {
@@ -190,7 +196,7 @@ func (r *channelRepository) Update(ctx context.Context, channel *service.Channel
 
 		return nil
 	})
-	return previousConfig, err
+	return auditSnapshot, err
 }
 
 func (r *channelRepository) Delete(ctx context.Context, id int64) error {

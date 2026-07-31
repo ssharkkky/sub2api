@@ -33,6 +33,11 @@ type ChannelServiceTierSnapshot struct {
 	ConfigRevision string
 }
 
+type ChannelServiceTierAuditSnapshot struct {
+	Before ChannelServiceTierConfig
+	After  ChannelServiceTierConfig
+}
+
 func cloneChannelServiceTierSnapshot(snapshot *ChannelServiceTierSnapshot) *ChannelServiceTierSnapshot {
 	if snapshot == nil {
 		return nil
@@ -109,6 +114,30 @@ func ValidateNativeGrokServiceTier(raw string) *OpenAIFastBlockedError {
 			Message: fmt.Sprintf("service_tier=%s is not supported by the native Grok platform", protocolTier),
 		}
 	}
+}
+
+func classifyOpenAIServiceTierMismatch(outbound, actual OpenAICommercialServiceTier) string {
+	performanceRank := func(tier OpenAICommercialServiceTier) (int, bool) {
+		switch tier {
+		case OpenAICommercialTierFlex:
+			return 0, true
+		case OpenAICommercialTierStandard:
+			return 1, true
+		case OpenAICommercialTierPriority:
+			return 2, true
+		default:
+			return 0, false
+		}
+	}
+	outboundRank, outboundKnown := performanceRank(outbound)
+	actualRank, actualKnown := performanceRank(actual)
+	if !outboundKnown || !actualKnown || outboundRank == actualRank {
+		return "changed"
+	}
+	if actualRank < outboundRank {
+		return "degraded"
+	}
+	return "upgraded"
 }
 
 func applyChannelServiceTierRateMultiplier(

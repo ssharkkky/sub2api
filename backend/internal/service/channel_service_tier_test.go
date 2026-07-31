@@ -69,6 +69,27 @@ func TestValidateNativeGrokServiceTier(t *testing.T) {
 	}
 }
 
+func TestClassifyOpenAIServiceTierMismatch(t *testing.T) {
+	tests := []struct {
+		name     string
+		outbound OpenAICommercialServiceTier
+		actual   OpenAICommercialServiceTier
+		want     string
+	}{
+		{name: "priority to standard is degraded", outbound: OpenAICommercialTierPriority, actual: OpenAICommercialTierStandard, want: "degraded"},
+		{name: "standard to flex is degraded", outbound: OpenAICommercialTierStandard, actual: OpenAICommercialTierFlex, want: "degraded"},
+		{name: "standard to priority is upgraded", outbound: OpenAICommercialTierStandard, actual: OpenAICommercialTierPriority, want: "upgraded"},
+		{name: "flex to standard is upgraded", outbound: OpenAICommercialTierFlex, actual: OpenAICommercialTierStandard, want: "upgraded"},
+		{name: "unknown values are changed", outbound: OpenAICommercialTierStandard, actual: OpenAICommercialServiceTier("scale"), want: "changed"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			require.Equal(t, tt.want, classifyOpenAIServiceTierMismatch(tt.outbound, tt.actual))
+		})
+	}
+}
+
 func TestServiceTierBlockedErrorsKeepStableCodeAcrossProtocols(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	blocked := &OpenAIFastBlockedError{Code: "CHANNEL_SERVICE_TIER_NOT_ALLOWED", Message: "blocked"}
@@ -163,6 +184,23 @@ func TestResolveOpenAIServiceTierBillingDecisionPrefersKnownActualTier(t *testin
 	require.Equal(t, "standard", decision.ProtocolTier)
 	require.NotNil(t, result.BillingServiceTier)
 	require.Equal(t, "standard", *result.BillingServiceTier)
+
+	billing := newTestBillingServiceForResolver()
+	resolver := NewModelPricingResolver(nil, billing)
+	snapshot.Config.Standard.Enabled = false
+	snapshot.Config.Standard.Multiplier = 1.25
+	snapshot.Config.Priority.Multiplier = 3
+	cost, err := billing.CalculateCostUnified(CostInput{
+		Model:               "claude-sonnet-4",
+		Tokens:              UsageTokens{InputTokens: 1000, OutputTokens: 1000},
+		RateMultiplier:      1,
+		ServiceTier:         decision.ProtocolTier,
+		ServiceTierSnapshot: snapshot,
+		Resolver:            resolver,
+	})
+	require.NoError(t, err)
+	require.InDelta(t, cost.TotalCost*1.25, cost.ActualCost, 1e-12,
+		"actual Standard must be returned and billed with its configured multiplier even when that tier is now disabled")
 
 	unknown := "turbo"
 	result = &OpenAIForwardResult{ActualServiceTier: &unknown}
