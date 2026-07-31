@@ -33,7 +33,7 @@ var (
 type ChannelRepository interface {
 	Create(ctx context.Context, channel *Channel) error
 	GetByID(ctx context.Context, id int64) (*Channel, error)
-	Update(ctx context.Context, channel *Channel) error
+	Update(ctx context.Context, channel *Channel) (ChannelServiceTierConfig, error)
 	Delete(ctx context.Context, id int64) error
 	List(ctx context.Context, params pagination.PaginationParams, status, search string) ([]Channel, *pagination.PaginationResult, error)
 	ListAll(ctx context.Context) ([]Channel, error)
@@ -841,36 +841,45 @@ func (s *ChannelService) GetByID(ctx context.Context, id int64) (*Channel, error
 
 // Update 更新渠道
 func (s *ChannelService) Update(ctx context.Context, id int64, input *UpdateChannelInput) (*Channel, error) {
+	updated, _, err := s.UpdateWithPreviousServiceTierConfig(ctx, id, input)
+	return updated, err
+}
+
+// UpdateWithPreviousServiceTierConfig returns the service-tier configuration
+// locked by the repository immediately before the update transaction writes.
+func (s *ChannelService) UpdateWithPreviousServiceTierConfig(ctx context.Context, id int64, input *UpdateChannelInput) (*Channel, ChannelServiceTierConfig, error) {
+	var previousConfig ChannelServiceTierConfig
 	channel, err := s.repo.GetByID(ctx, id)
 	if err != nil {
-		return nil, fmt.Errorf("get channel: %w", err)
+		return nil, previousConfig, fmt.Errorf("get channel: %w", err)
 	}
 	channel.normalizeBillingModelSource()
 	channel.normalizeServiceTierConfig()
 
 	if err := s.applyUpdateInput(ctx, channel, input); err != nil {
-		return nil, err
+		return nil, previousConfig, err
 	}
 
 	if err := validateChannelConfig(channel.ModelPricing, channel.ModelMapping); err != nil {
-		return nil, err
+		return nil, previousConfig, err
 	}
 	if channel.ServiceTierConfigError != "" {
-		return nil, fmt.Errorf("%w: %s", ErrChannelServiceTierConfigInvalid, channel.ServiceTierConfigError)
+		return nil, previousConfig, fmt.Errorf("%w: %s", ErrChannelServiceTierConfigInvalid, channel.ServiceTierConfigError)
 	}
 	if err := channel.ServiceTierConfig.Validate(); err != nil {
-		return nil, fmt.Errorf("%w: %v", ErrChannelServiceTierConfigInvalid, err)
+		return nil, previousConfig, fmt.Errorf("%w: %v", ErrChannelServiceTierConfigInvalid, err)
 	}
 	for i, rule := range channel.AccountStatsPricingRules {
 		if err := validatePricingEntries(rule.Pricing); err != nil {
-			return nil, fmt.Errorf("account stats pricing rule #%d: %w", i+1, err)
+			return nil, previousConfig, fmt.Errorf("account stats pricing rule #%d: %w", i+1, err)
 		}
 	}
 
 	oldGroupIDs := s.getOldGroupIDs(ctx, id)
 
-	if err := s.repo.Update(ctx, channel); err != nil {
-		return nil, fmt.Errorf("update channel: %w", err)
+	previousConfig, err = s.repo.Update(ctx, channel)
+	if err != nil {
+		return nil, previousConfig, fmt.Errorf("update channel: %w", err)
 	}
 
 	s.invalidateCache()
@@ -878,11 +887,11 @@ func (s *ChannelService) Update(ctx context.Context, id int64, input *UpdateChan
 
 	updated, err := s.repo.GetByID(ctx, id)
 	if err != nil {
-		return nil, err
+		return nil, previousConfig, err
 	}
 	updated.normalizeBillingModelSource()
 	updated.normalizeServiceTierConfig()
-	return updated, nil
+	return updated, previousConfig, nil
 }
 
 // applyUpdateInput 将更新请求的字段应用到渠道实体上。

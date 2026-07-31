@@ -99,6 +99,11 @@ func (s *OpenAIGatewayService) forwardGrokResponses(
 		}
 		return nil, err
 	}
+	if blocked := ValidateNativeGrokServiceTier(openAIProtocolTier(patchedBody)); blocked != nil {
+		MarkOpsClientBusinessLimited(c, OpsClientBusinessLimitedReasonLocalPolicyDenied)
+		writeOpenAIFastPolicyBlockedResponse(c, blocked)
+		return nil, blocked
+	}
 
 	token, _, err := s.getRequestCredential(ctx, c, account)
 	if err != nil {

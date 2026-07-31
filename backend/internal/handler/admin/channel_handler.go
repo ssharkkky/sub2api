@@ -436,17 +436,6 @@ func (h *ChannelHandler) Update(c *gin.Context) {
 		response.ErrorFrom(c, infraerrors.BadRequest("VALIDATION_ERROR", err.Error()))
 		return
 	}
-	var beforeConfig *service.ChannelServiceTierConfig
-	if req.ServiceTierConfig != nil {
-		before, err := h.channelService.GetByID(c.Request.Context(), id)
-		if err != nil {
-			response.ErrorFrom(c, err)
-			return
-		}
-		config := before.ServiceTierConfig
-		beforeConfig = &config
-	}
-
 	input := &service.UpdateChannelInput{
 		Name:                       req.Name,
 		Description:                req.Description,
@@ -489,13 +478,13 @@ func (h *ChannelHandler) Update(c *gin.Context) {
 		input.AccountStatsPricingRules = &statsRules
 	}
 
-	channel, err := h.channelService.Update(c.Request.Context(), id, input)
+	channel, beforeConfig, err := h.channelService.UpdateWithPreviousServiceTierConfig(c.Request.Context(), id, input)
 	if err != nil {
 		response.ErrorFrom(c, err)
 		return
 	}
-	if beforeConfig != nil {
-		middleware.SetAuditExtra(c, channelServiceTierAuditExtra(*beforeConfig, channel.ServiceTierConfig))
+	if req.ServiceTierConfig != nil {
+		middleware.SetAuditExtra(c, channelServiceTierAuditExtra(beforeConfig, channel.ServiceTierConfig))
 	}
 
 	response.Success(c, channelToResponse(channel))

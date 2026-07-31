@@ -776,6 +776,28 @@ func TestNativeGrokRejectsUnsupportedServiceTierBeforeUpstream(t *testing.T) {
 		require.Equal(t, blocked.Code, gjson.Get(recorder.Body.String(), "error.code").String())
 	})
 
+	t.Run("responses rejects priority forced by global policy", func(t *testing.T) {
+		body := []byte(`{"model":"grok-4.5","service_tier":"auto"}`)
+		recorder := httptest.NewRecorder()
+		c, _ := gin.CreateTestContext(recorder)
+		c.Request = httptest.NewRequest(http.MethodPost, "/v1/responses", bytes.NewReader(body))
+		upstream := &httpUpstreamRecorder{}
+		svc := newOpenAIGatewayServiceWithSettings(t, &OpenAIFastPolicySettings{Rules: []OpenAIFastPolicyRule{{
+			ServiceTier: "auto",
+			Action:      OpenAIFastPolicyActionForcePriority,
+			Scope:       BetaPolicyScopeAll,
+		}}})
+		svc.httpUpstream = upstream
+
+		result, err := svc.forwardGrokResponses(context.Background(), c, account, body, "grok-4.5", false, time.Now())
+		require.Nil(t, result)
+		var blocked *OpenAIFastBlockedError
+		require.ErrorAs(t, err, &blocked)
+		require.Equal(t, "SERVICE_TIER_UNSUPPORTED_FOR_PLATFORM", blocked.Code)
+		require.Nil(t, upstream.lastReq)
+		require.Equal(t, blocked.Code, gjson.Get(recorder.Body.String(), "error.code").String())
+	})
+
 	t.Run("media rejects priority before credential and upstream", func(t *testing.T) {
 		body := []byte(`{"model":"grok-imagine","prompt":"cat","service_tier":"priority"}`)
 		recorder := httptest.NewRecorder()

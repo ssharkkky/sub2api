@@ -124,8 +124,21 @@ func (r *channelRepository) GetByID(ctx context.Context, id int64) (*service.Cha
 	return ch, nil
 }
 
-func (r *channelRepository) Update(ctx context.Context, channel *service.Channel) error {
-	return r.runInTx(ctx, func(tx *sql.Tx) error {
+func (r *channelRepository) Update(ctx context.Context, channel *service.Channel) (service.ChannelServiceTierConfig, error) {
+	var previousConfig service.ChannelServiceTierConfig
+	err := r.runInTx(ctx, func(tx *sql.Tx) error {
+		var previousConfigJSON []byte
+		if err := tx.QueryRowContext(ctx,
+			`SELECT service_tier_config FROM channels WHERE id = $1 FOR UPDATE`,
+			channel.ID,
+		).Scan(&previousConfigJSON); err != nil {
+			if err == sql.ErrNoRows {
+				return service.ErrChannelNotFound
+			}
+			return fmt.Errorf("lock channel service_tier_config: %w", err)
+		}
+		previousConfig, _ = unmarshalServiceTierConfig(previousConfigJSON)
+
 		modelMappingJSON, err := marshalModelMapping(channel.ModelMapping)
 		if err != nil {
 			return err
@@ -177,6 +190,7 @@ func (r *channelRepository) Update(ctx context.Context, channel *service.Channel
 
 		return nil
 	})
+	return previousConfig, err
 }
 
 func (r *channelRepository) Delete(ctx context.Context, id int64) error {

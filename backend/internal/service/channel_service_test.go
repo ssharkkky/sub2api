@@ -23,6 +23,7 @@ type mockChannelRepository struct {
 	createFn                   func(ctx context.Context, channel *Channel) error
 	getByIDFn                  func(ctx context.Context, id int64) (*Channel, error)
 	updateFn                   func(ctx context.Context, channel *Channel) error
+	updatePreviousConfig       *ChannelServiceTierConfig
 	deleteFn                   func(ctx context.Context, id int64) error
 	listFn                     func(ctx context.Context, params pagination.PaginationParams, status, search string) ([]Channel, *pagination.PaginationResult, error)
 	existsByNameFn             func(ctx context.Context, name string) (bool, error)
@@ -52,11 +53,16 @@ func (m *mockChannelRepository) GetByID(ctx context.Context, id int64) (*Channel
 	return nil, ErrChannelNotFound
 }
 
-func (m *mockChannelRepository) Update(ctx context.Context, channel *Channel) error {
+func (m *mockChannelRepository) Update(ctx context.Context, channel *Channel) (ChannelServiceTierConfig, error) {
 	if m.updateFn != nil {
-		return m.updateFn(ctx, channel)
+		if err := m.updateFn(ctx, channel); err != nil {
+			return ChannelServiceTierConfig{}, err
+		}
 	}
-	return nil
+	if m.updatePreviousConfig != nil {
+		return *m.updatePreviousConfig, nil
+	}
+	return channel.ServiceTierConfig, nil
 }
 
 func (m *mockChannelRepository) Delete(ctx context.Context, id int64) error {
@@ -1418,6 +1424,30 @@ func TestUpdate_NormalizesLegacyEmptyServiceTierConfig(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, DefaultChannelServiceTierConfig(), updated.ServiceTierConfig)
 	require.Equal(t, DefaultChannelServiceTierConfig(), stored.ServiceTierConfig)
+}
+
+func TestUpdateWithPreviousServiceTierConfigUsesRepositoryTransactionSnapshot(t *testing.T) {
+	previous := DefaultChannelServiceTierConfig()
+	previous.Priority.Multiplier = 2.5
+	stored := Channel{ID: 42, Name: "channel", Status: StatusActive, ServiceTierConfig: previous}
+	repo := &mockChannelRepository{
+		getByIDFn: func(_ context.Context, _ int64) (*Channel, error) {
+			return stored.Clone(), nil
+		},
+		updatePreviousConfig: &previous,
+		updateFn: func(_ context.Context, channel *Channel) error {
+			stored = *channel.Clone()
+			return nil
+		},
+	}
+	svc := newTestChannelService(repo)
+	after := DefaultChannelServiceTierConfig()
+	after.Priority.Multiplier = 3
+
+	updated, gotPrevious, err := svc.UpdateWithPreviousServiceTierConfig(context.Background(), 42, &UpdateChannelInput{ServiceTierConfig: &after})
+	require.NoError(t, err)
+	require.Equal(t, previous, gotPrevious)
+	require.Equal(t, after, updated.ServiceTierConfig)
 }
 
 // ===========================================================================
