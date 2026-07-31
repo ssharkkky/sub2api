@@ -529,6 +529,22 @@ func (s *PaymentService) PrepareRefund(ctx context.Context, oid int64, amt float
 	if amt-o.Amount > paymentAmountToleranceForCurrency(orderCurrency) {
 		return nil, nil, infraerrors.BadRequest("REFUND_AMOUNT_EXCEEDED", "refund amount exceeds recharge")
 	}
+	fullRefund := math.Abs(amt-o.Amount) <= paymentAmountToleranceForCurrency(orderCurrency)
+	if fullRefund {
+		amt = o.Amount
+	}
+	if (o.Status == OrderStatusRefundPending || !fullRefund) && inst.ProviderKey == payment.TypeEasyPay {
+		a5Mode, err := s.isA5EasyPayInstance(ctx, inst)
+		if err != nil {
+			return nil, nil, infraerrors.InternalServer("PROVIDER_LOOKUP_FAILED", "failed to load EasyPay compatibility mode")
+		}
+		if a5Mode && o.Status == OrderStatusRefundPending {
+			return nil, nil, infraerrors.Conflict("A5_REFUND_PENDING_RETRY_BLOCKED", "A5 pending refunds must be queried or reconciled before another refund attempt")
+		}
+		if a5Mode && !fullRefund {
+			return nil, nil, infraerrors.BadRequest("A5_PARTIAL_REFUND_UNSUPPORTED", "A5 compatibility mode only supports full refunds")
+		}
+	}
 	ga := calculateGatewayRefundAmount(o.Amount, o.PayAmount, amt, orderCurrency)
 	rr := strings.TrimSpace(reason)
 	if rr == "" && o.RefundRequestReason != nil {
@@ -544,6 +560,20 @@ func (s *PaymentService) PrepareRefund(ctx context.Context, oid int64, amt float
 		}
 	}
 	return p, nil, nil
+}
+
+func (s *PaymentService) isA5EasyPayInstance(ctx context.Context, inst *dbent.PaymentProviderInstance) (bool, error) {
+	if inst == nil || inst.ProviderKey != payment.TypeEasyPay {
+		return false, nil
+	}
+	if s.loadBalancer == nil {
+		return false, errors.New("payment load balancer is unavailable")
+	}
+	config, err := s.loadBalancer.GetInstanceConfig(ctx, int64(inst.ID))
+	if err != nil {
+		return false, err
+	}
+	return provider.EasyPayCompatibilityMode(config) == provider.EasyPayCompatibilityA5, nil
 }
 
 func (s *PaymentService) prepDeduct(ctx context.Context, o *dbent.PaymentOrder, p *RefundPlan, force bool) *RefundResult {
@@ -634,8 +664,18 @@ func (s *PaymentService) ExecuteRefund(ctx context.Context, p *RefundPlan) (*Ref
 
 func (s *PaymentService) gwRefund(ctx context.Context, p *RefundPlan) (*payment.RefundResponse, error) {
 	if p.Order.PaymentTradeNo == "" {
-		s.writeAuditLog(ctx, p.Order.ID, "REFUND_NO_TRADE_NO", "admin", map[string]any{"detail": "skipped"})
-		return &payment.RefundResponse{Status: payment.ProviderStatusSuccess}, nil
+		inst, err := s.getRefundOrderProviderInstance(ctx, p.Order)
+		if err != nil {
+			return nil, fmt.Errorf("get refund provider instance: %w", err)
+		}
+		a5Mode, err := s.isA5EasyPayInstance(ctx, inst)
+		if err != nil {
+			return nil, fmt.Errorf("load A5 compatibility mode: %w", err)
+		}
+		if !a5Mode {
+			s.writeAuditLog(ctx, p.Order.ID, "REFUND_NO_TRADE_NO", "admin", map[string]any{"detail": "skipped"})
+			return &payment.RefundResponse{Status: payment.ProviderStatusSuccess}, nil
+		}
 	}
 
 	// Use the exact provider instance that created this order, not a random one
@@ -652,10 +692,11 @@ func (s *PaymentService) gwRefund(ctx context.Context, p *RefundPlan) (*payment.
 	}
 	finishProviderCall := servertiming.ObserveDependency(ctx, "payment")
 	resp, err := prov.Refund(ctx, payment.RefundRequest{
-		TradeNo: p.Order.PaymentTradeNo,
-		OrderID: p.Order.OutTradeNo,
-		Amount:  formatGatewayRefundAmount(p.GatewayAmount, p.Order),
-		Reason:  p.Reason,
+		TradeNo:    p.Order.PaymentTradeNo,
+		OrderID:    p.Order.OutTradeNo,
+		Amount:     formatGatewayRefundAmount(p.GatewayAmount, p.Order),
+		Reason:     p.Reason,
+		FullRefund: refundPlanIsFull(p),
 	})
 	finishProviderCall()
 	if err != nil {
@@ -668,6 +709,13 @@ func (s *PaymentService) gwRefund(ctx context.Context, p *RefundPlan) (*payment.
 		return nil, err
 	}
 	return resp, nil
+}
+
+func refundPlanIsFull(p *RefundPlan) bool {
+	if p == nil || p.Order == nil {
+		return false
+	}
+	return math.Abs(p.RefundAmount-p.Order.Amount) <= paymentAmountToleranceForCurrency(PaymentOrderCurrency(p.Order))
 }
 
 func formatGatewayRefundAmount(amount float64, order *dbent.PaymentOrder) string {
@@ -695,7 +743,7 @@ func (s *PaymentService) finishRefund(ctx context.Context, p *RefundPlan, resp *
 	}
 	switch strings.TrimSpace(resp.Status) {
 	case payment.ProviderStatusSuccess, payment.ProviderStatusRefunded:
-		return s.markRefundOk(ctx, p)
+		return s.markRefundOk(ctx, p, resp)
 	case payment.ProviderStatusPending:
 		return s.markRefundPending(ctx, p, resp)
 	default:
@@ -724,10 +772,11 @@ func (s *PaymentService) QueryAndFinalizeRefund(ctx context.Context, oid int64) 
 	pendingDetail := s.latestRefundPendingDetail(ctx, oid)
 	finishProviderCall := servertiming.ObserveDependency(ctx, "payment")
 	resp, err := queryProvider.QueryRefund(ctx, payment.RefundQueryRequest{
-		TradeNo:  o.PaymentTradeNo,
-		OrderID:  o.OutTradeNo,
-		RefundID: pendingDetail.RefundID,
-		Amount:   formatGatewayRefundAmount(o.RefundAmount, o),
+		TradeNo:    o.PaymentTradeNo,
+		OrderID:    o.OutTradeNo,
+		RefundID:   pendingDetail.RefundID,
+		Amount:     formatGatewayRefundAmount(calculateGatewayRefundAmount(o.Amount, o.PayAmount, o.RefundAmount, PaymentOrderCurrency(o)), o),
+		FullRefund: math.Abs(o.RefundAmount-o.Amount) <= paymentAmountToleranceForCurrency(PaymentOrderCurrency(o)),
 	})
 	finishProviderCall()
 	if err != nil {
@@ -748,16 +797,47 @@ func (s *PaymentService) QueryAndFinalizeRefund(ctx context.Context, oid int64) 
 	}
 	switch strings.TrimSpace(resp.Status) {
 	case payment.ProviderStatusSuccess, payment.ProviderStatusRefunded:
-		if err := s.applyRefundFinalDeduction(ctx, plan); err != nil {
-			return nil, err
-		}
-		return s.markRefundOk(ctx, plan)
+		return s.finalizeQueriedRefund(ctx, o, plan, resp)
 	case payment.ProviderStatusPending:
-		s.writeAuditLog(ctx, oid, "REFUND_QUERY_PENDING", "admin", map[string]any{"refundID": resp.RefundID})
+		detail := map[string]any{"refundID": resp.RefundID}
+		if message := boundedRefundProviderMessage(resp.Message); message != "" {
+			detail["providerMessage"] = message
+		}
+		s.writeAuditLogOnce(ctx, oid, "REFUND_QUERY_PENDING", "admin", detail)
 		return &RefundResult{Success: false, Warning: "gateway refund is still pending confirmation"}, nil
 	default:
 		return s.finalizeRefundFailed(ctx, o, fmt.Errorf("payment refund returned unknown status: %s", strings.TrimSpace(resp.Status)))
 	}
+}
+
+func (s *PaymentService) finalizeQueriedRefund(ctx context.Context, order *dbent.PaymentOrder, plan *RefundPlan, resp *payment.RefundResponse) (*RefundResult, error) {
+	tx, err := s.entClient.Tx(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("begin refund finalization transaction: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+	txCtx := dbent.NewTxContext(ctx, tx)
+	claimed, err := tx.Client().PaymentOrder.Update().
+		Where(paymentorder.IDEQ(order.ID), paymentorder.StatusEQ(OrderStatusRefundPending)).
+		SetStatus(OrderStatusRefunding).
+		Save(txCtx)
+	if err != nil {
+		return nil, fmt.Errorf("claim pending refund: %w", err)
+	}
+	if claimed == 0 {
+		return nil, infraerrors.Conflict("REFUND_FINALIZE_CONFLICT", "refund status changed while finalizing")
+	}
+	if err := s.applyRefundFinalDeduction(txCtx, plan); err != nil {
+		return nil, err
+	}
+	result, err := s.markRefundOkRequiredAudit(txCtx, plan, resp)
+	if err != nil {
+		return nil, err
+	}
+	if err := tx.Commit(); err != nil {
+		return nil, fmt.Errorf("commit refund finalization transaction: %w", err)
+	}
+	return result, nil
 }
 
 func (s *PaymentService) refundFinalizePlan(o *dbent.PaymentOrder) *RefundPlan {
@@ -889,7 +969,19 @@ func (s *PaymentService) handleGwFail(ctx context.Context, p *RefundPlan, gErr e
 	return nil, infraerrors.InternalServer("REFUND_FAILED", psErrMsg(gErr))
 }
 
-func (s *PaymentService) markRefundOk(ctx context.Context, p *RefundPlan) (*RefundResult, error) {
+func (s *PaymentService) markRefundOk(ctx context.Context, p *RefundPlan, responses ...*payment.RefundResponse) (*RefundResult, error) {
+	var resp *payment.RefundResponse
+	if len(responses) > 0 {
+		resp = responses[0]
+	}
+	return s.markRefundOkInternal(ctx, p, resp, false)
+}
+
+func (s *PaymentService) markRefundOkRequiredAudit(ctx context.Context, p *RefundPlan, resp *payment.RefundResponse) (*RefundResult, error) {
+	return s.markRefundOkInternal(ctx, p, resp, true)
+}
+
+func (s *PaymentService) markRefundOkInternal(ctx context.Context, p *RefundPlan, resp *payment.RefundResponse, auditRequired bool) (*RefundResult, error) {
 	fs := OrderStatusRefunded
 	if p.RefundAmount < p.Order.Amount {
 		fs = OrderStatusPartiallyRefunded
@@ -910,7 +1002,21 @@ func (s *PaymentService) markRefundOk(ctx context.Context, p *RefundPlan) (*Refu
 		return nil, fmt.Errorf("mark refund: %w", err)
 	}
 	s.recordRefundNotificationError(p.OrderID, notificationErr)
-	s.writeAuditLog(ctx, p.OrderID, "REFUND_SUCCESS", "admin", map[string]any{"refundAmount": p.RefundAmount, "reason": p.Reason, "balanceDeducted": p.BalanceToDeduct, "force": p.Force})
+	detail := map[string]any{"refundAmount": p.RefundAmount, "reason": p.Reason, "balanceDeducted": p.BalanceToDeduct, "force": p.Force}
+	if refundID := refundResponseID(resp); refundID != "" && resp.RefundIDProviderIssued {
+		detail["refundID"] = refundID
+	}
+	if resp != nil {
+		if message := boundedRefundProviderMessage(resp.Message); message != "" {
+			detail["providerMessage"] = message
+		}
+	}
+	if err := createPaymentAuditLog(ctx, paymentAuditClient(ctx, s.entClient), p.OrderID, "REFUND_SUCCESS", "admin", detail); err != nil {
+		if auditRequired {
+			return nil, fmt.Errorf("write refund success audit: %w", err)
+		}
+		slog.Error("audit log failed", "orderID", p.OrderID, "action", "REFUND_SUCCESS", "error", err)
+	}
 	return &RefundResult{Success: true, BalanceDeducted: p.BalanceToDeduct, SubDaysDeducted: p.SubDaysToDeduct}, nil
 }
 
@@ -947,6 +1053,9 @@ func (s *PaymentService) markRefundPending(ctx context.Context, p *RefundPlan, r
 		"subDaysRolledBack":   subDaysDeducted,
 		"deductionRollbackOK": rollbackOK,
 	}
+	if message := boundedRefundProviderMessage(resp.Message); message != "" {
+		detail["providerMessage"] = message
+	}
 	s.writeAuditLog(ctx, p.OrderID, "REFUND_PENDING", "admin", detail)
 
 	warning := "gateway refund is pending confirmation"
@@ -954,6 +1063,15 @@ func (s *PaymentService) markRefundPending(ctx context.Context, p *RefundPlan, r
 		warning += "; refund deduction rollback failed"
 	}
 	return &RefundResult{Success: false, Warning: warning}, nil
+}
+
+func boundedRefundProviderMessage(message string) string {
+	message = strings.Join(strings.Fields(strings.TrimSpace(message)), " ")
+	const maxProviderMessageLength = 512
+	if len(message) > maxProviderMessageLength {
+		return message[:maxProviderMessageLength] + "..."
+	}
+	return message
 }
 
 func refundResponseID(resp *payment.RefundResponse) string {
