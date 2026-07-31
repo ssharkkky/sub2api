@@ -46,6 +46,51 @@ func TestEasyPayFactoryKeepsStandardAndA5ConcreteTypesSeparate(t *testing.T) {
 	}
 }
 
+func TestA5CreatePaymentCleansReturnURLWithoutChangingStandardEasyPay(t *testing.T) {
+	t.Parallel()
+
+	const returnURL = "https://merchant.example/payment/result?order_id=42&resume_token=resume-42#done"
+	for _, tc := range []struct {
+		name       string
+		a5Mode     bool
+		wantReturn string
+	}{
+		{name: "standard preserves return URL", wantReturn: returnURL},
+		{name: "A5 removes query and fragment", a5Mode: true, wantReturn: "https://merchant.example/payment/result"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if err := r.ParseForm(); err != nil {
+					t.Fatalf("ParseForm: %v", err)
+				}
+				if got := r.PostForm.Get("return_url"); got != tc.wantReturn {
+					t.Errorf("return_url = %q, want %q", got, tc.wantReturn)
+				}
+				w.Header().Set("Content-Type", "application/json")
+				_, _ = w.Write([]byte(`{"code":1,"trade_no":"trade-1","payurl":"https://pay.example/1"}`))
+			}))
+			defer server.Close()
+
+			base, err := NewEasyPay("test", testEasyPayConfig(server.URL))
+			if err != nil {
+				t.Fatalf("NewEasyPay: %v", err)
+			}
+			base.httpClient = server.Client()
+			var provider payment.Provider = base
+			if tc.a5Mode {
+				provider = NewA5EasyPay(base)
+			}
+			if _, err := provider.CreatePayment(context.Background(), payment.CreatePaymentRequest{
+				OrderID: "sub2-create-test", PaymentType: payment.TypeAlipay, Amount: "1.00",
+				Subject: "test", ClientIP: "127.0.0.1", ReturnURL: returnURL,
+			}); err != nil {
+				t.Fatalf("CreatePayment: %v", err)
+			}
+		})
+	}
+}
+
 func TestA5QueryOrderUsesGETAndParsesStringStatuses(t *testing.T) {
 	t.Parallel()
 

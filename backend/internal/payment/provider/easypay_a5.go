@@ -46,6 +46,25 @@ func NewA5EasyPay(base *EasyPay) *A5EasyPay {
 	return &A5EasyPay{EasyPay: base}
 }
 
+// CreatePayment removes merchant-side state from return_url because A5
+// HTML-encodes embedded query separators before redirecting the browser.
+func (a *A5EasyPay) CreatePayment(ctx context.Context, req payment.CreatePaymentRequest) (*payment.CreatePaymentResponse, error) {
+	_, returnURL := a.resolveURLs(req)
+	req.ReturnURL = cleanA5ReturnURL(returnURL)
+	return a.EasyPay.CreatePayment(ctx, req)
+}
+
+func cleanA5ReturnURL(rawURL string) string {
+	parsed, err := url.Parse(rawURL)
+	if err != nil {
+		return rawURL
+	}
+	parsed.RawQuery = ""
+	parsed.ForceQuery = false
+	parsed.Fragment = ""
+	return parsed.String()
+}
+
 type a5OrderQueryResult struct {
 	TradeNo    string
 	OutTradeNo string
