@@ -890,6 +890,55 @@ func TestOpenAIGatewayServiceForwardImages_MultipartTierPolicyUsesStructuredFiel
 	}
 }
 
+func TestOpenAIGatewayServiceForwardImages_TierPolicyUsesMappedModel(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	body := []byte(`{"model":"gpt-image-customer-alias","prompt":"draw a cat","service_tier":"priority"}`)
+	recorder := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(recorder)
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/images/generations", bytes.NewReader(body))
+	c.Request.Header.Set("Content-Type", "application/json")
+	c.Set(openAIServiceTierSnapshotContextKey, openAIServiceTierSnapshotLookup{
+		Found: true,
+		Snapshot: &ChannelServiceTierSnapshot{
+			ChannelID: 1, GroupID: 2, ChannelName: "images", Config: DefaultChannelServiceTierConfig(),
+		},
+	})
+
+	settings := &OpenAIFastPolicySettings{Rules: []OpenAIFastPolicyRule{{
+		ServiceTier:    OpenAIFastTierPriority,
+		Action:         BetaPolicyActionPass,
+		Scope:          BetaPolicyScopeAll,
+		ModelWhitelist: []string{"gpt-image-3"},
+		FallbackAction: BetaPolicyActionBlock,
+	}}}
+	upstream := &httpUpstreamRecorder{resp: &http.Response{
+		StatusCode: http.StatusOK,
+		Header:     http.Header{"Content-Type": []string{"application/json"}},
+		Body:       io.NopCloser(strings.NewReader(`{"data":[{"b64_json":"aGVsbG8="}]}`)),
+	}}
+	svc := newOpenAIGatewayServiceWithSettings(t, settings)
+	svc.cfg = &config.Config{}
+	svc.channelService = &ChannelService{}
+	svc.httpUpstream = upstream
+	parsed, err := svc.ParseOpenAIImagesRequest(c, body)
+	require.NoError(t, err)
+	account := &Account{
+		ID: 1, Platform: PlatformOpenAI, Type: AccountTypeAPIKey,
+		Credentials: map[string]any{
+			"api_key":       "test-api-key",
+			"base_url":      "https://image-upstream.example/v1",
+			"model_mapping": map[string]any{"gpt-image-2": "gpt-image-3"},
+		},
+	}
+
+	result, err := svc.ForwardImages(context.Background(), c, account, body, parsed, "gpt-image-2")
+	require.NoError(t, err)
+	require.NotNil(t, result)
+	require.NotNil(t, upstream.lastReq, "mapped-model whitelist match must reach upstream")
+	require.Equal(t, "gpt-image-3", gjson.GetBytes(upstream.lastBody, "model").String())
+	require.Equal(t, "priority", gjson.GetBytes(upstream.lastBody, "service_tier").String())
+}
+
 func TestParseOpenAIImagesSSEUsageBytes_ToolUsagePrecedenceAndFallback(t *testing.T) {
 	svc := &OpenAIGatewayService{}
 	fallback := OpenAIUsage{InputTokens: 3, OutputTokens: 4, ImageOutputTokens: 2}

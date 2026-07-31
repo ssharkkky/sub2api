@@ -600,7 +600,14 @@ func (s *OpenAIGatewayService) ForwardImages(
 			return nil, fmt.Errorf("encode image service tier policy input: %w", err)
 		}
 	}
-	checkedTierBody, err := s.applyOpenAIFastAndChannelPolicyToBody(ctx, c, account, strings.TrimSpace(parsed.Model), requestedTierBody)
+	policyModel := strings.TrimSpace(parsed.Model)
+	if mapped := strings.TrimSpace(channelMappedModel); mapped != "" {
+		policyModel = mapped
+	}
+	if account != nil && account.Type == AccountTypeAPIKey {
+		policyModel = account.GetMappedModel(policyModel)
+	}
+	checkedTierBody, err := s.applyOpenAIFastAndChannelPolicyToBody(ctx, c, account, policyModel, requestedTierBody)
 	if err != nil {
 		var blocked *OpenAIFastBlockedError
 		if errors.As(err, &blocked) {
