@@ -3,6 +3,7 @@
 package service
 
 import (
+	"context"
 	"math"
 	"net/http"
 	"net/http/httptest"
@@ -69,6 +70,39 @@ func TestValidateNativeGrokServiceTier(t *testing.T) {
 	}
 }
 
+func TestOpenAIChannelAndPlatformPolicyKeepsNativeGrokStandardOnly(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	account := &Account{Platform: PlatformGrok, Type: AccountTypeAPIKey}
+
+	t.Run("channel can disable standard", func(t *testing.T) {
+		c, _ := gin.CreateTestContext(httptest.NewRecorder())
+		config := DefaultChannelServiceTierConfig()
+		config.Standard.Enabled = false
+		c.Set(openAIServiceTierSnapshotContextKey, openAIServiceTierSnapshotLookup{
+			Found:    true,
+			Snapshot: &ChannelServiceTierSnapshot{ChannelID: 1, GroupID: 2, ChannelName: "grok", Config: config},
+		})
+		svc := &OpenAIGatewayService{channelService: &ChannelService{}}
+		err := svc.applyOpenAIChannelAndPlatformPolicyToTier(context.Background(), c, account, "standard")
+		var blocked *OpenAIFastBlockedError
+		require.ErrorAs(t, err, &blocked)
+		require.Equal(t, "CHANNEL_SERVICE_TIER_NOT_ALLOWED", blocked.Code)
+	})
+
+	t.Run("native capability rejects priority after channel policy", func(t *testing.T) {
+		c, _ := gin.CreateTestContext(httptest.NewRecorder())
+		c.Set(openAIServiceTierSnapshotContextKey, openAIServiceTierSnapshotLookup{
+			Found:    true,
+			Snapshot: &ChannelServiceTierSnapshot{ChannelID: 1, GroupID: 2, ChannelName: "grok", Config: DefaultChannelServiceTierConfig()},
+		})
+		svc := &OpenAIGatewayService{channelService: &ChannelService{}}
+		err := svc.applyOpenAIChannelAndPlatformPolicyToTier(context.Background(), c, account, "priority")
+		var blocked *OpenAIFastBlockedError
+		require.ErrorAs(t, err, &blocked)
+		require.Equal(t, "SERVICE_TIER_UNSUPPORTED_FOR_PLATFORM", blocked.Code)
+	})
+}
+
 func TestClassifyOpenAIServiceTierMismatch(t *testing.T) {
 	tests := []struct {
 		name     string
@@ -117,18 +151,20 @@ func TestEnforceOpenAIChannelServiceTierUsesOutboundTier(t *testing.T) {
 	config.Flex.Enabled = false
 	snapshot := &ChannelServiceTierSnapshot{ChannelID: 9, GroupID: 7, ChannelName: "paid", Config: config}
 
-	state, err := enforceOpenAIChannelServiceTier(snapshot,
+	state, err := enforceOpenAIServiceTierForAccount(snapshot,
 		[]byte(`{"service_tier":"fast"}`),
 		[]byte(`{"service_tier":"priority"}`),
+		nil,
 	)
 	require.NoError(t, err)
 	require.Equal(t, "fast", state.RequestedProtocolTier)
 	require.Equal(t, "priority", state.OutboundProtocolTier)
 	require.Equal(t, OpenAICommercialTierPriority, state.OutboundTier)
 
-	_, err = enforceOpenAIChannelServiceTier(snapshot,
+	_, err = enforceOpenAIServiceTierForAccount(snapshot,
 		[]byte(`{"service_tier":"flex"}`),
 		[]byte(`{"service_tier":"flex"}`),
+		nil,
 	)
 	var blocked *OpenAIFastBlockedError
 	require.ErrorAs(t, err, &blocked)
@@ -136,16 +172,18 @@ func TestEnforceOpenAIChannelServiceTierUsesOutboundTier(t *testing.T) {
 
 	// A global filter can remove priority. Permission is checked against the
 	// final outbound Standard tier, not the original client request.
-	_, err = enforceOpenAIChannelServiceTier(snapshot,
+	_, err = enforceOpenAIServiceTierForAccount(snapshot,
 		[]byte(`{"service_tier":"priority"}`),
 		[]byte(`{}`),
+		nil,
 	)
 	require.ErrorAs(t, err, &blocked)
 
 	// Scale remains a protocol value but belongs to the Standard commercial tier.
-	_, err = enforceOpenAIChannelServiceTier(snapshot,
+	_, err = enforceOpenAIServiceTierForAccount(snapshot,
 		[]byte(`{"service_tier":"scale"}`),
 		[]byte(`{"service_tier":"scale"}`),
+		nil,
 	)
 	require.ErrorAs(t, err, &blocked)
 }

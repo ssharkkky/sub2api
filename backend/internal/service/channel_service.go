@@ -874,6 +874,9 @@ func (s *ChannelService) UpdateWithServiceTierAuditSnapshot(ctx context.Context,
 	}
 	channel.normalizeBillingModelSource()
 	channel.normalizeServiceTierConfig()
+	if input.ExpectedUpdatedAt != nil && !channel.UpdatedAt.Equal(*input.ExpectedUpdatedAt) {
+		return nil, auditSnapshot, ErrChannelUpdateConflict
+	}
 
 	if err := s.applyUpdateInput(ctx, channel, input); err != nil {
 		return nil, auditSnapshot, err
@@ -1149,6 +1152,7 @@ type CreateChannelInput struct {
 
 // UpdateChannelInput 更新渠道输入
 type UpdateChannelInput struct {
+	ExpectedUpdatedAt          *time.Time
 	Name                       string
 	Description                *string
 	Status                     string

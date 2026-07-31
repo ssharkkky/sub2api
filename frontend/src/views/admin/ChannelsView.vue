@@ -1610,6 +1610,7 @@ async function handleSubmit() {
   try {
     if (editingChannel.value) {
       const req: UpdateChannelRequest = {
+        expected_updated_at: editingChannel.value.updated_at,
         name: form.name.trim(),
         description: form.description.trim() || undefined,
         status: form.status,
@@ -1657,12 +1658,16 @@ async function handleSubmit() {
 async function toggleChannelStatus(channel: Channel) {
   const newStatus = channel.status === 'active' ? 'disabled' : 'active'
   try {
-    await adminAPI.channels.update(channel.id, { status: newStatus })
+    const updated = await adminAPI.channels.update(channel.id, {
+      status: newStatus,
+      expected_updated_at: channel.updated_at
+    })
     if (filters.status && filters.status !== newStatus) {
       // Item no longer matches the active filter — reload list
       await loadChannels()
     } else {
-      channel.status = newStatus
+      channel.status = updated.status
+      channel.updated_at = updated.updated_at
     }
   } catch (error) {
     appStore.showError(t('admin.channels.updateError', 'Failed to update channel'))

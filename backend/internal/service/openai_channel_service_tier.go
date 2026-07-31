@@ -141,13 +141,23 @@ func openAIProtocolTier(body []byte) string {
 	return strings.ToLower(strings.TrimSpace(gjson.GetBytes(body, "service_tier").String()))
 }
 
-func enforceOpenAIChannelServiceTier(
+func enforceOpenAIServiceTierForAccount(
 	snapshot *ChannelServiceTierSnapshot,
 	requestedBody []byte,
 	outboundBody []byte,
+	account *Account,
 ) (*OpenAIServiceTierRequestState, error) {
-	requestedProtocol := openAIProtocolTier(requestedBody)
-	outboundProtocol := openAIProtocolTier(outboundBody)
+	return enforceOpenAIServiceTierValues(snapshot, openAIProtocolTier(requestedBody), openAIProtocolTier(outboundBody), account)
+}
+
+func enforceOpenAIServiceTierValues(
+	snapshot *ChannelServiceTierSnapshot,
+	requestedProtocol string,
+	outboundProtocol string,
+	account *Account,
+) (*OpenAIServiceTierRequestState, error) {
+	requestedProtocol = strings.ToLower(strings.TrimSpace(requestedProtocol))
+	outboundProtocol = strings.ToLower(strings.TrimSpace(outboundProtocol))
 	requestedTier, requestedKnown := NormalizeOpenAICommercialTier(requestedProtocol)
 	if !requestedKnown {
 		requestedTier = OpenAICommercialTierStandard
@@ -165,17 +175,21 @@ func enforceOpenAIChannelServiceTier(
 		OutboundTier:          outboundTier,
 	}
 
-	if snapshot == nil {
-		return state, nil
+	if snapshot != nil {
+		option, ok := snapshot.Config.OptionForTier(outboundTier)
+		if !ok {
+			return state, fmt.Errorf("unknown OpenAI commercial service tier %q", outboundTier)
+		}
+		if !option.Enabled {
+			return state, &OpenAIFastBlockedError{
+				Code:    "CHANNEL_SERVICE_TIER_NOT_ALLOWED",
+				Message: fmt.Sprintf("channel %s does not allow OpenAI service tier %s", snapshot.ChannelName, outboundTier),
+			}
+		}
 	}
-	option, ok := snapshot.Config.OptionForTier(outboundTier)
-	if !ok {
-		return state, fmt.Errorf("unknown OpenAI commercial service tier %q", outboundTier)
-	}
-	if !option.Enabled {
-		return state, &OpenAIFastBlockedError{
-			Code:    "CHANNEL_SERVICE_TIER_NOT_ALLOWED",
-			Message: fmt.Sprintf("channel %s does not allow OpenAI service tier %s", snapshot.ChannelName, outboundTier),
+	if account != nil && account.Platform == PlatformGrok {
+		if blocked := ValidateNativeGrokServiceTier(outboundProtocol); blocked != nil {
+			return state, blocked
 		}
 	}
 	return state, nil
@@ -196,7 +210,7 @@ func (s *OpenAIGatewayService) applyOpenAIFastAndChannelPolicyToBody(
 	if err != nil {
 		return body, err
 	}
-	state, err := enforceOpenAIChannelServiceTier(snapshot, body, updated)
+	state, err := enforceOpenAIServiceTierForAccount(snapshot, body, updated, account)
 	if state != nil && c != nil {
 		c.Set(openAIServiceTierStateContextKey, state)
 	}
@@ -217,7 +231,7 @@ func (s *OpenAIGatewayService) applyOpenAIChannelPolicyToFinalBody(
 	if err != nil {
 		return fmt.Errorf("load channel service tier configuration: %w", err)
 	}
-	state, err := enforceOpenAIChannelServiceTier(snapshot, requestedBody, outboundBody)
+	state, err := enforceOpenAIServiceTierForAccount(snapshot, requestedBody, outboundBody, account)
 	if state != nil && c != nil {
 		c.Set(openAIServiceTierStateContextKey, state)
 	}
@@ -239,7 +253,7 @@ func (s *OpenAIGatewayService) applyOpenAIFastAndChannelPolicyToWSResponseCreate
 	if err != nil {
 		return frame, nil, fmt.Errorf("load channel service tier configuration: %w", err)
 	}
-	state, tierErr := enforceOpenAIChannelServiceTier(snapshot, frame, updated)
+	state, tierErr := enforceOpenAIServiceTierForAccount(snapshot, frame, updated, account)
 	if state != nil && c != nil {
 		c.Set(openAIServiceTierStateContextKey, state)
 	}
@@ -251,4 +265,21 @@ func (s *OpenAIGatewayService) applyOpenAIFastAndChannelPolicyToWSResponseCreate
 		return frame, nil, tierErr
 	}
 	return updated, nil, nil
+}
+
+func (s *OpenAIGatewayService) applyOpenAIChannelAndPlatformPolicyToTier(
+	ctx context.Context,
+	c *gin.Context,
+	account *Account,
+	protocolTier string,
+) error {
+	snapshot, err := s.openAIServiceTierSnapshotForRequest(ctx, c)
+	if err != nil {
+		return fmt.Errorf("load channel service tier configuration: %w", err)
+	}
+	state, err := enforceOpenAIServiceTierValues(snapshot, protocolTier, protocolTier, account)
+	if state != nil && c != nil {
+		c.Set(openAIServiceTierStateContextKey, state)
+	}
+	return err
 }

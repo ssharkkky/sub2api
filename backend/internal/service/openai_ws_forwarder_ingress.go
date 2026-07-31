@@ -789,6 +789,7 @@ func (s *OpenAIGatewayService) ProxyResponsesWebSocketFromClient(
 
 		responseID := ""
 		usage := OpenAIUsage{}
+		var actualServiceTier *string
 		imageCounter := newOpenAIImageOutputCounter()
 		var firstTokenMs *int
 		reqStream := openAIWSPayloadBoolFromRaw(payload, "stream", true)
@@ -829,6 +830,9 @@ func (s *OpenAIGatewayService) ProxyResponsesWebSocketFromClient(
 			}
 			if normalized, changed := normalizeCompletedImageGenerationStatus(upstreamMessage); changed {
 				upstreamMessage = normalized
+			}
+			if tier := extractOpenAIActualServiceTierFromJSONBytes(upstreamMessage); tier != nil {
+				actualServiceTier = tier
 			}
 
 			eventType, eventResponseID, _ := parseOpenAIWSEventEnvelope(upstreamMessage)
@@ -1011,7 +1015,7 @@ func (s *OpenAIGatewayService) ProxyResponsesWebSocketFromClient(
 					Model:                 originalModel,
 					UpstreamModel:         mappedModel,
 					ServiceTier:           extractOpenAIServiceTierFromBody(payload),
-					ActualServiceTier:     extractOpenAIActualServiceTierFromJSONBytes(payload),
+					ActualServiceTier:     actualServiceTier,
 					ReasoningEffort:       ApplyThinkingEnabledFallback(extractOpenAIReasoningEffortFromBody(payload, mappedModel, originalModel), payload, mappedModel),
 					Stream:                reqStream,
 					OpenAIWSMode:          true,

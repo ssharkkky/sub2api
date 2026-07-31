@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"strconv"
 	"strings"
+	"time"
 
 	infraerrors "github.com/Wei-Shaw/sub2api/internal/pkg/errors"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/pagination"
@@ -44,6 +45,7 @@ type createChannelRequest struct {
 }
 
 type updateChannelRequest struct {
+	ExpectedUpdatedAt          string                            `json:"expected_updated_at" binding:"required"`
 	Name                       string                            `json:"name" binding:"omitempty,max=100"`
 	Description                *string                           `json:"description"`
 	Status                     string                            `json:"status" binding:"omitempty,oneof=active disabled"`
@@ -165,7 +167,7 @@ func channelToResponse(ch *service.Channel) *channelResponse {
 		GroupIDs:               ch.GroupIDs,
 		ModelMapping:           ch.ModelMapping,
 		CreatedAt:              ch.CreatedAt.Format("2006-01-02T15:04:05Z"),
-		UpdatedAt:              ch.UpdatedAt.Format("2006-01-02T15:04:05Z"),
+		UpdatedAt:              ch.UpdatedAt.UTC().Format(time.RFC3339Nano),
 	}
 	resp.BillingModelSource = ch.BillingModelSource
 	if resp.GroupIDs == nil {
@@ -436,7 +438,13 @@ func (h *ChannelHandler) Update(c *gin.Context) {
 		response.ErrorFrom(c, infraerrors.BadRequest("VALIDATION_ERROR", err.Error()))
 		return
 	}
+	expectedUpdatedAt, err := time.Parse(time.RFC3339Nano, req.ExpectedUpdatedAt)
+	if err != nil {
+		response.ErrorFrom(c, infraerrors.BadRequest("INVALID_CHANNEL_REVISION", "expected_updated_at must be an RFC3339 timestamp"))
+		return
+	}
 	input := &service.UpdateChannelInput{
+		ExpectedUpdatedAt:          &expectedUpdatedAt,
 		Name:                       req.Name,
 		Description:                req.Description,
 		Status:                     req.Status,

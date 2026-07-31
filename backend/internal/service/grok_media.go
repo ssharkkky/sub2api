@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"mime"
@@ -337,8 +338,12 @@ func (s *OpenAIGatewayService) ForwardGrokMedia(
 		return nil, fmt.Errorf("account platform %s is not supported for grok media", account.Platform)
 	}
 	requestInfo := ParseGrokMediaRequest(contentType, body)
-	if blocked := ValidateNativeGrokServiceTier(requestInfo.ServiceTier); blocked != nil {
-		return nil, blocked
+	if err := s.applyOpenAIChannelAndPlatformPolicyToTier(ctx, c, account, requestInfo.ServiceTier); err != nil {
+		var blocked *OpenAIFastBlockedError
+		if errors.As(err, &blocked) {
+			writeOpenAIFastPolicyBlockedResponse(c, blocked)
+		}
+		return nil, err
 	}
 
 	token, _, err := s.getRequestCredential(ctx, c, account)

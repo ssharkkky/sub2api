@@ -1523,6 +1523,37 @@ func TestUpdateWithServiceTierAuditSnapshotUsesRepositoryTransactionSnapshot(t *
 	require.Equal(t, after, updated.ServiceTierConfig)
 }
 
+func TestUpdateRejectsBrowserRevisionBeforeApplyingStaleForm(t *testing.T) {
+	currentRevision := time.Date(2026, 7, 31, 12, 0, 0, 987654000, time.UTC)
+	staleRevision := currentRevision.Add(-time.Minute)
+	stored := Channel{
+		ID:                42,
+		Name:              "channel-after-admin-a",
+		Status:            StatusActive,
+		ServiceTierConfig: DefaultChannelServiceTierConfig(),
+		UpdatedAt:         currentRevision,
+	}
+	repo := &mockChannelRepository{
+		getByIDFn: func(_ context.Context, _ int64) (*Channel, error) {
+			return stored.Clone(), nil
+		},
+		updateFn: func(_ context.Context, _ *Channel) error {
+			t.Fatal("stale browser form must be rejected before repository update")
+			return nil
+		},
+	}
+	svc := newTestChannelService(repo)
+	staleName := "channel-from-stale-admin-b"
+
+	updated, err := svc.Update(context.Background(), 42, &UpdateChannelInput{
+		ExpectedUpdatedAt: &staleRevision,
+		Name:              staleName,
+	})
+	require.Nil(t, updated)
+	require.ErrorIs(t, err, ErrChannelUpdateConflict)
+	require.Equal(t, "channel-after-admin-a", stored.Name)
+}
+
 // ===========================================================================
 // 5. CRUD Methods
 // ===========================================================================
