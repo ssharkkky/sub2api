@@ -1275,6 +1275,23 @@ func TestLoadCache_RefreshFailureKeepsLastValidServiceTierSnapshot(t *testing.T)
 	require.Equal(t, 3, listCalls, "refresh should be attempted again after the bounded backoff")
 }
 
+func TestGetServiceTierSnapshotForGroup_FreshSnapshotPreservesUnassignedGroup(t *testing.T) {
+	repo := &mockChannelRepository{
+		listAllFn: func(_ context.Context) ([]Channel, error) {
+			return nil, nil
+		},
+		getGroupPlatformsFn: func(_ context.Context, _ []int64) (map[int64]string, error) {
+			return map[int64]string{}, nil
+		},
+	}
+	svc := newTestChannelService(repo)
+
+	snapshot, found, err := svc.GetServiceTierSnapshotForGroup(context.Background(), 99)
+	require.NoError(t, err)
+	require.False(t, found)
+	require.Nil(t, snapshot)
+}
+
 func TestGetServiceTierSnapshotForGroup_RefreshFailureRejectsExpiredSnapshot(t *testing.T) {
 	failRefresh := false
 	listCalls := 0
@@ -1323,10 +1340,10 @@ func TestGetServiceTierSnapshotForGroup_RefreshFailureRejectsExpiredSnapshot(t *
 	require.Nil(t, snapshot)
 	require.Equal(t, 2, listCalls)
 
-	// Groups outside the cached active-channel map preserve the legacy path;
-	// only groups that depend on the expired policy snapshot fail closed.
+	// An expired snapshot cannot prove that an unknown group is still
+	// unassigned. It must fail closed until a refresh succeeds.
 	snapshot, found, err = svc.GetServiceTierSnapshotForGroup(context.Background(), 99)
-	require.NoError(t, err)
+	require.ErrorIs(t, err, ErrChannelServiceTierSnapshotStale)
 	require.False(t, found)
 	require.Nil(t, snapshot)
 	require.Equal(t, 2, listCalls)

@@ -768,7 +768,8 @@ func (s *OpenAIGatewayService) proxyResponsesWebSocketV2Passthrough(
 	// codex-rs/core/src/client.rs build_responses_request 每次重新填值）。
 	// 因此使用 atomic.Pointer[string] 在 filter（runClientToUpstream
 	// goroutine）和 OnTurnComplete / final result（runUpstreamToClient
-	// goroutine）之间同步当前 turn 的 usage metadata。
+	// goroutine）之间同步请求侧 metadata。actual service tier 则由 relay
+	// 直接绑定到每个 terminal event，避免回调顺序或 drain 路径串用上一轮值。
 	usageMeta.initFromFirstFrame(firstClientMessage, capturedSessionModel)
 	promptCacheKey := strings.TrimSpace(gjson.GetBytes(firstClientMessage, "prompt_cache_key").String())
 
@@ -1096,6 +1097,8 @@ func (s *OpenAIGatewayService) proxyResponsesWebSocketV2Passthrough(
 			},
 			OnTurnComplete: func(turn openaiwsv2.RelayTurnResult) {
 				turnNo := int(completedTurns.Add(1))
+				actualServiceTier := optionalOpenAIProtocolTier(turn.ActualServiceTier)
+				usageMeta.actualServiceTier.Store(actualServiceTier)
 				turnRequestModel, turnUpstreamModel := usageMeta.turnModels(turn.RequestModel)
 				turnResult := &OpenAIForwardResult{
 					RequestID: turn.RequestID,
@@ -1109,7 +1112,7 @@ func (s *OpenAIGatewayService) proxyResponsesWebSocketV2Passthrough(
 					Model:                 turnRequestModel,
 					UpstreamModel:         openAIWSDifferentModel(turnRequestModel, turnUpstreamModel),
 					ServiceTier:           usageMeta.serviceTier.Load(),
-					ActualServiceTier:     usageMeta.actualServiceTier.Load(),
+					ActualServiceTier:     actualServiceTier,
 					ReasoningEffort:       usageMeta.reasoningEffort.Load(),
 					Stream:                true,
 					OpenAIWSMode:          true,
@@ -1137,11 +1140,6 @@ func (s *OpenAIGatewayService) proxyResponsesWebSocketV2Passthrough(
 				}
 			},
 			BeforeClientWrite: func(msgType coderws.MessageType, payload []byte) {
-				if msgType == coderws.MessageText {
-					if tier := extractOpenAIActualServiceTierFromJSONBytes(payload); tier != nil {
-						usageMeta.actualServiceTier.Store(tier)
-					}
-				}
 				if msgType == coderws.MessageText && openAIWSPassthroughIsTerminalOutput(payload) {
 					turnLifecycle.beginTerminalWrite()
 				}

@@ -506,12 +506,15 @@ func (s *ChannelService) GetServiceTierSnapshotForGroup(ctx context.Context, gro
 	if err != nil {
 		return nil, false, err
 	}
+	// A stale snapshot cannot prove that a group is still unassigned or that
+	// its channel is still inactive. Fail closed before consulting either
+	// cached fact so a newly linked/enabled group cannot bypass tier policy.
+	if time.Since(cache.loadedAt) >= channelCacheMaxTierStale {
+		return nil, false, ErrChannelServiceTierSnapshotStale
+	}
 	ch, ok := cache.channelByGroupID[groupID]
 	if !ok || !ch.IsActive() {
 		return nil, false, nil
-	}
-	if time.Since(cache.loadedAt) >= channelCacheMaxTierStale {
-		return nil, false, ErrChannelServiceTierSnapshotStale
 	}
 	if ch.ServiceTierConfigError != "" {
 		return nil, true, fmt.Errorf("%w: channel %d: %s", ErrChannelServiceTierConfigInvalid, ch.ID, ch.ServiceTierConfigError)
