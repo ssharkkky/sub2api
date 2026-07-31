@@ -255,7 +255,7 @@ func (s *OpenAIGatewayService) ForwardAsAnthropic(
 		var blocked *OpenAIFastBlockedError
 		if errors.As(policyErr, &blocked) {
 			MarkOpsClientBusinessLimited(c, OpsClientBusinessLimitedReasonLocalPolicyDenied)
-			writeAnthropicError(c, http.StatusForbidden, "forbidden_error", blocked.Message)
+			writeAnthropicBlockedError(c, blocked)
 		}
 		return nil, policyErr
 	}
@@ -1191,13 +1191,23 @@ func (s *OpenAIGatewayService) handleAnthropicStreamingResponse(
 
 // writeAnthropicError writes an error response in Anthropic Messages API format.
 func writeAnthropicError(c *gin.Context, statusCode int, errType, message string) {
-	c.JSON(statusCode, gin.H{
-		"type": "error",
-		"error": gin.H{
-			"type":    errType,
-			"message": message,
-		},
-	})
+	writeAnthropicErrorWithCode(c, statusCode, errType, "", message)
+
+}
+
+func writeAnthropicBlockedError(c *gin.Context, err *OpenAIFastBlockedError) {
+	if err == nil {
+		return
+	}
+	writeAnthropicErrorWithCode(c, http.StatusForbidden, "forbidden_error", err.Code, err.Message)
+}
+
+func writeAnthropicErrorWithCode(c *gin.Context, statusCode int, errType, code, message string) {
+	payload := gin.H{"type": errType, "message": message}
+	if strings.TrimSpace(code) != "" {
+		payload["code"] = code
+	}
+	c.JSON(statusCode, gin.H{"type": "error", "error": payload})
 }
 
 // buildAnthropicStreamErrorSSE builds one Anthropic SSE `error` event so a

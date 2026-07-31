@@ -98,6 +98,19 @@ func NormalizeOpenAICommercialTier(raw string) (OpenAICommercialServiceTier, boo
 	}
 }
 
+func ValidateNativeGrokServiceTier(raw string) *OpenAIFastBlockedError {
+	protocolTier := strings.ToLower(strings.TrimSpace(raw))
+	switch protocolTier {
+	case "", "auto", "default", "standard":
+		return nil
+	default:
+		return &OpenAIFastBlockedError{
+			Code:    "SERVICE_TIER_UNSUPPORTED_FOR_PLATFORM",
+			Message: fmt.Sprintf("service_tier=%s is not supported by the native Grok platform", protocolTier),
+		}
+	}
+}
+
 func applyChannelServiceTierRateMultiplier(
 	rateMultiplier float64,
 	protocolTier string,

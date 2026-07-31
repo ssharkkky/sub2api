@@ -240,7 +240,7 @@ func (s *OpenAIGatewayService) ForwardAsChatCompletions(
 		var blocked *OpenAIFastBlockedError
 		if errors.As(policyErr, &blocked) {
 			MarkOpsClientBusinessLimited(c, OpsClientBusinessLimitedReasonLocalPolicyDenied)
-			writeChatCompletionsError(c, http.StatusForbidden, "permission_error", blocked.Message)
+			writeChatCompletionsBlockedError(c, blocked)
 		}
 		return nil, policyErr
 	}
@@ -960,13 +960,23 @@ func (s *OpenAIGatewayService) handleChatStreamingResponse(
 
 // writeChatCompletionsError writes an error response in OpenAI Chat Completions format.
 func writeChatCompletionsError(c *gin.Context, statusCode int, errType, message string) {
+	writeChatCompletionsErrorWithCode(c, statusCode, errType, "", message)
+}
+
+func writeChatCompletionsBlockedError(c *gin.Context, err *OpenAIFastBlockedError) {
+	if err == nil {
+		return
+	}
+	writeChatCompletionsErrorWithCode(c, http.StatusForbidden, "permission_error", err.Code, err.Message)
+}
+
+func writeChatCompletionsErrorWithCode(c *gin.Context, statusCode int, errType, code, message string) {
 	MarkResponseCommitted(c)
-	c.JSON(statusCode, gin.H{
-		"error": gin.H{
-			"type":    errType,
-			"message": message,
-		},
-	})
+	payload := gin.H{"type": errType, "message": message}
+	if strings.TrimSpace(code) != "" {
+		payload["code"] = code
+	}
+	c.JSON(statusCode, gin.H{"error": payload})
 }
 
 // buildChatStreamErrorSSE builds one SSE data frame carrying an OpenAI chat

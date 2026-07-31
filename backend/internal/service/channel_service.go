@@ -148,8 +148,9 @@ func (r ChannelMappingResult) ToUsageFields(reqModel, upstreamModel string) Chan
 }
 
 const (
-	channelCacheTTL       = 10 * time.Minute
-	channelCacheDBTimeout = 10 * time.Second
+	channelCacheTTL            = 10 * time.Minute
+	channelCacheDBTimeout      = 10 * time.Second
+	channelCacheRefreshBackoff = 30 * time.Second
 )
 
 // ChannelService 渠道管理服务
@@ -161,6 +162,9 @@ type ChannelService struct {
 
 	cache   atomic.Value // *channelCache
 	cacheSF singleflight.Group
+	// cacheRefreshAfter only throttles retries after a stale-cache refresh fails.
+	// loadedAt remains the source of truth for how old the last valid snapshot is.
+	cacheRefreshAfter atomic.Int64
 }
 
 // NewChannelService 创建渠道服务实例。
@@ -183,6 +187,9 @@ func (s *ChannelService) loadCache(ctx context.Context) (*channelCache, error) {
 		if time.Since(cached.loadedAt) < channelCacheTTL {
 			return cached, nil
 		}
+		if retryAt := s.cacheRefreshAfter.Load(); retryAt > 0 && time.Now().UnixNano() < retryAt {
+			return cached, nil
+		}
 	}
 
 	result, err, _ := s.cacheSF.Do("channel_cache", func() (any, error) {
@@ -191,11 +198,19 @@ func (s *ChannelService) loadCache(ctx context.Context) (*channelCache, error) {
 			if time.Since(cached.loadedAt) < channelCacheTTL {
 				return cached, nil
 			}
+			if retryAt := s.cacheRefreshAfter.Load(); retryAt > 0 && time.Now().UnixNano() < retryAt {
+				return cached, nil
+			}
 		}
 		fresh, err := s.buildCache(ctx)
-		if err != nil && cached != nil {
-			slog.Warn("channel cache refresh failed; using last valid snapshot", "error", err, "loaded_at", cached.loadedAt)
-			return cached, nil
+		if err != nil {
+			lastValid, _ := s.cache.Load().(*channelCache)
+			if lastValid != nil {
+				retryAt := time.Now().Add(channelCacheRefreshBackoff)
+				s.cacheRefreshAfter.Store(retryAt.UnixNano())
+				slog.Warn("channel cache refresh failed; using last valid snapshot", "error", err, "loaded_at", lastValid.loadedAt, "retry_at", retryAt)
+				return lastValid, nil
+			}
 		}
 		return fresh, err
 	})
@@ -289,6 +304,7 @@ func (s *ChannelService) buildCache(ctx context.Context) (*channelCache, error) 
 
 	cache := populateChannelCache(channels, groupPlatforms)
 	s.cache.Store(cache)
+	s.cacheRefreshAfter.Store(0)
 	return cache, nil
 }
 
@@ -378,6 +394,7 @@ func channelLookupPlatform(ctx context.Context, groupPlatform string) string {
 	return groupPlatform
 }
 func (s *ChannelService) invalidateCache() {
+	s.cacheRefreshAfter.Store(0)
 	if cached, ok := s.cache.Load().(*channelCache); ok && cached != nil {
 		expired := *cached
 		expired.loadedAt = time.Time{}

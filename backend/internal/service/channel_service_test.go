@@ -1212,6 +1212,7 @@ func TestBuildCache_GroupPlatformError(t *testing.T) {
 
 func TestLoadCache_RefreshFailureKeepsLastValidServiceTierSnapshot(t *testing.T) {
 	failRefresh := false
+	listCalls := 0
 	config := DefaultChannelServiceTierConfig()
 	config.Priority.Multiplier = 3
 	ch := Channel{
@@ -1223,6 +1224,7 @@ func TestLoadCache_RefreshFailureKeepsLastValidServiceTierSnapshot(t *testing.T)
 	}
 	repo := &mockChannelRepository{
 		listAllFn: func(_ context.Context) ([]Channel, error) {
+			listCalls++
 			if failRefresh {
 				return nil, errors.New("database temporarily unavailable")
 			}
@@ -1248,6 +1250,20 @@ func TestLoadCache_RefreshFailureKeepsLastValidServiceTierSnapshot(t *testing.T)
 	require.NoError(t, err)
 	require.True(t, found)
 	require.InDelta(t, 3, snapshot.Config.Priority.Multiplier, 1e-12)
+	require.Equal(t, 2, listCalls)
+
+	snapshot, found, err = svc.GetServiceTierSnapshotForGroup(context.Background(), 10)
+	require.NoError(t, err)
+	require.True(t, found)
+	require.InDelta(t, 3, snapshot.Config.Priority.Multiplier, 1e-12)
+	require.Equal(t, 2, listCalls, "refresh failure backoff must avoid another immediate database call")
+
+	svc.cacheRefreshAfter.Store(time.Now().Add(-time.Second).UnixNano())
+	snapshot, found, err = svc.GetServiceTierSnapshotForGroup(context.Background(), 10)
+	require.NoError(t, err)
+	require.True(t, found)
+	require.InDelta(t, 3, snapshot.Config.Priority.Multiplier, 1e-12)
+	require.Equal(t, 3, listCalls, "refresh should be attempted again after the bounded backoff")
 }
 
 func TestBuildCache_MultipleGroupsSameChannel(t *testing.T) {

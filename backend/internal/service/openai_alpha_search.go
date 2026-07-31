@@ -215,7 +215,7 @@ func (s *OpenAIGatewayService) forwardAlphaSearchViaResponsesWebSearch(
 		RequestID:         strings.TrimSpace(resp.Header.Get("x-request-id")),
 		Model:             requestedModel,
 		UpstreamModel:     upstreamModel,
-		ActualServiceTier: extractOpenAIActualServiceTierFromJSONBytes(respBody),
+		ActualServiceTier: extractOpenAIActualServiceTierFromSSEBytes(respBody),
 		UpstreamEndpoint:  "/v1/responses",
 		ResponseHeaders:   resp.Header.Clone(),
 		Duration:          time.Since(upstreamStart),
@@ -312,6 +312,9 @@ func buildOpenAIAlphaSearchResponsesWebSearchBody(alphaBody []byte, model string
 			},
 		},
 		"tools": []any{tool},
+	}
+	if serviceTier := strings.TrimSpace(gjson.GetBytes(alphaBody, "service_tier").String()); serviceTier != "" {
+		payload["service_tier"] = serviceTier
 	}
 	return json.Marshal(payload)
 }
@@ -599,6 +602,21 @@ func openAIAlphaSearchSSEData(block string) string {
 		lines = append(lines, strings.TrimSpace(strings.TrimPrefix(line, "data:")))
 	}
 	return strings.TrimSpace(strings.Join(lines, "\n"))
+}
+
+func extractOpenAIActualServiceTierFromSSEBytes(body []byte) *string {
+	text := strings.ReplaceAll(string(body), "\r\n", "\n")
+	var actual *string
+	for _, block := range strings.Split(text, "\n\n") {
+		data := openAIAlphaSearchSSEData(block)
+		if data == "" || data == "[DONE]" {
+			continue
+		}
+		if tier := extractOpenAIActualServiceTierFromJSONBytes([]byte(data)); tier != nil {
+			actual = tier
+		}
+	}
+	return actual
 }
 
 func extractOpenAIResponsesCompletedText(response any) string {

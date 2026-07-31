@@ -8,6 +8,7 @@ import (
 	infraerrors "github.com/Wei-Shaw/sub2api/internal/pkg/errors"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/pagination"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/response"
+	"github.com/Wei-Shaw/sub2api/internal/server/middleware"
 	"github.com/Wei-Shaw/sub2api/internal/service"
 
 	"github.com/gin-gonic/gin"
@@ -404,6 +405,23 @@ func (h *ChannelHandler) Create(c *gin.Context) {
 	response.Success(c, channelToResponse(channel))
 }
 
+func channelServiceTierAuditExtra(before, after service.ChannelServiceTierConfig) map[string]any {
+	return map[string]any{
+		"service_tier_standard_enabled_before":    before.Standard.Enabled,
+		"service_tier_standard_enabled_after":     after.Standard.Enabled,
+		"service_tier_standard_multiplier_before": before.Standard.Multiplier,
+		"service_tier_standard_multiplier_after":  after.Standard.Multiplier,
+		"service_tier_priority_enabled_before":    before.Priority.Enabled,
+		"service_tier_priority_enabled_after":     after.Priority.Enabled,
+		"service_tier_priority_multiplier_before": before.Priority.Multiplier,
+		"service_tier_priority_multiplier_after":  after.Priority.Multiplier,
+		"service_tier_flex_enabled_before":        before.Flex.Enabled,
+		"service_tier_flex_enabled_after":         after.Flex.Enabled,
+		"service_tier_flex_multiplier_before":     before.Flex.Multiplier,
+		"service_tier_flex_multiplier_after":      after.Flex.Multiplier,
+	}
+}
+
 // Update handles updating a channel
 // PUT /api/v1/admin/channels/:id
 func (h *ChannelHandler) Update(c *gin.Context) {
@@ -417,6 +435,16 @@ func (h *ChannelHandler) Update(c *gin.Context) {
 	if err := c.ShouldBindJSON(&req); err != nil {
 		response.ErrorFrom(c, infraerrors.BadRequest("VALIDATION_ERROR", err.Error()))
 		return
+	}
+	var beforeConfig *service.ChannelServiceTierConfig
+	if req.ServiceTierConfig != nil {
+		before, err := h.channelService.GetByID(c.Request.Context(), id)
+		if err != nil {
+			response.ErrorFrom(c, err)
+			return
+		}
+		config := before.ServiceTierConfig
+		beforeConfig = &config
 	}
 
 	input := &service.UpdateChannelInput{
@@ -465,6 +493,9 @@ func (h *ChannelHandler) Update(c *gin.Context) {
 	if err != nil {
 		response.ErrorFrom(c, err)
 		return
+	}
+	if beforeConfig != nil {
+		middleware.SetAuditExtra(c, channelServiceTierAuditExtra(*beforeConfig, channel.ServiceTierConfig))
 	}
 
 	response.Success(c, channelToResponse(channel))

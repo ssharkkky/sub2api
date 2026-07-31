@@ -4,9 +4,13 @@ package service
 
 import (
 	"math"
+	"net/http"
+	"net/http/httptest"
 	"testing"
 
+	"github.com/gin-gonic/gin"
 	"github.com/stretchr/testify/require"
+	"github.com/tidwall/gjson"
 )
 
 func TestChannelServiceTierConfigDefaultsAndValidation(t *testing.T) {
@@ -52,6 +56,37 @@ func TestNormalizeOpenAICommercialTier(t *testing.T) {
 			require.Equal(t, tt.want, got)
 		})
 	}
+}
+
+func TestValidateNativeGrokServiceTier(t *testing.T) {
+	for _, allowed := range []string{"", "auto", "default", "standard"} {
+		require.Nil(t, ValidateNativeGrokServiceTier(allowed))
+	}
+	for _, rejected := range []string{"fast", "priority", "flex", "scale", "turbo"} {
+		blocked := ValidateNativeGrokServiceTier(rejected)
+		require.NotNil(t, blocked)
+		require.Equal(t, "SERVICE_TIER_UNSUPPORTED_FOR_PLATFORM", blocked.Code)
+	}
+}
+
+func TestServiceTierBlockedErrorsKeepStableCodeAcrossProtocols(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	blocked := &OpenAIFastBlockedError{Code: "CHANNEL_SERVICE_TIER_NOT_ALLOWED", Message: "blocked"}
+
+	chatRecorder := httptest.NewRecorder()
+	chatContext, _ := gin.CreateTestContext(chatRecorder)
+	writeChatCompletionsBlockedError(chatContext, blocked)
+	require.Equal(t, http.StatusForbidden, chatRecorder.Code)
+	require.Equal(t, blocked.Code, gjson.Get(chatRecorder.Body.String(), "error.code").String())
+
+	messagesRecorder := httptest.NewRecorder()
+	messagesContext, _ := gin.CreateTestContext(messagesRecorder)
+	writeAnthropicBlockedError(messagesContext, blocked)
+	require.Equal(t, http.StatusForbidden, messagesRecorder.Code)
+	require.Equal(t, blocked.Code, gjson.Get(messagesRecorder.Body.String(), "error.code").String())
+
+	wsEvent := buildOpenAIFastPolicyBlockedWSEvent(blocked)
+	require.Equal(t, blocked.Code, gjson.GetBytes(wsEvent, "error.code").String())
 }
 
 func TestEnforceOpenAIChannelServiceTierUsesOutboundTier(t *testing.T) {

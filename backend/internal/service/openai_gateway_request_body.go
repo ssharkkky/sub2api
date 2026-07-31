@@ -1185,12 +1185,16 @@ func buildOpenAIFastPolicyBlockedWSEvent(err *OpenAIFastBlockedError) []byte {
 		return nil
 	}
 	eventID := newOpenAIFastPolicyWSEventID()
+	code := strings.TrimSpace(err.Code)
+	if code == "" {
+		code = "policy_violation"
+	}
 	payload, mErr := json.Marshal(map[string]any{
 		"event_id": eventID,
 		"type":     "error",
 		"error": map[string]any{
 			"type":    "invalid_request_error",
-			"code":    "policy_violation",
+			"code":    code,
 			"message": err.Message,
 		},
 	})

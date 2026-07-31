@@ -575,7 +575,7 @@ func (s *OpenAIGatewayService) forwardGrokChatCompletionsViaResponses(
 		var blocked *OpenAIFastBlockedError
 		if errors.As(policyErr, &blocked) {
 			MarkOpsClientBusinessLimited(c, OpsClientBusinessLimitedReasonLocalPolicyDenied)
-			writeChatCompletionsError(c, http.StatusForbidden, "permission_error", blocked.Message)
+			writeChatCompletionsBlockedError(c, blocked)
 		}
 		return nil, policyErr
 	}

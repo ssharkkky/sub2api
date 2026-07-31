@@ -475,3 +475,24 @@ func TestSyncPricingModels_ValidPlatform_EmptyService(t *testing.T) {
 		require.NotNil(t, body.Data.Models, "models must not be null for platform=%s", platform)
 	}
 }
+
+func TestChannelServiceTierAuditExtraContainsBeforeAndAfterValues(t *testing.T) {
+	before := service.DefaultChannelServiceTierConfig()
+	after := before
+	after.Standard.Enabled = false
+	after.Standard.Multiplier = 1.25
+	after.Priority.Multiplier = 3
+	after.Flex.Enabled = false
+	after.Flex.Multiplier = 0.4
+
+	extra := channelServiceTierAuditExtra(before, after)
+	require.Len(t, extra, 12)
+	require.Equal(t, true, extra["service_tier_standard_enabled_before"])
+	require.Equal(t, false, extra["service_tier_standard_enabled_after"])
+	require.Equal(t, 1.0, extra["service_tier_standard_multiplier_before"])
+	require.Equal(t, 1.25, extra["service_tier_standard_multiplier_after"])
+	require.Equal(t, 2.0, extra["service_tier_priority_multiplier_before"])
+	require.Equal(t, 3.0, extra["service_tier_priority_multiplier_after"])
+	require.Equal(t, true, extra["service_tier_flex_enabled_before"])
+	require.Equal(t, false, extra["service_tier_flex_enabled_after"])
+}

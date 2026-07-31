@@ -45,6 +45,11 @@ func (s *OpenAIGatewayService) forwardGrokResponses(
 	if account.Type != AccountTypeOAuth && account.Type != AccountTypeAPIKey {
 		return nil, fmt.Errorf("grok account type %s is not supported by Responses forwarding", account.Type)
 	}
+	if blocked := ValidateNativeGrokServiceTier(openAIProtocolTier(body)); blocked != nil {
+		MarkOpsClientBusinessLimited(c, OpsClientBusinessLimitedReasonLocalPolicyDenied)
+		writeOpenAIFastPolicyBlockedResponse(c, blocked)
+		return nil, blocked
+	}
 
 	upstreamModel := account.GetMappedModel(originalModel)
 	if strings.TrimSpace(upstreamModel) == "" {
@@ -85,7 +90,7 @@ func (s *OpenAIGatewayService) forwardGrokResponses(
 	if err != nil {
 		return nil, fmt.Errorf("apply grok Free function-tool cache route: %w", err)
 	}
-	patchedBody, err = s.applyOpenAIFastAndChannelPolicyToBody(ctx, c, account, upstreamModel, patchedBody)
+	patchedBody, err = s.applyOpenAIFastPolicyToBody(ctx, account, upstreamModel, patchedBody)
 	if err != nil {
 		var blocked *OpenAIFastBlockedError
 		if errors.As(err, &blocked) {

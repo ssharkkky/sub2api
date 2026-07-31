@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"mime"
 	"mime/multipart"
 	"net/http"
 	"net/http/httptest"
@@ -711,7 +712,7 @@ func findOpenAIImageTestSSEEvent(events []openAIImageTestSSEEvent, name string) 
 
 func TestOpenAIGatewayServiceForwardImages_OAuthPassesNAndReturnsAllImages(t *testing.T) {
 	gin.SetMode(gin.TestMode)
-	body := []byte(`{"model":"gpt-image-2","prompt":"draw a cat","size":"1024x1024","quality":"high","n":3}`)
+	body := []byte(`{"model":"gpt-image-2","prompt":"draw a cat","size":"1024x1024","quality":"high","n":3,"service_tier":"priority"}`)
 
 	req := httptest.NewRequest(http.MethodPost, "/v1/images/generations", bytes.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")
@@ -770,6 +771,7 @@ func TestOpenAIGatewayServiceForwardImages_OAuthPassesNAndReturnsAllImages(t *te
 	require.Equal(t, "responses=experimental", upstream.lastReq.Header.Get("OpenAI-Beta"))
 
 	require.Equal(t, openAIImagesResponsesMainModel, gjson.GetBytes(upstream.lastBody, "model").String())
+	require.Equal(t, "priority", gjson.GetBytes(upstream.lastBody, "service_tier").String())
 	require.True(t, gjson.GetBytes(upstream.lastBody, "stream").Bool())
 	require.Equal(t, "image_generation", gjson.GetBytes(upstream.lastBody, "tools.0.type").String())
 	require.Equal(t, "generate", gjson.GetBytes(upstream.lastBody, "tools.0.action").String())
@@ -787,6 +789,101 @@ func TestOpenAIGatewayServiceForwardImages_OAuthPassesNAndReturnsAllImages(t *te
 	require.Equal(t, "aW1hZ2UtMw==", gjson.Get(rec.Body.String(), "data.2.b64_json").String())
 	require.Equal(t, "draw a cat 1", gjson.Get(rec.Body.String(), "data.0.revised_prompt").String())
 	require.Equal(t, "draw a cat 3", gjson.Get(rec.Body.String(), "data.2.revised_prompt").String())
+}
+
+func TestOpenAIGatewayServiceForwardImages_MultipartTierPolicyUsesStructuredField(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	account := &Account{
+		ID: 1, Platform: PlatformOpenAI, Type: AccountTypeAPIKey,
+		Credentials: map[string]any{"api_key": "test-api-key", "base_url": "https://image-upstream.example/v1"},
+	}
+
+	makeRequest := func(t *testing.T, tier string) ([]byte, *gin.Context, *httptest.ResponseRecorder) {
+		t.Helper()
+		var body bytes.Buffer
+		writer := multipart.NewWriter(&body)
+		require.NoError(t, writer.WriteField("model", "gpt-image-2"))
+		require.NoError(t, writer.WriteField("prompt", "draw a cat"))
+		require.NoError(t, writer.WriteField("service_tier", tier))
+		require.NoError(t, writer.Close())
+		recorder := httptest.NewRecorder()
+		c, _ := gin.CreateTestContext(recorder)
+		c.Request = httptest.NewRequest(http.MethodPost, "/v1/images/generations", bytes.NewReader(body.Bytes()))
+		c.Request.Header.Set("Content-Type", writer.FormDataContentType())
+		return body.Bytes(), c, recorder
+	}
+	setSnapshot := func(c *gin.Context, config ChannelServiceTierConfig) {
+		c.Set(openAIServiceTierSnapshotContextKey, openAIServiceTierSnapshotLookup{
+			Found: true,
+			Snapshot: &ChannelServiceTierSnapshot{
+				ChannelID: 1, GroupID: 2, ChannelName: "images", Config: config,
+			},
+		})
+	}
+
+	t.Run("disabled priority is rejected before upstream", func(t *testing.T) {
+		body, c, recorder := makeRequest(t, "priority")
+		config := DefaultChannelServiceTierConfig()
+		config.Priority.Enabled = false
+		setSnapshot(c, config)
+		upstream := &httpUpstreamRecorder{}
+		svc := &OpenAIGatewayService{channelService: &ChannelService{}, httpUpstream: upstream}
+		parsed, err := svc.ParseOpenAIImagesRequest(c, body)
+		require.NoError(t, err)
+		require.Equal(t, "priority", parsed.ServiceTier)
+
+		result, err := svc.ForwardImages(context.Background(), c, account, body, parsed, "")
+		require.Nil(t, result)
+		var blocked *OpenAIFastBlockedError
+		require.ErrorAs(t, err, &blocked)
+		require.Equal(t, "CHANNEL_SERVICE_TIER_NOT_ALLOWED", blocked.Code)
+		require.Nil(t, upstream.lastReq)
+		require.Equal(t, blocked.Code, gjson.Get(recorder.Body.String(), "error.code").String())
+	})
+
+	for _, tt := range []struct {
+		name       string
+		inputTier  string
+		settings   *OpenAIFastPolicySettings
+		wantTier   string
+		wantAbsent bool
+	}{
+		{name: "global filter removes multipart priority", inputTier: "priority", settings: openAIFastFilterPriorityPolicy(), wantAbsent: true},
+		{name: "global force rewrites multipart flex", inputTier: "flex", settings: &OpenAIFastPolicySettings{Rules: []OpenAIFastPolicyRule{{ServiceTier: OpenAIFastTierFlex, Action: OpenAIFastPolicyActionForcePriority, Scope: BetaPolicyScopeAll}}}, wantTier: "priority"},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			body, c, _ := makeRequest(t, tt.inputTier)
+			setSnapshot(c, DefaultChannelServiceTierConfig())
+			upstream := &httpUpstreamRecorder{resp: &http.Response{
+				StatusCode: http.StatusOK,
+				Header:     http.Header{"Content-Type": []string{"application/json"}},
+				Body:       io.NopCloser(strings.NewReader(`{"data":[{"b64_json":"aGVsbG8="}]}`)),
+			}}
+			svc := newOpenAIGatewayServiceWithSettings(t, tt.settings)
+			svc.cfg = &config.Config{}
+			svc.channelService = &ChannelService{}
+			svc.httpUpstream = upstream
+			parsed, err := svc.ParseOpenAIImagesRequest(c, body)
+			require.NoError(t, err)
+
+			result, err := svc.ForwardImages(context.Background(), c, account, body, parsed, "")
+			require.NoError(t, err)
+			require.NotNil(t, result)
+			require.NotNil(t, upstream.lastReq)
+			_, params, err := mime.ParseMediaType(upstream.lastReq.Header.Get("Content-Type"))
+			require.NoError(t, err)
+			form, err := multipart.NewReader(bytes.NewReader(upstream.lastBody), params["boundary"]).ReadForm(1 << 20)
+			require.NoError(t, err)
+			defer form.RemoveAll()
+			values, exists := form.Value["service_tier"]
+			if tt.wantAbsent {
+				require.False(t, exists)
+				return
+			}
+			require.True(t, exists)
+			require.Equal(t, []string{tt.wantTier}, values)
+		})
+	}
 }
 
 func TestParseOpenAIImagesSSEUsageBytes_ToolUsagePrecedenceAndFallback(t *testing.T) {

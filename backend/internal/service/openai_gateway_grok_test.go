@@ -744,6 +744,55 @@ func TestExtractGrokMediaModelSupportsJSONAndMultipart(t *testing.T) {
 	require.Equal(t, "grok-imagine-edit", ExtractGrokMediaModel(writer.FormDataContentType(), buf.Bytes()))
 }
 
+func TestParseGrokMediaRequestReadsServiceTierFromJSONAndMultipart(t *testing.T) {
+	require.Equal(t, "priority", ParseGrokMediaRequest("application/json", []byte(`{"model":"grok-imagine","service_tier":"priority"}`)).ServiceTier)
+
+	var buf bytes.Buffer
+	writer := multipart.NewWriter(&buf)
+	require.NoError(t, writer.WriteField("model", "grok-imagine-edit"))
+	require.NoError(t, writer.WriteField("service_tier", "flex"))
+	require.NoError(t, writer.Close())
+	require.Equal(t, "flex", ParseGrokMediaRequest(writer.FormDataContentType(), buf.Bytes()).ServiceTier)
+}
+
+func TestNativeGrokRejectsUnsupportedServiceTierBeforeUpstream(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	account := &Account{ID: 1, Platform: PlatformGrok, Type: AccountTypeAPIKey, Credentials: map[string]any{"api_key": "secret"}}
+
+	t.Run("responses rejects scale", func(t *testing.T) {
+		body := []byte(`{"model":"grok-4.5","service_tier":"scale"}`)
+		recorder := httptest.NewRecorder()
+		c, _ := gin.CreateTestContext(recorder)
+		c.Request = httptest.NewRequest(http.MethodPost, "/v1/responses", bytes.NewReader(body))
+		upstream := &httpUpstreamRecorder{}
+		svc := &OpenAIGatewayService{httpUpstream: upstream}
+
+		result, err := svc.forwardGrokResponses(context.Background(), c, account, body, "grok-4.5", false, time.Now())
+		require.Nil(t, result)
+		var blocked *OpenAIFastBlockedError
+		require.ErrorAs(t, err, &blocked)
+		require.Equal(t, "SERVICE_TIER_UNSUPPORTED_FOR_PLATFORM", blocked.Code)
+		require.Nil(t, upstream.lastReq)
+		require.Equal(t, blocked.Code, gjson.Get(recorder.Body.String(), "error.code").String())
+	})
+
+	t.Run("media rejects priority before credential and upstream", func(t *testing.T) {
+		body := []byte(`{"model":"grok-imagine","prompt":"cat","service_tier":"priority"}`)
+		recorder := httptest.NewRecorder()
+		c, _ := gin.CreateTestContext(recorder)
+		c.Request = httptest.NewRequest(http.MethodPost, "/v1/images/generations", bytes.NewReader(body))
+		upstream := &httpUpstreamRecorder{}
+		svc := &OpenAIGatewayService{httpUpstream: upstream}
+
+		result, err := svc.ForwardGrokMedia(context.Background(), c, account, GrokMediaEndpointImagesGenerations, "", body, "application/json")
+		require.Nil(t, result)
+		var blocked *OpenAIFastBlockedError
+		require.ErrorAs(t, err, &blocked)
+		require.Equal(t, "SERVICE_TIER_UNSUPPORTED_FOR_PLATFORM", blocked.Code)
+		require.Nil(t, upstream.lastReq)
+	})
+}
+
 func TestParseGrokMediaRequestBuildsMultipartModerationBody(t *testing.T) {
 	var buf bytes.Buffer
 	writer := multipart.NewWriter(&buf)
