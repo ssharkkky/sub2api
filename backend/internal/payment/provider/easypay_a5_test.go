@@ -188,21 +188,21 @@ func TestA5RefundAcceptsObservedCodeZeroResponse(t *testing.T) {
 		if err := r.ParseForm(); err != nil {
 			t.Fatalf("ParseForm: %v", err)
 		}
-		if got := r.PostForm.Get("out_trade_no"); got != "sub2_20260730LlpWDL4I" {
+		if got := r.PostForm.Get("out_trade_no"); got != "sub2_a5_fixture_order" {
 			t.Fatalf("out_trade_no = %q", got)
 		}
-		_, _ = w.Write([]byte(`{"code":0,"refund_no":"2026073017233958646","out_refund_no":"2026073017233958646","trade_no":"2026073017221214410","out_trade_no":"sub2_20260730LlpWDL4I","uid":"pid-1","money":"1.00","reducemoney":"0.96","msg":"退款成功！退款金额¥1.00"}`))
+		_, _ = w.Write([]byte(`{"code":0,"refund_no":"refund-fixture-1","out_refund_no":"refund-fixture-1","trade_no":"trade-fixture-1","out_trade_no":"sub2_a5_fixture_order","uid":"pid-1","money":"1.00","reducemoney":"0.96","msg":"退款成功！退款金额¥1.00"}`))
 	}))
 	defer server.Close()
 
 	provider := newTestA5EasyPay(t, server)
 	resp, err := provider.Refund(context.Background(), payment.RefundRequest{
-		TradeNo: "2026073017221214410", OrderID: "sub2_20260730LlpWDL4I", Amount: "1.00", FullRefund: true,
+		TradeNo: "trade-fixture-1", OrderID: "sub2_a5_fixture_order", Amount: "1.00", FullRefund: true,
 	})
 	if err != nil {
 		t.Fatalf("Refund: %v", err)
 	}
-	if resp.Status != payment.ProviderStatusSuccess || resp.RefundID != "2026073017233958646" {
+	if resp.Status != payment.ProviderStatusSuccess || resp.RefundID != "refund-fixture-1" {
 		t.Fatalf("Refund response = %+v", resp)
 	}
 }

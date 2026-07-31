@@ -614,7 +614,7 @@ func (s *PaymentService) getOrderProvider(ctx context.Context, o *dbent.PaymentO
 		return nil, fmt.Errorf("load order provider instance: %w", err)
 	}
 	if inst != nil {
-		return s.createProviderFromInstance(ctx, inst)
+		return s.createOrderBoundProvider(ctx, inst, o)
 	}
 	if !paymentOrderAllowsRegistryFallback(o) {
 		return nil, fmt.Errorf("order %d provider instance is unresolved", o.ID)
@@ -659,6 +659,10 @@ func paymentOrderFallbackProviderKey(registry *payment.Registry, order *dbent.Pa
 }
 
 func (s *PaymentService) createProviderFromInstance(ctx context.Context, inst *dbent.PaymentProviderInstance) (payment.Provider, error) {
+	return s.createOrderBoundProvider(ctx, inst, nil)
+}
+
+func (s *PaymentService) createOrderBoundProvider(ctx context.Context, inst *dbent.PaymentProviderInstance, order *dbent.PaymentOrder) (payment.Provider, error) {
 	if inst == nil {
 		return nil, fmt.Errorf("payment provider instance is missing")
 	}
@@ -670,6 +674,7 @@ func (s *PaymentService) createProviderFromInstance(ctx context.Context, inst *d
 	if inst.PaymentMode != "" {
 		cfg["paymentMode"] = inst.PaymentMode
 	}
+	cfg = pinEasyPayCompatibilityModeToOrder(inst, order, cfg)
 
 	instID := strconv.FormatInt(int64(inst.ID), 10)
 	prov, err := createPaymentProviderFromInstance(inst.ProviderKey, instID, cfg)
@@ -677,6 +682,25 @@ func (s *PaymentService) createProviderFromInstance(ctx context.Context, inst *d
 		return nil, fmt.Errorf("create provider from instance: %w", err)
 	}
 	return prov, nil
+}
+
+func pinEasyPayCompatibilityModeToOrder(inst *dbent.PaymentProviderInstance, order *dbent.PaymentOrder, cfg map[string]string) map[string]string {
+	if inst == nil || strings.TrimSpace(inst.ProviderKey) != payment.TypeEasyPay || order == nil {
+		return cfg
+	}
+	mode := paymentprovider.EasyPayCompatibilityStandard
+	if snapshot := psOrderProviderSnapshot(order); snapshot != nil {
+		snapshotMode := strings.ToLower(strings.TrimSpace(snapshot.CompatibilityMode))
+		if snapshotMode == paymentprovider.EasyPayCompatibilityA5 {
+			mode = paymentprovider.EasyPayCompatibilityA5
+		}
+	}
+	pinned := make(map[string]string, len(cfg)+1)
+	for key, value := range cfg {
+		pinned[key] = value
+	}
+	pinned[paymentprovider.EasyPayCompatibilityModeKey] = mode
+	return pinned
 }
 
 func psStringValue(value *string) string {
