@@ -41,6 +41,10 @@ CANDIDATE="$TEST_ROOT/candidate"
 "$REPO_ROOT/deploy/prepare-release-candidate.sh" \
   "$DIST/artifacts.json" "$CANDIDATE" "$VERSION" "$COMMIT" ghcr.io/example/sub2api
 [[ -x "$CANDIDATE/oci-context/linux/amd64/sub2api-deployer" ]] || fail "OCI deployer was not prepared"
+cmp -s \
+  "$REPO_ROOT/backend/resources/model-pricing/model_prices_and_context_window.json" \
+  "$CANDIDATE/oci-context/backend/resources/model-pricing/model_prices_and_context_window.json" || \
+  fail "OCI runtime pricing resources were not prepared exactly"
 DIGEST="sha256:$(printf 'a%.0s' {1..64})"
 "$REPO_ROOT/deploy/finalize-release-candidate.sh" "$CANDIDATE" "$DIGEST"
 "$REPO_ROOT/deploy/verify-release-candidate.sh" "$CANDIDATE" "$VERSION" "$COMMIT"
