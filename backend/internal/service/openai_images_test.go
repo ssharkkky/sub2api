@@ -876,7 +876,9 @@ func TestOpenAIGatewayServiceForwardImages_MultipartTierPolicyUsesStructuredFiel
 			require.NoError(t, err)
 			form, err := multipart.NewReader(bytes.NewReader(upstream.lastBody), params["boundary"]).ReadForm(1 << 20)
 			require.NoError(t, err)
-			defer form.RemoveAll()
+			t.Cleanup(func() {
+				require.NoError(t, form.RemoveAll())
+			})
 			values, exists := form.Value["service_tier"]
 			if tt.wantAbsent {
 				require.False(t, exists)

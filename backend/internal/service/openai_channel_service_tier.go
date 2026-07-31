@@ -21,7 +21,7 @@ type openAIServiceTierSnapshotLookup struct {
 }
 
 type OpenAIServiceTierRequestState struct {
-	Snapshot             *ChannelServiceTierSnapshot
+	Snapshot              *ChannelServiceTierSnapshot
 	RequestedProtocolTier string
 	OutboundProtocolTier  string
 	RequestedTier         OpenAICommercialServiceTier
