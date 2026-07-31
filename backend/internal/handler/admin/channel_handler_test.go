@@ -167,6 +167,31 @@ func TestChannelUpdateRejectsSecondBrowserWithSameStaleRevision(t *testing.T) {
 	require.Contains(t, second.Body.String(), "CHANNEL_UPDATE_CONFLICT")
 }
 
+func TestChannelUpdateAcceptsLegacyClientWithoutRevision(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	repo := &channelRevisionRepositoryStub{stored: service.Channel{
+		ID:                42,
+		Name:              "channel",
+		Status:            service.StatusActive,
+		ServiceTierConfig: service.DefaultChannelServiceTierConfig(),
+		UpdatedAt:         time.Date(2026, 7, 31, 12, 0, 0, 987654000, time.UTC),
+	}}
+	handler := NewChannelHandler(service.NewChannelService(repo, nil, nil, nil), nil, nil)
+	router := gin.New()
+	router.PUT("/channels/:id", handler.Update)
+
+	recorder := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPut, "/channels/42", bytes.NewBufferString(`{"status":"disabled"}`))
+	req.Header.Set("Content-Type", "application/json")
+	router.ServeHTTP(recorder, req)
+
+	require.Equal(t, http.StatusOK, recorder.Code)
+	require.Equal(t, 1, repo.updateCalls)
+	require.Equal(t, service.StatusDisabled, repo.stored.Status)
+	require.Equal(t, service.DefaultChannelServiceTierConfig(), repo.stored.ServiceTierConfig,
+		"legacy updates must preserve the channel tier configuration")
+}
+
 func TestChannelToResponse_EmptyDefaults(t *testing.T) {
 	now := time.Date(2025, 1, 1, 0, 0, 0, 0, time.UTC)
 	ch := &service.Channel{
