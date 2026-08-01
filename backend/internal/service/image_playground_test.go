@@ -49,7 +49,7 @@ type imagePlaygroundEligibleModelSourceStub struct {
 	eligibleByModel map[string]bool
 }
 
-func (s *imagePlaygroundEligibleModelSourceStub) IsImagePlaygroundModelEligible(_ context.Context, _ int64, model string) bool {
+func (s *imagePlaygroundEligibleModelSourceStub) IsImagePlaygroundModelEligible(_ context.Context, _ int64, _, model string) bool {
 	return s.eligibleByModel[model]
 }
 
