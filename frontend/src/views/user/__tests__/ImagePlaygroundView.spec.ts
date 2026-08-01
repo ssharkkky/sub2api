@@ -1,11 +1,12 @@
 import { flushPromises, mount } from '@vue/test-utils'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
-const { getOptions, listTasks, submitTask, getTask, deleteTask, showSuccess, showError } = vi.hoisted(() => ({
+const { getOptions, listTasks, submitTask, getTask, getPreview, deleteTask, showSuccess, showError } = vi.hoisted(() => ({
   getOptions: vi.fn(),
   listTasks: vi.fn(),
   submitTask: vi.fn(),
   getTask: vi.fn(),
+  getPreview: vi.fn(),
   deleteTask: vi.fn(),
   showSuccess: vi.fn(),
   showError: vi.fn(),
@@ -16,6 +17,7 @@ vi.mock('@/api/imagePlayground', () => ({
   listImagePlaygroundTasks: listTasks,
   submitImagePlaygroundTask: submitTask,
   getImagePlaygroundTask: getTask,
+  getImagePlaygroundImagePreview: getPreview,
   deleteImagePlaygroundTask: deleteTask,
   downloadImagePlaygroundImage: vi.fn(),
 }))
@@ -68,6 +70,7 @@ describe('ImagePlaygroundView', () => {
     getOptions.mockResolvedValue(options)
     listTasks.mockResolvedValue([])
     deleteTask.mockResolvedValue(undefined)
+    getPreview.mockResolvedValue(new Blob(['preview'], { type: 'image/png' }))
     submitTask.mockResolvedValue({
       id: 'task-1',
       object: 'image.playground.task',
@@ -232,7 +235,10 @@ describe('ImagePlaygroundView', () => {
           AppLayout: { template: '<main><slot /></main>' },
           Icon: true,
           Select: true,
-          PlaygroundTaskCard: { template: '<div data-test="task-card" />' },
+          PlaygroundTaskCard: {
+            props: ['task'],
+            template: '<div data-test="task-card" :data-image-url="task.images[0]?.url" />',
+          },
           PlaygroundDetailDialog: true,
           RouterLink: true,
         },
@@ -241,6 +247,9 @@ describe('ImagePlaygroundView', () => {
     await flushPromises()
 
     expect(listTasks).toHaveBeenCalledTimes(1)
+    expect(getPreview).toHaveBeenCalledWith('server-task', 0)
+    expect(URL.createObjectURL).toHaveBeenCalledTimes(1)
+    expect(wrapper.get('[data-test="task-card"]').attributes('data-image-url')).toBe('blob:preview')
     expect(wrapper.find('[data-test="task-card"]').exists()).toBe(true)
     expect(JSON.parse(localStorage.getItem('image_playground_history_v1') || '{}').ids).toEqual(['server-task'])
     wrapper.unmount()

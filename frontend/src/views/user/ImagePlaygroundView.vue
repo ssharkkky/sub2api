@@ -348,6 +348,7 @@ import { extractApiErrorCode } from '@/utils/apiError'
 import {
   downloadImagePlaygroundImage,
   deleteImagePlaygroundTask,
+  getImagePlaygroundImagePreview,
   getImagePlaygroundOptions,
   getImagePlaygroundTask,
   listImagePlaygroundTasks,
@@ -403,8 +404,10 @@ const statusFilter = ref<'all' | ImagePlaygroundTaskStatus>('all')
 const promptInputRef = ref<HTMLTextAreaElement | null>(null)
 const composerRef = ref<HTMLElement | null>(null)
 const pollTimers = new Map<string, number>()
+const previewObjectURLs = new Map<string, string>()
 const expiryNow = ref(Date.now())
 let expiryTimer: number | null = null
+let viewActive = true
 
 const statusFilters = computed(() => [
   { value: 'all' as const, label: t('imagePlayground.filters.all') },
@@ -657,9 +660,11 @@ async function initialize(): Promise<void> {
 async function restoreHistory(): Promise<void> {
   const stored = readHistory()
   taskMeta.value = stored.meta
-  tasks.value = await listImagePlaygroundTasks()
+  const serverTasks = await listImagePlaygroundTasks()
+  tasks.value = serverTasks.map(taskWithCachedPreviews)
   persistHistory()
   tasks.value.filter((task) => task.status === 'processing').forEach((task) => schedulePoll(task.id))
+  serverTasks.filter((task) => task.status === 'completed').forEach((task) => void loadTaskPreviews(task))
 }
 
 function buildPayload(): ImagePlaygroundSubmitRequest {
@@ -683,7 +688,7 @@ async function generate(payloadOverride?: ImagePlaygroundSubmitRequest, imageOve
   if (submitting.value) return
   const payload = payloadOverride ?? (canSubmit.value ? buildPayload() : null)
   if (!payload) return
-	const images = imageOverride ?? (payloadOverride ? [] : referenceImages.value)
+  const images = imageOverride ?? (payloadOverride ? [] : referenceImages.value)
 
   submitting.value = true
   try {
@@ -710,10 +715,11 @@ function schedulePoll(taskId: string): void {
     pollTimers.delete(taskId)
     try {
       const updated = await getImagePlaygroundTask(taskId)
-      replaceTask(updated)
+      replaceTask(taskWithCachedPreviews(updated))
       if (updated.status === 'processing') {
         schedulePoll(taskId)
       } else if (updated.status === 'completed') {
+        void loadTaskPreviews(updated)
         appStore.showSuccess(t('imagePlayground.messages.completed'))
       } else {
         appStore.showError(t('imagePlayground.errors.generationFailed'))
@@ -734,6 +740,55 @@ function schedulePoll(taskId: string): void {
   pollTimers.set(taskId, timer)
 }
 
+function previewObjectURLKey(taskId: string, imageIndex: number): string {
+  return `${taskId}:${imageIndex}`
+}
+
+function taskWithCachedPreviews(task: ImagePlaygroundTask): ImagePlaygroundTask {
+  return {
+    ...task,
+    images: task.images.map((image) => ({
+      ...image,
+      url: previewObjectURLs.get(previewObjectURLKey(task.id, image.index)) || '',
+    })),
+  }
+}
+
+async function loadTaskPreviews(task: ImagePlaygroundTask, includeAll = false): Promise<void> {
+  try {
+    const images = await Promise.all(task.images.map(async (image) => {
+      const key = previewObjectURLKey(task.id, image.index)
+      let previewURL = previewObjectURLs.get(key)
+      if (!previewURL && !includeAll && image.index !== task.images[0]?.index) {
+        return { ...image, url: '' }
+      }
+      if (!previewURL) {
+        const blob = await getImagePlaygroundImagePreview(task.id, image.index)
+        if (!viewActive || !tasks.value.some((item) => item.id === task.id)) {
+          return { ...image, url: '' }
+        }
+        previewURL = URL.createObjectURL(blob)
+        previewObjectURLs.set(key, previewURL)
+      }
+      return { ...image, url: previewURL }
+    }))
+    if (viewActive && tasks.value.some((item) => item.id === task.id)) {
+      replaceTask({ ...task, images })
+    }
+  } catch (error) {
+    appStore.showError(getErrorMessage(error))
+  }
+}
+
+function releaseTaskPreviews(taskId: string): void {
+  const prefix = `${taskId}:`
+  for (const [key, url] of previewObjectURLs) {
+    if (!key.startsWith(prefix)) continue
+    URL.revokeObjectURL(url)
+    previewObjectURLs.delete(key)
+  }
+}
+
 function replaceTask(updated: ImagePlaygroundTask): void {
   const index = tasks.value.findIndex((task) => task.id === updated.id)
   if (index >= 0) tasks.value.splice(index, 1, updated)
@@ -746,9 +801,12 @@ async function refreshTasks(): Promise<void> {
   refreshing.value = true
   try {
     const refreshed = await listImagePlaygroundTasks()
-    tasks.value = refreshed
+    const refreshedIDs = new Set(refreshed.map((task) => task.id))
+    tasks.value.filter((task) => !refreshedIDs.has(task.id)).forEach((task) => releaseTaskPreviews(task.id))
+    tasks.value = refreshed.map(taskWithCachedPreviews)
     persistHistory()
     refreshed.filter((task) => task.status === 'processing').forEach((task) => schedulePoll(task.id))
+    refreshed.filter((task) => task.status === 'completed').forEach((task) => void loadTaskPreviews(task))
   } finally {
     refreshing.value = false
   }
@@ -756,6 +814,7 @@ async function refreshTasks(): Promise<void> {
 
 function openTask(task: ImagePlaygroundTask): void {
   detailTask.value = task
+  void loadTaskPreviews(task, true)
 }
 
 async function downloadImage(task: ImagePlaygroundTask, imageIndex: number): Promise<void> {
@@ -846,6 +905,7 @@ async function confirmDeleteAll(): Promise<void> {
       const timer = pollTimers.get(id)
       if (timer) window.clearTimeout(timer)
       pollTimers.delete(id)
+      releaseTaskPreviews(id)
       delete taskMeta.value[id]
     })
     tasks.value = tasks.value.filter(task => failedIds.has(task.id))
@@ -875,6 +935,7 @@ function isNotFoundError(error: unknown): boolean {
 }
 
 onMounted(() => {
+  viewActive = true
   expiryNow.value = Date.now()
   expiryTimer = window.setInterval(() => {
     expiryNow.value = Date.now()
@@ -883,9 +944,12 @@ onMounted(() => {
 })
 
 onBeforeUnmount(() => {
+  viewActive = false
   if (expiryTimer !== null) window.clearInterval(expiryTimer)
   pollTimers.forEach((timer) => window.clearTimeout(timer))
   pollTimers.clear()
+  previewObjectURLs.forEach((url) => URL.revokeObjectURL(url))
+  previewObjectURLs.clear()
 })
 </script>
 
