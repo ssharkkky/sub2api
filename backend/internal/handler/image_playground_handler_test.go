@@ -63,7 +63,9 @@ func TestImagePlaygroundOptionsUsesDashboardEnvelope(t *testing.T) {
 	var envelope map[string]any
 	require.NoError(t, json.Unmarshal(recorder.Body.Bytes(), &envelope))
 	require.Equal(t, float64(0), envelope["code"])
-	require.Equal(t, true, envelope["data"].(map[string]any)["enabled"])
+	data, ok := envelope["data"].(map[string]any)
+	require.True(t, ok)
+	require.Equal(t, true, data["enabled"])
 }
 
 func TestImagePlaygroundResolveAPIKeyReplacesJWTWithoutWritingKey(t *testing.T) {

@@ -132,7 +132,9 @@ func (h *ImagePlaygroundHandler) ResolveAPIKey(c *gin.Context) {
 		return
 	}
 	if c.Request.MultipartForm != nil {
-		defer c.Request.MultipartForm.RemoveAll()
+		defer func() {
+			_ = c.Request.MultipartForm.RemoveAll()
+		}()
 	}
 	key, err := h.playground.ResolveAPIKey(c.Request.Context(), subject.UserID, parsed.Request.GroupID)
 	if err != nil {
