@@ -345,6 +345,7 @@ import {
   deleteImagePlaygroundTask,
   getImagePlaygroundOptions,
   getImagePlaygroundTask,
+  listImagePlaygroundTasks,
   submitImagePlaygroundTask,
   type ImagePlaygroundGroupOption,
   type ImagePlaygroundOptions,
@@ -651,9 +652,7 @@ async function initialize(): Promise<void> {
 async function restoreHistory(): Promise<void> {
   const stored = readHistory()
   taskMeta.value = stored.meta
-  if (stored.ids.length === 0) return
-  const results = await Promise.allSettled(stored.ids.map((id) => getImagePlaygroundTask(id)))
-  tasks.value = results.flatMap((result) => result.status === 'fulfilled' ? [result.value] : [])
+  tasks.value = await listImagePlaygroundTasks()
   persistHistory()
   tasks.value.filter((task) => task.status === 'processing').forEach((task) => schedulePoll(task.id))
 }
@@ -738,11 +737,10 @@ function replaceTask(updated: ImagePlaygroundTask): void {
 }
 
 async function refreshTasks(): Promise<void> {
-  if (refreshing.value || tasks.value.length === 0) return
+  if (refreshing.value) return
   refreshing.value = true
   try {
-    const results = await Promise.allSettled(tasks.value.map((task) => getImagePlaygroundTask(task.id)))
-    const refreshed = results.flatMap((result) => result.status === 'fulfilled' ? [result.value] : [])
+    const refreshed = await listImagePlaygroundTasks()
     tasks.value = refreshed
     persistHistory()
     refreshed.filter((task) => task.status === 'processing').forEach((task) => schedulePoll(task.id))

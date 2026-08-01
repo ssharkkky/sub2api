@@ -1,8 +1,9 @@
 import { flushPromises, mount } from '@vue/test-utils'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
-const { getOptions, submitTask, getTask, deleteTask, showSuccess, showError } = vi.hoisted(() => ({
+const { getOptions, listTasks, submitTask, getTask, deleteTask, showSuccess, showError } = vi.hoisted(() => ({
   getOptions: vi.fn(),
+  listTasks: vi.fn(),
   submitTask: vi.fn(),
   getTask: vi.fn(),
   deleteTask: vi.fn(),
@@ -12,6 +13,7 @@ const { getOptions, submitTask, getTask, deleteTask, showSuccess, showError } = 
 
 vi.mock('@/api/imagePlayground', () => ({
   getImagePlaygroundOptions: getOptions,
+  listImagePlaygroundTasks: listTasks,
   submitImagePlaygroundTask: submitTask,
   getImagePlaygroundTask: getTask,
   deleteImagePlaygroundTask: deleteTask,
@@ -64,6 +66,7 @@ describe('ImagePlaygroundView', () => {
     Object.defineProperty(URL, 'createObjectURL', { configurable: true, value: vi.fn(() => 'blob:preview') })
     Object.defineProperty(URL, 'revokeObjectURL', { configurable: true, value: vi.fn() })
     getOptions.mockResolvedValue(options)
+    listTasks.mockResolvedValue([])
     deleteTask.mockResolvedValue(undefined)
     submitTask.mockResolvedValue({
       id: 'task-1',
@@ -129,7 +132,7 @@ describe('ImagePlaygroundView', () => {
       ids: ['task-1'],
       meta: { 'task-1': { prompt: 'A paper sculpture', payload: { group_id: 7, model: 'gpt-image-1.5', prompt: 'A paper sculpture' } } },
     }))
-    getTask.mockResolvedValue({
+    listTasks.mockResolvedValue([{
       id: 'task-1',
       object: 'image.playground.task',
       status: 'completed',
@@ -140,7 +143,7 @@ describe('ImagePlaygroundView', () => {
       created_at: 1_700_000_000,
       expires_at: 1_700_086_400,
       poll_url: '/api/v1/image-playground/tasks/task-1',
-    })
+    }])
     const wrapper = mount(ImagePlaygroundView, {
       global: {
         renderStubDefaultSlot: true,
@@ -176,6 +179,41 @@ describe('ImagePlaygroundView', () => {
     expect(dialog.props('show')).toBe(false)
     expect(localStorage.getItem('image_playground_history_v1')).toBeNull()
     expect(wrapper.find('[data-test="task-card"]').exists()).toBe(false)
+    wrapper.unmount()
+  })
+
+  it('loads server history when the browser has no local task ids', async () => {
+    listTasks.mockResolvedValue([{
+      id: 'server-task',
+      object: 'image.playground.task',
+      status: 'completed',
+      group_id: 7,
+      platform: 'openai',
+      model: 'gpt-image-1.5',
+      images: [{ index: 0, url: 'https://cdn.example/server.png', download_url: '/download' }],
+      created_at: 1_700_000_000,
+      expires_at: 1_700_086_400,
+      poll_url: '/api/v1/image-playground/tasks/server-task',
+    }])
+
+    const wrapper = mount(ImagePlaygroundView, {
+      global: {
+        renderStubDefaultSlot: true,
+        stubs: {
+          AppLayout: { template: '<main><slot /></main>' },
+          Icon: true,
+          Select: true,
+          PlaygroundTaskCard: { template: '<div data-test="task-card" />' },
+          PlaygroundDetailDialog: true,
+          RouterLink: true,
+        },
+      },
+    })
+    await flushPromises()
+
+    expect(listTasks).toHaveBeenCalledTimes(1)
+    expect(wrapper.find('[data-test="task-card"]').exists()).toBe(true)
+    expect(JSON.parse(localStorage.getItem('image_playground_history_v1') || '{}').ids).toEqual(['server-task'])
     wrapper.unmount()
   })
 

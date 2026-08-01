@@ -15,6 +15,7 @@ import {
   deleteImagePlaygroundTask,
   getImagePlaygroundOptions,
   getImagePlaygroundTask,
+  listImagePlaygroundTasks,
   submitImagePlaygroundTask,
 } from '@/api/imagePlayground'
 
@@ -61,6 +62,14 @@ describe('image playground api', () => {
       '/image-playground/tasks/task%2Fone/images/2/download',
       { responseType: 'blob', timeout: 60000 },
     )
+  })
+
+  it('lists the authenticated user image tasks', async () => {
+	const tasks = [{ id: 'task-1', status: 'completed' }]
+	get.mockResolvedValueOnce({ data: tasks })
+
+	await expect(listImagePlaygroundTasks()).resolves.toBe(tasks)
+	expect(get).toHaveBeenCalledWith('/image-playground/tasks')
   })
 
   it('deletes a task using an encoded id', async () => {

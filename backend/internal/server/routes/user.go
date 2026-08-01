@@ -99,6 +99,7 @@ func RegisterUserRoutes(
 		imagePlayground := authenticated.Group("/image-playground")
 		{
 			imagePlayground.GET("/options", h.ImagePlayground.Options)
+			imagePlayground.GET("/tasks", h.ImagePlayground.ListTasks)
 			imagePlayground.POST(
 				"/tasks",
 				middleware.RequestBodyLimit(handler.ImagePlaygroundMaxRequestBodyBytes),

@@ -63,10 +63,13 @@ type imagePlaygroundApplication interface {
 }
 
 type imagePlaygroundTasks interface {
+	ListForUser(ctx context.Context, userID int64, limit int) ([]*service.ImageTask, error)
 	GetForUser(ctx context.Context, userID int64, id string) (*service.ImageTask, error)
 	DownloadForUser(ctx context.Context, userID int64, id string, imageIndex int) (*service.ImageTaskDownload, error)
 	DeleteForUser(ctx context.Context, userID int64, id string) error
 }
+
+const imagePlaygroundHistoryLimit = 24
 
 type ImagePlaygroundHandler struct {
 	playground imagePlaygroundApplication
@@ -266,6 +269,29 @@ func (h *ImagePlaygroundHandler) GetTask(c *gin.Context) {
 		c.Header("Retry-After", "3")
 	}
 	response.Success(c, imagePlaygroundTaskToResponse(task))
+}
+
+func (h *ImagePlaygroundHandler) ListTasks(c *gin.Context) {
+	if h.playground == nil || !h.playground.Enabled(c.Request.Context()) {
+		response.ErrorFrom(c, service.ErrImagePlaygroundDisabled)
+		return
+	}
+	subject, ok := middleware2.GetAuthSubjectFromContext(c)
+	if !ok {
+		response.Unauthorized(c, "User not authenticated")
+		return
+	}
+	tasks, err := h.tasks.ListForUser(c.Request.Context(), subject.UserID, imagePlaygroundHistoryLimit)
+	if err != nil {
+		response.ErrorFrom(c, err)
+		return
+	}
+	out := make([]imagePlaygroundTaskResponse, 0, len(tasks))
+	for _, task := range tasks {
+		out = append(out, imagePlaygroundTaskToResponse(task))
+	}
+	c.Header("Cache-Control", "no-store")
+	response.Success(c, out)
 }
 
 func (h *ImagePlaygroundHandler) Download(c *gin.Context) {

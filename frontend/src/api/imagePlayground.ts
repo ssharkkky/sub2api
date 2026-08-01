@@ -110,6 +110,11 @@ export async function getImagePlaygroundTask(taskId: string): Promise<ImagePlayg
   return response.data
 }
 
+export async function listImagePlaygroundTasks(): Promise<ImagePlaygroundTask[]> {
+	const response = await apiClient.get<ImagePlaygroundTask[]>('/image-playground/tasks')
+	return response.data
+}
+
 export async function downloadImagePlaygroundImage(
   taskId: string,
   imageIndex: number,
