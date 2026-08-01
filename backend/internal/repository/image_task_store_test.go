@@ -127,10 +127,14 @@ func TestImageTaskStoreListByUserBackfillsExistingTasksAndRejectsForeignIndexEnt
 	require.Equal(t, "legacy-own", tasks[0].ID)
 
 	require.NoError(t, rdb.ZAdd(ctx, imageTaskUserIndexKey(7), redis.Z{Score: 400, Member: "legacy-foreign"}).Err())
+	require.NoError(t, rdb.Set(ctx, imageTaskKey("corrupt"), "not-json", time.Hour).Err())
+	require.NoError(t, rdb.ZAdd(ctx, imageTaskUserIndexKey(7), redis.Z{Score: 500, Member: "corrupt"}).Err())
 	tasks, err = store.ListByUser(ctx, 7, 24)
 	require.NoError(t, err)
 	require.Len(t, tasks, 1)
 	require.Equal(t, "legacy-own", tasks[0].ID)
 	_, err = rdb.ZScore(ctx, imageTaskUserIndexKey(7), "legacy-foreign").Result()
+	require.ErrorIs(t, err, redis.Nil)
+	_, err = rdb.ZScore(ctx, imageTaskUserIndexKey(7), "corrupt").Result()
 	require.ErrorIs(t, err, redis.Nil)
 }

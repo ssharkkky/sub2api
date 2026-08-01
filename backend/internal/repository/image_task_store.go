@@ -110,7 +110,8 @@ func (s *imageTaskStore) ListByUser(ctx context.Context, userID int64, limit int
 		}
 		var task service.ImageTaskRecord
 		if err := json.Unmarshal([]byte(text), &task); err != nil {
-			return nil, err
+			stale = append(stale, ids[i])
+			continue
 		}
 		if task.UserID != userID {
 			stale = append(stale, ids[i])
@@ -140,7 +141,7 @@ func (s *imageTaskStore) backfillImageTaskUserIndex(ctx context.Context, userID 
 		}
 		var task service.ImageTaskRecord
 		if err := json.Unmarshal(data, &task); err != nil {
-			return err
+			continue
 		}
 		if task.UserID == userID {
 			entries = append(entries, redis.Z{Score: float64(task.CreatedAt), Member: task.ID})
