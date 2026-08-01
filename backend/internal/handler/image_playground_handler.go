@@ -319,6 +319,30 @@ func (h *ImagePlaygroundHandler) Download(c *gin.Context) {
 	c.Data(http.StatusOK, download.ContentType, download.Data)
 }
 
+func (h *ImagePlaygroundHandler) Preview(c *gin.Context) {
+	if h.playground == nil || !h.playground.Enabled(c.Request.Context()) {
+		response.ErrorFrom(c, service.ErrImagePlaygroundDisabled)
+		return
+	}
+	subject, ok := middleware2.GetAuthSubjectFromContext(c)
+	if !ok {
+		response.Unauthorized(c, "User not authenticated")
+		return
+	}
+	imageIndex, err := strconv.Atoi(c.Param("image_index"))
+	if err != nil || imageIndex < 0 {
+		response.BadRequest(c, "invalid image index")
+		return
+	}
+	preview, err := h.tasks.DownloadForUser(c.Request.Context(), subject.UserID, c.Param("task_id"), imageIndex)
+	if err != nil {
+		response.ErrorFrom(c, err)
+		return
+	}
+	c.Header("Cache-Control", "private, no-store")
+	c.Data(http.StatusOK, preview.ContentType, preview.Data)
+}
+
 func (h *ImagePlaygroundHandler) DeleteTask(c *gin.Context) {
 	if h.playground == nil || !h.playground.Enabled(c.Request.Context()) {
 		response.ErrorFrom(c, service.ErrImagePlaygroundDisabled)
@@ -575,9 +599,10 @@ func imagePlaygroundTaskToResponse(task *service.ImageTask) imagePlaygroundTaskR
 		if json.Unmarshal(task.Result, &payload) == nil {
 			for index, image := range payload.Data {
 				if imageURL := strings.TrimSpace(image.URL); imageURL != "" {
+					previewURL := fmt.Sprintf("%s/images/%d", result.PollURL, index)
 					result.Images = append(result.Images, imagePlaygroundImage{
 						Index:       index,
-						URL:         imageURL,
+						URL:         previewURL,
 						DownloadURL: fmt.Sprintf("%s/images/%d/download", result.PollURL, index),
 					})
 				}

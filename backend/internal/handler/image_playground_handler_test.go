@@ -300,7 +300,7 @@ func TestImagePlaygroundSubmitValidatesInput(t *testing.T) {
 
 func TestImagePlaygroundGetTaskBuildsPreviewAndDownloadURLs(t *testing.T) {
 	result := json.RawMessage(`{"data":[{"url":"https://cdn.example/image.png"}]}`)
-	h := &ImagePlaygroundHandler{playground: &imagePlaygroundApplicationStub{}, tasks: &imagePlaygroundTasksStub{task: &service.ImageTask{
+	tasks := &imagePlaygroundTasksStub{task: &service.ImageTask{
 		ID:        "imgtask_123",
 		Status:    service.ImageTaskStatusCompleted,
 		GroupID:   3,
@@ -309,7 +309,8 @@ func TestImagePlaygroundGetTaskBuildsPreviewAndDownloadURLs(t *testing.T) {
 		Result:    result,
 		CreatedAt: 1,
 		ExpiresAt: 2,
-	}}}
+	}}
+	h := &ImagePlaygroundHandler{playground: &imagePlaygroundApplicationStub{}, tasks: tasks}
 	c, recorder := imagePlaygroundTestContext(http.MethodGet, "/api/v1/image-playground/tasks/imgtask_123", nil)
 	c.Params = gin.Params{{Key: "task_id", Value: "imgtask_123"}}
 
@@ -326,7 +327,8 @@ func TestImagePlaygroundGetTaskBuildsPreviewAndDownloadURLs(t *testing.T) {
 	}
 	require.NoError(t, json.Unmarshal(recorder.Body.Bytes(), &envelope))
 	require.Len(t, envelope.Data.Images, 1)
-	require.Equal(t, "https://cdn.example/image.png", envelope.Data.Images[0].URL)
+	require.Equal(t, int64(7), tasks.gotUserID)
+	require.Equal(t, "/api/v1/image-playground/tasks/imgtask_123/images/0", envelope.Data.Images[0].URL)
 	require.Equal(t, "/api/v1/image-playground/tasks/imgtask_123/images/0/download", envelope.Data.Images[0].DownloadURL)
 }
 
@@ -349,6 +351,24 @@ func TestImagePlaygroundDownloadReturnsAttachment(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, "imgtask_123-1.png", params["filename"])
 	require.Equal(t, "png-data", recorder.Body.String())
+	require.Equal(t, int64(7), tasks.downloadedUserID)
+}
+
+func TestImagePlaygroundPreviewReturnsInlineImageForAuthenticatedOwner(t *testing.T) {
+	tasks := &imagePlaygroundTasksStub{download: &service.ImageTaskDownload{
+		Data: []byte("image-data"), ContentType: "image/png", Filename: "image.png",
+	}}
+	h := &ImagePlaygroundHandler{playground: &imagePlaygroundApplicationStub{}, tasks: tasks}
+	c, recorder := imagePlaygroundTestContext(http.MethodGet, "/api/v1/image-playground/tasks/imgtask_123/images/0", nil)
+	c.Params = gin.Params{{Key: "task_id", Value: "imgtask_123"}, {Key: "image_index", Value: "0"}}
+
+	h.Preview(c)
+
+	require.Equal(t, http.StatusOK, recorder.Code)
+	require.Equal(t, "image/png", recorder.Header().Get("Content-Type"))
+	require.Empty(t, recorder.Header().Get("Content-Disposition"))
+	require.Equal(t, "private, no-store", recorder.Header().Get("Cache-Control"))
+	require.Equal(t, int64(7), tasks.downloadedUserID)
 }
 
 func TestImagePlaygroundDownloadRejectsInvalidIndex(t *testing.T) {
@@ -363,13 +383,15 @@ func TestImagePlaygroundDownloadRejectsInvalidIndex(t *testing.T) {
 }
 
 type imagePlaygroundTasksStub struct {
-	tasks         []*service.ImageTask
-	task          *service.ImageTask
-	download      *service.ImageTaskDownload
-	err           error
-	listedUserID  int64
-	deletedUserID int64
-	deletedTaskID string
+	tasks            []*service.ImageTask
+	task             *service.ImageTask
+	download         *service.ImageTaskDownload
+	err              error
+	listedUserID     int64
+	gotUserID        int64
+	downloadedUserID int64
+	deletedUserID    int64
+	deletedTaskID    string
 }
 
 func (s *imagePlaygroundTasksStub) ListForUser(_ context.Context, userID int64, _ int) ([]*service.ImageTask, error) {
@@ -377,11 +399,13 @@ func (s *imagePlaygroundTasksStub) ListForUser(_ context.Context, userID int64, 
 	return s.tasks, s.err
 }
 
-func (s *imagePlaygroundTasksStub) GetForUser(context.Context, int64, string) (*service.ImageTask, error) {
+func (s *imagePlaygroundTasksStub) GetForUser(_ context.Context, userID int64, _ string) (*service.ImageTask, error) {
+	s.gotUserID = userID
 	return s.task, s.err
 }
 
-func (s *imagePlaygroundTasksStub) DownloadForUser(context.Context, int64, string, int) (*service.ImageTaskDownload, error) {
+func (s *imagePlaygroundTasksStub) DownloadForUser(_ context.Context, userID int64, _ string, _ int) (*service.ImageTaskDownload, error) {
+	s.downloadedUserID = userID
 	return s.download, s.err
 }
 

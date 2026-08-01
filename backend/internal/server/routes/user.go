@@ -109,6 +109,7 @@ func RegisterUserRoutes(
 			)
 			imagePlayground.GET("/tasks/:task_id", h.ImagePlayground.GetTask)
 			imagePlayground.DELETE("/tasks/:task_id", h.ImagePlayground.DeleteTask)
+			imagePlayground.GET("/tasks/:task_id/images/:image_index", h.ImagePlayground.Preview)
 			imagePlayground.GET("/tasks/:task_id/images/:image_index/download", h.ImagePlayground.Download)
 		}
 

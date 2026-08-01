@@ -136,22 +136,26 @@
         ref="composerRef"
         class="sticky bottom-3 z-20 mt-auto overflow-visible rounded-lg border border-gray-300 bg-white/95 shadow-[0_16px_50px_rgba(0,0,0,0.15)] backdrop-blur-xl dark:border-dark-600 dark:bg-dark-900/95"
       >
-        <div class="flex items-center justify-between border-b border-gray-200 px-4 py-2.5 dark:border-dark-700 lg:hidden">
-          <span class="text-sm font-medium text-gray-800 dark:text-gray-200">{{ t('imagePlayground.composer.settings') }}</span>
+        <div class="flex min-h-12 items-center justify-between gap-3 border-b border-gray-200 px-4 py-2.5 dark:border-dark-700">
+          <div class="min-w-0">
+            <span class="text-sm font-medium text-gray-800 dark:text-gray-200">{{ t('imagePlayground.composer.settings') }}</span>
+            <span v-if="!composerExpanded" class="ml-2 truncate text-xs text-gray-400 dark:text-gray-500">{{ composerStatus }}</span>
+          </div>
           <button
             type="button"
-            class="flex h-8 w-8 items-center justify-center rounded-md text-gray-500 hover:bg-gray-100 dark:text-gray-400 dark:hover:bg-dark-800"
+            data-test="composer-toggle"
+            class="flex h-8 w-8 flex-none items-center justify-center rounded-md text-gray-500 hover:bg-gray-100 dark:text-gray-400 dark:hover:bg-dark-800"
             :title="composerExpanded ? t('imagePlayground.composer.collapse') : t('imagePlayground.composer.expand')"
+            :aria-label="composerExpanded ? t('imagePlayground.composer.collapse') : t('imagePlayground.composer.expand')"
+            :aria-expanded="composerExpanded"
             @click="composerExpanded = !composerExpanded"
           >
             <Icon :name="composerExpanded ? 'chevronDown' : 'chevronUp'" size="sm" />
           </button>
         </div>
 
-        <div
-          class="grid-cols-2 gap-3 border-b border-gray-200 p-4 dark:border-dark-700 lg:grid lg:grid-cols-[1.1fr_1.1fr_1.35fr_0.72fr_0.68fr_0.78fr_104px] lg:items-end"
-          :class="composerExpanded ? 'grid' : 'hidden'"
-        >
+        <div v-show="composerExpanded" data-test="composer-content">
+        <div class="grid grid-cols-2 gap-3 border-b border-gray-200 p-4 dark:border-dark-700 lg:grid-cols-[1.1fr_1.1fr_1.35fr_0.72fr_0.68fr_0.78fr_104px] lg:items-end">
           <label class="col-span-2 min-w-0 sm:col-span-1">
             <span class="composer-label">{{ t('imagePlayground.fields.group') }}</span>
             <Select
@@ -287,6 +291,7 @@
             <span class="hidden sm:inline">{{ submitting ? t('imagePlayground.actions.submitting') : t('imagePlayground.actions.generate') }}</span>
           </button>
         </form>
+        </div>
 
         <div class="flex flex-wrap items-center justify-between gap-2 border-t border-gray-100 px-4 py-2 text-xs text-gray-400 dark:border-dark-800 dark:text-gray-500">
           <div class="flex flex-wrap items-center gap-x-3 gap-y-1">
@@ -378,7 +383,7 @@ const loadingOptions = ref(true)
 const refreshing = ref(false)
 const submitting = ref(false)
 const deletingTasks = ref(false)
-const composerExpanded = ref(false)
+const composerExpanded = ref(window.innerWidth >= 1024)
 const showDeleteAllDialog = ref(false)
 const prompt = ref('')
 const selectedGroupId = ref<number | null>(null)

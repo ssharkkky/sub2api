@@ -127,6 +127,35 @@ describe('ImagePlaygroundView', () => {
     wrapper.unmount()
   })
 
+  it('collapses and restores the generation composer', async () => {
+    const wrapper = mount(ImagePlaygroundView, {
+      global: {
+        renderStubDefaultSlot: true,
+        stubs: {
+          AppLayout: { template: '<main><slot /></main>' },
+          Icon: true,
+          Select: true,
+          PlaygroundTaskCard: true,
+          PlaygroundDetailDialog: true,
+          RouterLink: true,
+        },
+      },
+    })
+    await flushPromises()
+
+    const toggle = wrapper.get('[data-test="composer-toggle"]')
+    expect(toggle.attributes('aria-expanded')).toBe('true')
+    expect(wrapper.get('[data-test="composer-content"]').isVisible()).toBe(true)
+
+    await toggle.trigger('click')
+    expect(toggle.attributes('aria-expanded')).toBe('false')
+    expect(wrapper.get('[data-test="composer-content"]').attributes('style')).toContain('display: none')
+
+    await toggle.trigger('click')
+    expect(wrapper.get('[data-test="composer-content"]').attributes('style') || '').not.toContain('display: none')
+    wrapper.unmount()
+  })
+
   it('requires confirmation before deleting records and stored files', async () => {
     localStorage.setItem('image_playground_history_v1', JSON.stringify({
       ids: ['task-1'],
