@@ -93,6 +93,10 @@ type imagePlaygroundModelSource interface {
 	GetAvailableModels(ctx context.Context, groupID *int64, platform string) []string
 }
 
+type imagePlaygroundModelEligibilitySource interface {
+	IsImagePlaygroundModelEligible(ctx context.Context, groupID int64, model string) bool
+}
+
 type imagePlaygroundSchedulablePlatformSource interface {
 	GetSchedulablePlatforms(ctx context.Context, groupID *int64) map[string]struct{}
 }
@@ -327,6 +331,10 @@ func (s *ImagePlaygroundService) modelsForGroup(ctx context.Context, group *Grou
 		if !isImagePlaygroundModel(group.Platform, model) || !groupAllowsPlaygroundModel(group, model) {
 			continue
 		}
+		if eligibility, ok := s.models.(imagePlaygroundModelEligibilitySource); ok &&
+			!eligibility.IsImagePlaygroundModelEligible(ctx, group.ID, model) {
+			continue
+		}
 		if _, ok := seen[model]; ok {
 			continue
 		}
@@ -335,6 +343,12 @@ func (s *ImagePlaygroundService) modelsForGroup(ctx context.Context, group *Grou
 	}
 	sort.SliceStable(models, func(i, j int) bool { return models[i].ID < models[j].ID })
 	return models
+}
+
+// IsImagePlaygroundModelEligible keeps the dashboard model picker aligned with
+// the same channel pricing restriction enforced later by account scheduling.
+func (s *GatewayService) IsImagePlaygroundModelEligible(ctx context.Context, groupID int64, model string) bool {
+	return !s.checkChannelPricingRestriction(ctx, &groupID, model)
 }
 
 func (s *APIKeyService) ListImagePlaygroundAPIKeys(ctx context.Context, userID int64) ([]APIKey, error) {
