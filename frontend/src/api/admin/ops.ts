@@ -36,6 +36,7 @@ export interface OpsDashboardOverview {
 
   system_metrics?: OpsSystemMetricsSnapshot | null
   job_heartbeats?: OpsJobHeartbeat[] | null
+  disabled_job_names?: string[] | null
 
   success_count: number
   error_count_total: number
@@ -106,6 +107,7 @@ export interface OpsHealthScoreBreakdown {
   mode: 'business_and_infrastructure' | 'infrastructure_only' | 'unavailable' | string
   business_included: boolean
   score: number
+  deduction_points?: number
   components: OpsHealthScoreComponent[]
 }
 

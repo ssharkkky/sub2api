@@ -494,8 +494,14 @@ const healthScoreDeductions = computed(() => {
 })
 
 const healthScoreDeductionTotal = computed(() => {
-  const score = healthScoreBreakdown.value?.score
-  return typeof score === 'number' && Number.isFinite(score) ? Math.max(0, 100 - score) : null
+  const breakdown = healthScoreBreakdown.value
+  if (!breakdown) return null
+  if (typeof breakdown.deduction_points === 'number' && Number.isFinite(breakdown.deduction_points)) {
+    return Math.max(0, breakdown.deduction_points)
+  }
+  return typeof breakdown.score === 'number' && Number.isFinite(breakdown.score)
+    ? Math.max(0, 100 - breakdown.score)
+    : null
 })
 
 function formatHealthScoreNumber(value?: number | null): string {
@@ -723,6 +729,11 @@ const goroutineStatusClass = computed(() => {
 })
 
 const jobHeartbeats = computed(() => overview.value?.job_heartbeats ?? [])
+const disabledJobNames = computed(() => new Set(overview.value?.disabled_job_names ?? []))
+
+function jobHeartbeatDisabled(jobName: string): boolean {
+  return disabledJobNames.value.has(jobName)
+}
 
 function jobHeartbeatMaxAgeMs(jobName: string): number {
   switch (jobName) {
@@ -739,6 +750,7 @@ function jobHeartbeatMaxAgeMs(jobName: string): number {
 }
 
 function jobHeartbeatWarns(hb: NonNullable<OpsDashboardOverview['job_heartbeats']>[number]): boolean {
+  if (jobHeartbeatDisabled(hb.job_name)) return false
   if (hb.last_error_at && (!hb.last_success_at || hb.last_error_at > hb.last_success_at)) return true
   if (!hb.last_success_at) return false
   return Date.now() - new Date(hb.last_success_at).getTime() > jobHeartbeatMaxAgeMs(hb.job_name)
@@ -761,6 +773,14 @@ const jobsWarnCount = computed(() => {
     if (jobHeartbeatWarns(hb)) warn++
   }
   return warn
+})
+
+const jobsDisabledCount = computed(() => {
+  let disabled = 0
+  for (const hb of jobHeartbeats.value) {
+    if (hb && jobHeartbeatDisabled(hb.job_name)) disabled++
+  }
+  return disabled
 })
 
 const jobsStatusLabel = computed(() => {
@@ -1055,7 +1075,7 @@ function handleToolbarRefresh() {
 
               <div class="absolute flex flex-col items-center">
                 <span :class="[props.fullscreen ? 'text-5xl' : 'text-3xl', 'font-black', healthScoreClass]">
-                  {{ showIdleHealthState ? t('admin.ops.idleStatus') : (overview.health_score ?? '--') }}
+                  {{ showIdleHealthState ? t('admin.ops.idleStatus') : formatHealthScoreNumber(overview.health_score) }}
                 </span>
                 <span :class="[props.fullscreen ? 'text-xs' : 'text-[10px]', 'font-bold uppercase tracking-wider text-gray-400']">{{ t('admin.ops.health') }}</span>
               </div>
@@ -1518,6 +1538,7 @@ function handleToolbarRefresh() {
           <div v-if="!props.fullscreen" class="mt-1 text-[10px] text-gray-500 dark:text-gray-400">
             {{ t('common.total') }} <span class="font-mono">{{ jobHeartbeats.length }}</span>
             · {{ t('common.warning') }} <span class="font-mono">{{ jobsWarnCount }}</span>
+            · {{ t('admin.ops.disabled') }} <span class="font-mono">{{ jobsDisabledCount }}</span>
           </div>
         </div>
       </div>
@@ -1534,7 +1555,15 @@ function handleToolbarRefresh() {
           class="rounded-xl border border-gray-100 bg-white p-4 dark:border-dark-700 dark:bg-dark-900"
         >
           <div class="flex items-center justify-between gap-3">
-            <div class="truncate text-sm font-semibold text-gray-900 dark:text-white">{{ hb.job_name }}</div>
+            <div class="flex min-w-0 items-center gap-2">
+              <div class="truncate text-sm font-semibold text-gray-900 dark:text-white">{{ hb.job_name }}</div>
+              <span
+                v-if="jobHeartbeatDisabled(hb.job_name)"
+                class="shrink-0 rounded-full bg-gray-100 px-2 py-0.5 text-[10px] font-semibold text-gray-600 dark:bg-dark-700 dark:text-gray-300"
+              >
+                {{ t('admin.ops.disabled') }}
+              </span>
+            </div>
             <div class="flex items-center gap-3 text-xs text-gray-500 dark:text-gray-400">
               <span v-if="hb.last_duration_ms != null" class="font-mono">{{ hb.last_duration_ms }}ms</span>
               <span>{{ formatTimeShort(hb.updated_at) }}</span>

@@ -162,4 +162,42 @@ describe('OpsDashboardHeader health score breakdown', () => {
     expect(wrapper.get('[data-testid="health-score-breakdown"]').text())
       .toContain('admin.ops.healthBreakdown.unavailable')
   })
+
+  it('keeps fractional score deductions consistent and does not warn for disabled jobs', async () => {
+    const wrapper = mountHeader(makeOverview({
+      health_score: 98.5,
+      disabled_job_names: ['ops_cleanup'],
+      job_heartbeats: [{
+        job_name: 'ops_cleanup',
+        last_success_at: '2026-07-14T12:00:00Z',
+        updated_at: '2026-07-14T12:00:00Z'
+      }],
+      health_score_breakdown: {
+        mode: 'business_and_infrastructure',
+        business_included: true,
+        score: 98.5,
+        deduction_points: 1.5,
+        components: [{
+          key: 'business_quality',
+          score: 95.7,
+          weight: 0.35,
+          max_points: 35,
+          earned_points: 33.5,
+          deduction_points: 1.5,
+          reasons: [{
+            code: 'request_error_rate_high',
+            value: 1,
+            threshold: 0.8
+          }]
+        }]
+      }
+    }))
+    await flushPromises()
+
+    expect(wrapper.get('[data-testid="health-score-breakdown"]').text())
+      .toContain('admin.ops.healthBreakdown.totalDeduction 1.5')
+    expect(wrapper.text()).toContain('98.5')
+    expect(wrapper.text()).toContain('common.warning 0')
+    expect(wrapper.text()).toContain('admin.ops.disabled 1')
+  })
 })

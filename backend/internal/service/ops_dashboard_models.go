@@ -34,7 +34,8 @@ type OpsPercentiles struct {
 type OpsHealthScoreBreakdown struct {
 	Mode             string                     `json:"mode"`
 	BusinessIncluded bool                       `json:"business_included"`
-	Score            int                        `json:"score"`
+	Score            float64                    `json:"score"`
+	DeductionPoints  float64                    `json:"deduction_points"`
 	Components       []*OpsHealthScoreComponent `json:"components"`
 }
 
@@ -68,14 +69,15 @@ type OpsDashboardOverview struct {
 
 	// HealthScore is a backend-computed overall health score (0-100).
 	// It is derived from the monitored metrics in this overview, plus best-effort system metrics/job heartbeats.
-	HealthScore          int                      `json:"health_score"`
+	HealthScore          float64                  `json:"health_score"`
 	HealthScoreBreakdown *OpsHealthScoreBreakdown `json:"health_score_breakdown"`
 
 	// Latest system-level snapshot (window=1m, global).
 	SystemMetrics *OpsSystemMetricsSnapshot `json:"system_metrics"`
 
 	// Background jobs health (heartbeats).
-	JobHeartbeats []*OpsJobHeartbeat `json:"job_heartbeats"`
+	JobHeartbeats    []*OpsJobHeartbeat `json:"job_heartbeats"`
+	DisabledJobNames []string           `json:"disabled_job_names"`
 
 	SuccessCount         int64 `json:"success_count"`
 	ErrorCountTotal      int64 `json:"error_count_total"`
