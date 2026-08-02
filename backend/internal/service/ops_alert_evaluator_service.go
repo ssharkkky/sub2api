@@ -253,7 +253,7 @@ func (s *OpsAlertEvaluatorService) evaluateOnce(interval time.Duration) {
 		windowStart := safeEnd.Add(-time.Duration(windowMinutes) * time.Minute)
 		windowEnd := safeEnd
 
-		metric := s.evaluateRuleMetricWithCache(ctx, rule, systemMetrics, windowStart, windowEnd, scopePlatform, scopeGroupID, now, ttftCache)
+		metric := s.evaluateRuleMetric(ctx, rule, systemMetrics, windowStart, windowEnd, scopePlatform, scopeGroupID, now, ttftCache)
 		evaluation := &OpsAlertRuleEvaluation{
 			RuleID: rule.ID, EvaluatedAt: now, WindowStart: windowStart, WindowEnd: windowEnd,
 			Status: metric.Status, Breached: metric.Breached, MetricValue: metric.Value,
@@ -534,19 +534,6 @@ type opsAlertTTFTCacheEntry struct {
 }
 
 func (s *OpsAlertEvaluatorService) evaluateRuleMetric(
-	ctx context.Context,
-	rule *OpsAlertRule,
-	systemMetrics *OpsSystemMetricsSnapshot,
-	start time.Time,
-	end time.Time,
-	platform string,
-	groupID *int64,
-	now time.Time,
-) opsAlertMetricEvaluation {
-	return s.evaluateRuleMetricWithCache(ctx, rule, systemMetrics, start, end, platform, groupID, now, nil)
-}
-
-func (s *OpsAlertEvaluatorService) evaluateRuleMetricWithCache(
 	ctx context.Context,
 	rule *OpsAlertRule,
 	systemMetrics *OpsSystemMetricsSnapshot,

@@ -395,7 +395,7 @@ func TestOpsAlertMetricRequiresMinimumSamplesAndBadCount(t *testing.T) {
 		RequestCountSLA: 4, ErrorCountSLA: 1, ErrorRate: 0.25,
 	}}}
 
-	result := svc.evaluateRuleMetric(context.Background(), rule, nil, now.Add(-5*time.Minute), now, "", nil, now)
+	result := svc.evaluateRuleMetric(context.Background(), rule, nil, now.Add(-5*time.Minute), now, "", nil, now, nil)
 	require.Equal(t, OpsAlertEvaluationStatusOK, result.Status)
 	require.False(t, result.Breached)
 	require.EqualValues(t, 4, result.SampleCount)
@@ -404,7 +404,7 @@ func TestOpsAlertMetricRequiresMinimumSamplesAndBadCount(t *testing.T) {
 	svc.opsRepo = &stubOpsRepo{overview: &OpsDashboardOverview{
 		RequestCountSLA: 50, ErrorCountSLA: 12, ErrorRate: 0.24,
 	}}
-	result = svc.evaluateRuleMetric(context.Background(), rule, nil, now.Add(-5*time.Minute), now, "", nil, now)
+	result = svc.evaluateRuleMetric(context.Background(), rule, nil, now.Add(-5*time.Minute), now, "", nil, now, nil)
 	require.Equal(t, OpsAlertEvaluationStatusBreached, result.Status)
 	require.True(t, result.Breached)
 }
@@ -416,13 +416,13 @@ func TestOpsAlertMetricDistinguishesStaleAndUnsupported(t *testing.T) {
 
 	stale := svc.evaluateRuleMetric(context.Background(), &OpsAlertRule{
 		MetricType: "cpu_usage_percent", Operator: ">", Threshold: 85,
-	}, &OpsSystemMetricsSnapshot{CreatedAt: now.Add(-10 * time.Minute), CPUUsagePercent: &cpu}, now.Add(-5*time.Minute), now, "", nil, now)
+	}, &OpsSystemMetricsSnapshot{CreatedAt: now.Add(-10 * time.Minute), CPUUsagePercent: &cpu}, now.Add(-5*time.Minute), now, "", nil, now, nil)
 	require.Equal(t, OpsAlertEvaluationStatusStale, stale.Status)
 	require.False(t, stale.Breached)
 
 	unsupported := svc.evaluateRuleMetric(context.Background(), &OpsAlertRule{
 		MetricType: "p99_latency_ms", Operator: ">", Threshold: 3000,
-	}, nil, now.Add(-5*time.Minute), now, "", nil, now)
+	}, nil, now.Add(-5*time.Minute), now, "", nil, now, nil)
 	require.Equal(t, OpsAlertEvaluationStatusUnsupported, unsupported.Status)
 	require.Equal(t, "unsupported_metric", unsupported.ErrorCode)
 }
@@ -448,7 +448,7 @@ func TestOpsAlertMetricEvaluatesTTFTPercentilesAndMaxInSeconds(t *testing.T) {
 		t.Run(tt.metric, func(t *testing.T) {
 			result := svc.evaluateRuleMetric(context.Background(), &OpsAlertRule{
 				MetricType: tt.metric, Operator: ">", Threshold: tt.threshold, MinimumSamples: 20,
-			}, nil, now.Add(-5*time.Minute), now, "", nil, now)
+			}, nil, now.Add(-5*time.Minute), now, "", nil, now, nil)
 			require.Equal(t, tt.breached, result.Breached)
 			require.NotNil(t, result.Value)
 			require.InDelta(t, tt.wantValue, *result.Value, 0.0001)
@@ -465,7 +465,7 @@ func TestOpsAlertMetricTTFTRequiresRealTTFTSamples(t *testing.T) {
 	}}}
 	result := svc.evaluateRuleMetric(context.Background(), &OpsAlertRule{
 		MetricType: "ttft_p99_seconds", Operator: ">", Threshold: 3,
-	}, nil, now.Add(-5*time.Minute), now, "", nil, now)
+	}, nil, now.Add(-5*time.Minute), now, "", nil, now, nil)
 	require.Equal(t, OpsAlertEvaluationStatusNoData, result.Status)
 	require.Equal(t, "empty_ttft_window", result.ErrorCode)
 }
@@ -482,10 +482,10 @@ func TestOpsAlertMetricTTFTUsesDedicatedQueryAndCachesMatchingWindows(t *testing
 	cache := make(map[opsAlertTTFTCacheKey]opsAlertTTFTCacheEntry)
 	rule := &OpsAlertRule{MetricType: "ttft_p99_seconds", Operator: ">", Threshold: 3}
 
-	first := svc.evaluateRuleMetricWithCache(
+	first := svc.evaluateRuleMetric(
 		context.Background(), rule, nil, now.Add(-5*time.Minute), now, "openai", nil, now, cache,
 	)
-	second := svc.evaluateRuleMetricWithCache(
+	second := svc.evaluateRuleMetric(
 		context.Background(), rule, nil, now.Add(-5*time.Minute), now, "openai", nil, now, cache,
 	)
 
