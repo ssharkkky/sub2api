@@ -102,7 +102,12 @@ describe('OpsDashboardHeader health score breakdown', () => {
       enabled: true,
       summary: {
         qps: { current: 2, peak: 3, avg: 1.5 },
-        tps: { current: 12345, peak: 20000, avg: 10000 }
+        tps: { current: 12345, peak: 20000, avg: 10000 },
+		actual_cost_total: 1.2345,
+		points: [
+		  { time: '2026-07-28T12:59:50Z', rpm: 60, tokens_per_second: 10000, actual_cost: 0.4 },
+		  { time: '2026-07-28T12:59:55Z', rpm: 120, tokens_per_second: 12345, actual_cost: 0.8345 }
+		]
       }
     })
     const wrapper = mountHeader(makeOverview({
@@ -122,6 +127,13 @@ describe('OpsDashboardHeader health score breakdown', () => {
     expect(wrapper.text()).toContain('120.0')
     expect(wrapper.text()).toContain('12.35')
     expect(wrapper.text()).toContain('RPM')
+	expect(wrapper.get('[data-testid="realtime-traffic-card"]').text()).toContain('K token/s')
+	expect(wrapper.get('[data-testid="realtime-metric-cost"]').text()).toContain('$1.23')
+	expect(wrapper.get('[data-testid="realtime-traffic-chart"] polyline').attributes('points')).toContain('280.00,8.00')
+	expect(wrapper.find('[data-testid="realtime-traffic-chart"] animate').exists()).toBe(false)
+
+	await wrapper.get('[data-testid="realtime-metric-cost"]').trigger('click')
+	expect(wrapper.get('[data-testid="realtime-traffic-chart"]').text()).toContain('$0.8345')
     expect(wrapper.get('[data-testid="ttft-card"]').text()).toContain('1.23')
     expect(wrapper.get('[data-testid="ttft-card"]').text()).toContain('2.35')
     expect(wrapper.get('[data-testid="ttft-card"]').text()).toContain('s (P99)')

@@ -54,6 +54,7 @@ export interface OpsDashboardOverview {
   recovered_count?: number
 
   token_consumed: number
+	ttft_sample_count?: number
 
   sla: number
   error_rate: number
@@ -472,6 +473,14 @@ export interface OpsRealtimeTrafficSummary {
   group_id?: number | null
   qps: OpsRateSummary
   tps: OpsRateSummary
+	bucket_seconds?: number
+	actual_cost_total?: number
+	points?: Array<{
+		time: string
+		rpm: number
+		tokens_per_second: number
+		actual_cost: number
+	}>
 }
 
 export interface OpsRealtimeTrafficSummaryResponse {
@@ -734,6 +743,9 @@ export type MetricType =
 	| 'cancelled_count'
 	| 'security_blocked_count'
 	| 'recovered_provider_error_count'
+	| 'ttft_p95_seconds'
+	| 'ttft_p99_seconds'
+	| 'ttft_max_seconds'
   | 'cpu_usage_percent'
   | 'memory_usage_percent'
   | 'concurrency_queue_depth'

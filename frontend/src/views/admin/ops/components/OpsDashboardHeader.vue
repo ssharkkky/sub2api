@@ -12,6 +12,7 @@ import { useAdminSettingsStore } from '@/stores'
 import { formatNumber } from '@/utils/format'
 
 type RealtimeWindow = '1min' | '5min' | '30min' | '1h'
+type RealtimeChartMetric = 'rpm' | 'tokens' | 'cost'
 
 interface Props {
   overview?: OpsDashboardOverview | null
@@ -51,6 +52,7 @@ const { t } = useI18n()
 const adminSettingsStore = useAdminSettingsStore()
 
 const realtimeWindow = ref<RealtimeWindow>('1min')
+const realtimeChartMetric = ref<RealtimeChartMetric>('rpm')
 
 const overview = computed(() => props.overview ?? null)
 const systemMetrics = computed(() => overview.value?.system_metrics ?? null)
@@ -290,7 +292,10 @@ function makeZeroRealtimeTrafficSummary(): OpsRealtimeTrafficSummary {
     platform: props.platform,
     group_id: props.groupId,
     qps: { current: 0, peak: 0, avg: 0 },
-    tps: { current: 0, peak: 0, avg: 0 }
+    tps: { current: 0, peak: 0, avg: 0 },
+		bucket_seconds: 5,
+		actual_cost_total: 0,
+		points: []
   }
 }
 
@@ -361,22 +366,66 @@ const displayRealTimeTpsK = computed(() => {
   return typeof v === 'number' && Number.isFinite(v) ? v / 1000 : 0
 })
 
-const realtimeRpmPeakLabel = computed(() => {
-  const v = realtimeTrafficSummary.value?.qps?.peak
-  return typeof v === 'number' && Number.isFinite(v) ? (v * 60).toFixed(1) : '-'
+const displayRealtimeActualCost = computed(() => {
+	const value = realtimeTrafficSummary.value?.actual_cost_total
+	return typeof value === 'number' && Number.isFinite(value) ? value : null
 })
-const realtimeTpsKPeakLabel = computed(() => {
-  const v = realtimeTrafficSummary.value?.tps?.peak
-  return typeof v === 'number' && Number.isFinite(v) ? (v / 1000).toFixed(2) : '-'
+
+const realtimeChartPoints = computed(() => realtimeTrafficSummary.value?.points ?? [])
+
+function realtimeMetricValue(point: NonNullable<OpsRealtimeTrafficSummary['points']>[number]): number {
+	switch (realtimeChartMetric.value) {
+		case 'tokens': return point.tokens_per_second / 1000
+		case 'cost': return point.actual_cost
+		default: return point.rpm
+	}
+}
+
+function formatRealtimeMetric(value: number, metric = realtimeChartMetric.value): string {
+	if (!Number.isFinite(value)) return '-'
+	if (metric === 'cost') return `$${value >= 1 ? value.toFixed(2) : value.toFixed(4)}`
+	return metric === 'tokens' ? value.toFixed(2) : value.toFixed(1)
+}
+
+function formatRealtimeActualCostTotal(value: number | null): string {
+	return value == null ? '-' : formatRealtimeMetric(value, 'cost')
+}
+
+const realtimeChartValues = computed(() => realtimeChartPoints.value.map(realtimeMetricValue))
+const realtimeChartMax = computed(() => Math.max(0, ...realtimeChartValues.value))
+const realtimeChartCoordinates = computed(() => {
+	const values = realtimeChartValues.value
+	const max = realtimeChartMax.value
+	return values.map((value, index) => {
+		const x = values.length === 1 ? 140 : (index / (values.length - 1)) * 280
+		const y = max <= 0 ? 68 : 68 - (value / max) * 60
+		return { x, y, value, point: realtimeChartPoints.value[index] }
+	})
 })
-const realtimeRpmAvgLabel = computed(() => {
-  const v = realtimeTrafficSummary.value?.qps?.avg
-  return typeof v === 'number' && Number.isFinite(v) ? (v * 60).toFixed(1) : '-'
+const realtimeChartPolyline = computed(() => realtimeChartCoordinates.value
+	.map(({ x, y }) => `${x.toFixed(2)},${y.toFixed(2)}`)
+	.join(' '))
+const realtimeChartArea = computed(() => {
+	const line = realtimeChartPolyline.value
+	if (!line) return ''
+	return `M0 72 L${line.split(' ').join(' L')} L280 72 Z`
 })
-const realtimeTpsKAvgLabel = computed(() => {
-  const v = realtimeTrafficSummary.value?.tps?.avg
-  return typeof v === 'number' && Number.isFinite(v) ? (v / 1000).toFixed(2) : '-'
+const realtimeChartUnit = computed(() => {
+	switch (realtimeChartMetric.value) {
+		case 'tokens': return 'K token/s'
+		case 'cost': return t('admin.ops.realtime.actualDeduction')
+		default: return 'RPM'
+	}
 })
+const realtimeChartStartLabel = computed(() => formatRealtimeChartTime(realtimeChartPoints.value[0]?.time))
+const realtimeChartEndLabel = computed(() => formatRealtimeChartTime(realtimeChartPoints.value.at(-1)?.time))
+
+function formatRealtimeChartTime(value?: string): string {
+	if (!value) return '-'
+	const date = new Date(value)
+	if (Number.isNaN(date.getTime())) return '-'
+	return date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: realtimeWindow.value === '1min' ? '2-digit' : undefined })
+}
 
 const rpmAvgLabel = computed(() => {
   const v = overview.value?.qps?.avg
@@ -1132,76 +1181,45 @@ function handleToolbarRefresh() {
               </div>
             </div>
 
-            <div :class="props.fullscreen ? 'space-y-4' : 'space-y-3'">
-              <!-- Row 1: Current -->
-              <div>
-                <div :class="[props.fullscreen ? 'text-xs' : 'text-[10px]', 'font-bold uppercase text-gray-400']">{{ t('admin.ops.current') }}</div>
-                <div class="mt-1 flex flex-wrap items-baseline gap-x-4 gap-y-2">
-                  <div class="flex items-baseline gap-1.5">
-                    <span :class="[props.fullscreen ? 'text-4xl' : 'text-xl sm:text-2xl', 'font-black text-gray-900 dark:text-white']">{{ displayRealTimeRpm.toFixed(1) }}</span>
-                    <span :class="[props.fullscreen ? 'text-sm' : 'text-xs', 'font-bold text-gray-500']">RPM</span>
-                  </div>
-                  <div class="flex items-baseline gap-1.5">
-                    <span :class="[props.fullscreen ? 'text-4xl' : 'text-xl sm:text-2xl', 'font-black text-gray-900 dark:text-white']">{{ displayRealTimeTpsK.toFixed(2) }}</span>
-                    <span :class="[props.fullscreen ? 'text-sm' : 'text-xs', 'font-bold text-gray-500']">{{ t('admin.ops.tps') }}</span>
-                  </div>
-                </div>
+            <div :class="props.fullscreen ? 'space-y-4' : 'space-y-3'" data-testid="realtime-traffic-card">
+              <div class="grid grid-cols-3 gap-1.5">
+                <button type="button" data-testid="realtime-metric-rpm" class="rounded-lg border px-2 py-2 text-left transition-colors" :class="realtimeChartMetric === 'rpm' ? 'border-blue-400 bg-blue-50 dark:border-blue-500 dark:bg-blue-950/30' : 'border-gray-200 bg-white hover:border-blue-200 dark:border-dark-700 dark:bg-dark-900'" @click="realtimeChartMetric = 'rpm'">
+                  <span class="block text-[9px] font-bold uppercase text-gray-400">RPM</span>
+                  <span class="mt-0.5 block text-base font-black text-gray-900 dark:text-white">{{ displayRealTimeRpm.toFixed(1) }}</span>
+                </button>
+                <button type="button" data-testid="realtime-metric-tokens" class="rounded-lg border px-2 py-2 text-left transition-colors" :class="realtimeChartMetric === 'tokens' ? 'border-blue-400 bg-blue-50 dark:border-blue-500 dark:bg-blue-950/30' : 'border-gray-200 bg-white hover:border-blue-200 dark:border-dark-700 dark:bg-dark-900'" @click="realtimeChartMetric = 'tokens'">
+                  <span class="block whitespace-nowrap text-[9px] font-bold uppercase text-gray-400">K token/s</span>
+                  <span class="mt-0.5 block text-base font-black text-gray-900 dark:text-white">{{ displayRealTimeTpsK.toFixed(2) }}</span>
+                </button>
+                <button type="button" data-testid="realtime-metric-cost" class="rounded-lg border px-2 py-2 text-left transition-colors" :class="realtimeChartMetric === 'cost' ? 'border-blue-400 bg-blue-50 dark:border-blue-500 dark:bg-blue-950/30' : 'border-gray-200 bg-white hover:border-blue-200 dark:border-dark-700 dark:bg-dark-900'" @click="realtimeChartMetric = 'cost'">
+                  <span class="block whitespace-nowrap text-[9px] font-bold uppercase text-gray-400">{{ t('admin.ops.realtime.actualDeduction') }}</span>
+                  <span class="mt-0.5 block text-base font-black text-gray-900 dark:text-white">{{ formatRealtimeActualCostTotal(displayRealtimeActualCost) }}</span>
+                </button>
               </div>
 
-              <!-- Row 2: Peak + Average -->
-              <div class="grid grid-cols-2 gap-3">
-                <!-- Peak -->
-                <div>
-                  <div :class="[props.fullscreen ? 'text-xs' : 'text-[10px]', 'font-bold uppercase text-gray-400']">{{ t('admin.ops.peak') }}</div>
-                  <div :class="[props.fullscreen ? 'text-base' : 'text-sm', 'mt-1 space-y-0.5 font-medium text-gray-600 dark:text-gray-400']">
-                    <div class="flex items-baseline gap-1.5">
-                      <span class="font-black text-gray-900 dark:text-white">{{ realtimeRpmPeakLabel }}</span>
-                      <span class="text-xs">RPM</span>
-                    </div>
-                    <div class="flex items-baseline gap-1.5">
-                      <span class="font-black text-gray-900 dark:text-white">{{ realtimeTpsKPeakLabel }}</span>
-                      <span class="text-xs">{{ t('admin.ops.tps') }}</span>
-                    </div>
-                  </div>
+              <div class="rounded-xl border border-gray-100 bg-white px-2.5 pb-1.5 pt-2 dark:border-dark-700 dark:bg-dark-900" data-testid="realtime-traffic-chart">
+                <div class="mb-1 flex items-center justify-between text-[9px] font-semibold text-gray-400">
+                  <span>{{ realtimeChartUnit }}</span>
+                  <span>{{ t('admin.ops.realtime.windowTotal', { window: realtimeWindow }) }}</span>
                 </div>
-
-                <!-- Average -->
-                <div>
-                  <div :class="[props.fullscreen ? 'text-xs' : 'text-[10px]', 'font-bold uppercase text-gray-400']">{{ t('admin.ops.average') }}</div>
-                  <div :class="[props.fullscreen ? 'text-base' : 'text-sm', 'mt-1 space-y-0.5 font-medium text-gray-600 dark:text-gray-400']">
-                    <div class="flex items-baseline gap-1.5">
-                      <span class="font-black text-gray-900 dark:text-white">{{ realtimeRpmAvgLabel }}</span>
-                      <span class="text-xs">RPM</span>
-                    </div>
-                    <div class="flex items-baseline gap-1.5">
-                      <span class="font-black text-gray-900 dark:text-white">{{ realtimeTpsKAvgLabel }}</span>
-                      <span class="text-xs">{{ t('admin.ops.tps') }}</span>
-                    </div>
+                <div v-if="realtimeChartPoints.length" class="relative h-[72px]">
+                  <div class="pointer-events-none absolute inset-0 flex flex-col justify-between py-1">
+                    <span v-for="line in 3" :key="line" class="block border-t border-dashed border-gray-100 dark:border-dark-700"></span>
                   </div>
+                  <svg class="relative h-full w-full overflow-visible" viewBox="0 0 280 72" preserveAspectRatio="none" role="img" :aria-label="realtimeChartUnit">
+                    <path :d="realtimeChartArea" fill="rgba(59, 130, 246, 0.10)" />
+                    <polyline :points="realtimeChartPolyline" fill="none" stroke="#3b82f6" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" vector-effect="non-scaling-stroke" />
+					<circle v-for="(coordinate, index) in realtimeChartCoordinates" :key="`${coordinate.point?.time}-${index}`" :cx="coordinate.x" :cy="coordinate.y" r="1.8" fill="#3b82f6" fill-opacity="0.35">
+					  <title>{{ formatRealtimeChartTime(coordinate.point?.time) }} · {{ formatRealtimeMetric(coordinate.value) }}</title>
+					</circle>
+                  </svg>
+                  <span class="absolute right-1 top-0 rounded bg-white/90 px-1 text-[9px] font-semibold text-blue-600 dark:bg-dark-900/90 dark:text-blue-400">{{ formatRealtimeMetric(realtimeChartMax) }}</span>
                 </div>
-              </div>
-
-              <!-- Animated Pulse Line (Heart Beat Animation) -->
-              <div class="h-8 w-full overflow-hidden opacity-50">
-                <svg class="h-full w-full" viewBox="0 0 280 32" preserveAspectRatio="none">
-                  <path
-                    d="M0 16 Q 20 16, 40 16 T 80 16 T 120 10 T 160 22 T 200 16 T 240 16 T 280 16"
-                    fill="none"
-                    stroke="#3b82f6"
-                    stroke-width="2"
-                    vector-effect="non-scaling-stroke"
-                  >
-                    <animate
-                      attributeName="d"
-                      dur="2s"
-                      repeatCount="indefinite"
-                      values="M0 16 Q 20 16, 40 16 T 80 16 T 120 10 T 160 22 T 200 16 T 240 16 T 280 16;
-                              M0 16 Q 20 16, 40 16 T 80 16 T 120 16 T 160 16 T 200 10 T 240 22 T 280 16;
-                              M0 16 Q 20 16, 40 16 T 80 16 T 120 16 T 160 16 T 200 16 T 240 16 T 280 16"
-                      keyTimes="0;0.5;1"
-                    />
-                  </path>
-                </svg>
+                <div v-else class="flex h-[72px] items-center justify-center text-[10px] text-gray-400">{{ t('admin.ops.realtime.noChartData') }}</div>
+                <div class="mt-0.5 flex justify-between text-[9px] text-gray-400">
+                  <span>{{ realtimeChartStartLabel }}</span>
+                  <span>{{ realtimeChartEndLabel }}</span>
+                </div>
               </div>
             </div>
           </div>

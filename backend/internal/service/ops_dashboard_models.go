@@ -99,6 +99,10 @@ type OpsDashboardOverview struct {
 	RecoveredCount       int64 `json:"recovered_count"`
 
 	TokenConsumed int64 `json:"token_consumed"`
+	// TTFTSampleCount only includes successful usage rows that recorded a
+	// first-token latency. Alert sample gates must not use the broader success
+	// count because non-streaming requests do not have a TTFT observation.
+	TTFTSampleCount int64 `json:"ttft_sample_count"`
 
 	SLA                          float64 `json:"sla"`
 	ErrorRate                    float64 `json:"error_rate"`

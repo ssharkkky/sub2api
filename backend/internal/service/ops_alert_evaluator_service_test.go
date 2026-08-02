@@ -413,6 +413,49 @@ func TestOpsAlertMetricDistinguishesStaleAndUnsupported(t *testing.T) {
 	require.Equal(t, "unsupported_metric", unsupported.ErrorCode)
 }
 
+func TestOpsAlertMetricEvaluatesTTFTPercentilesAndMaxInSeconds(t *testing.T) {
+	now := time.Now().UTC()
+	p95, p99, max := 2400, 5100, 12750
+	svc := &OpsAlertEvaluatorService{opsRepo: &stubOpsRepo{overview: &OpsDashboardOverview{
+		TTFTSampleCount: 37,
+		TTFT:            OpsPercentiles{P95: &p95, P99: &p99, Max: &max},
+	}}}
+
+	for _, tt := range []struct {
+		metric    string
+		threshold float64
+		wantValue float64
+		breached  bool
+	}{
+		{metric: "ttft_p95_seconds", threshold: 3, wantValue: 2.4, breached: false},
+		{metric: "ttft_p99_seconds", threshold: 5, wantValue: 5.1, breached: true},
+		{metric: "ttft_max_seconds", threshold: 10, wantValue: 12.75, breached: true},
+	} {
+		t.Run(tt.metric, func(t *testing.T) {
+			result := svc.evaluateRuleMetric(context.Background(), &OpsAlertRule{
+				MetricType: tt.metric, Operator: ">", Threshold: tt.threshold, MinimumSamples: 20,
+			}, nil, now.Add(-5*time.Minute), now, "", nil, now)
+			require.Equal(t, tt.breached, result.Breached)
+			require.NotNil(t, result.Value)
+			require.InDelta(t, tt.wantValue, *result.Value, 0.0001)
+			require.Equal(t, int64(37), result.SampleCount)
+		})
+	}
+}
+
+func TestOpsAlertMetricTTFTRequiresRealTTFTSamples(t *testing.T) {
+	now := time.Now().UTC()
+	p99 := 5000
+	svc := &OpsAlertEvaluatorService{opsRepo: &stubOpsRepo{overview: &OpsDashboardOverview{
+		SuccessCount: 100, TTFTSampleCount: 0, TTFT: OpsPercentiles{P99: &p99},
+	}}}
+	result := svc.evaluateRuleMetric(context.Background(), &OpsAlertRule{
+		MetricType: "ttft_p99_seconds", Operator: ">", Threshold: 3,
+	}, nil, now.Add(-5*time.Minute), now, "", nil, now)
+	require.Equal(t, OpsAlertEvaluationStatusNoData, result.Status)
+	require.Equal(t, "empty_ttft_window", result.ErrorCode)
+}
+
 func TestResetAlertRuleStateAfterEvaluationGap(t *testing.T) {
 	now := time.Now().UTC()
 	last := now.Add(-3 * time.Minute)

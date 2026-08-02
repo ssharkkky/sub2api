@@ -578,6 +578,33 @@ func (s *OpsAlertEvaluatorService) evaluateRuleMetric(
 		result.Value = float64Ptr(value)
 		dataAsOf := end.UTC()
 		result.DataAsOf = &dataAsOf
+	case "ttft_p95_seconds", "ttft_p99_seconds", "ttft_max_seconds":
+		overview, err := s.opsRepo.GetDashboardOverview(ctx, &OpsDashboardFilter{
+			StartTime: start, EndTime: end, Platform: platform, GroupID: groupID, QueryMode: OpsQueryModeRaw,
+		})
+		if err != nil {
+			return opsAlertMetricEvaluation{Status: OpsAlertEvaluationStatusError, ErrorCode: "ttft_metric_query_failed", ErrorMessage: err.Error()}
+		}
+		if overview == nil || overview.TTFTSampleCount <= 0 {
+			return opsAlertMetricEvaluation{Status: OpsAlertEvaluationStatusNoData, ErrorCode: "empty_ttft_window"}
+		}
+		var milliseconds *int
+		switch metricType {
+		case "ttft_p95_seconds":
+			milliseconds = overview.TTFT.P95
+		case "ttft_p99_seconds":
+			milliseconds = overview.TTFT.P99
+		case "ttft_max_seconds":
+			milliseconds = overview.TTFT.Max
+		}
+		if milliseconds == nil {
+			return opsAlertMetricEvaluation{Status: OpsAlertEvaluationStatusNoData, ErrorCode: "ttft_metric_missing"}
+		}
+		value := float64(*milliseconds) / 1000
+		result.Value = float64Ptr(value)
+		result.SampleCount = overview.TTFTSampleCount
+		dataAsOf := end.UTC()
+		result.DataAsOf = &dataAsOf
 	case "availability_failure_rate", "platform_failure_rate", "provider_failure_rate", "unknown_failure_rate",
 		"platform_capacity_failure_count", "compatibility_error_count", "client_rejected_count",
 		"business_limited_count", "cancelled_count", "security_blocked_count", "recovered_provider_error_count":
@@ -632,6 +659,7 @@ func isSupportedOpsAlertMetric(metricType string) bool {
 		"availability_failure_rate", "platform_failure_rate", "provider_failure_rate", "unknown_failure_rate",
 		"platform_capacity_failure_count", "compatibility_error_count", "client_rejected_count",
 		"business_limited_count", "cancelled_count", "security_blocked_count", "recovered_provider_error_count",
+		"ttft_p95_seconds", "ttft_p99_seconds", "ttft_max_seconds",
 		"cpu_usage_percent", "memory_usage_percent", "concurrency_queue_depth",
 		"group_available_accounts", "group_available_ratio", "account_rate_limited_count",
 		"account_error_count", "account_temp_unscheduled_count", "group_rate_limit_ratio",
