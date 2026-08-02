@@ -15,8 +15,22 @@ var _ OpsRepository = (*stubOpsRepo)(nil)
 type stubOpsRepo struct {
 	OpsRepository
 	overview            *OpsDashboardOverview
+	ttft                *OpsTTFTSummary
 	classificationStats *OpsErrorClassificationStats
 	err                 error
+	ttftErr             error
+	ttftCalls           int
+}
+
+func (s *stubOpsRepo) GetTTFTPercentiles(ctx context.Context, filter *OpsDashboardFilter) (*OpsTTFTSummary, error) {
+	s.ttftCalls++
+	if s.ttftErr != nil {
+		return nil, s.ttftErr
+	}
+	if s.ttft != nil {
+		return s.ttft, nil
+	}
+	return &OpsTTFTSummary{}, nil
 }
 
 func (s *stubOpsRepo) GetErrorClassificationStats(ctx context.Context, filter *OpsDashboardFilter) (*OpsErrorClassificationStats, error) {
@@ -416,9 +430,9 @@ func TestOpsAlertMetricDistinguishesStaleAndUnsupported(t *testing.T) {
 func TestOpsAlertMetricEvaluatesTTFTPercentilesAndMaxInSeconds(t *testing.T) {
 	now := time.Now().UTC()
 	p95, p99, max := 2400, 5100, 12750
-	svc := &OpsAlertEvaluatorService{opsRepo: &stubOpsRepo{overview: &OpsDashboardOverview{
-		TTFTSampleCount: 37,
-		TTFT:            OpsPercentiles{P95: &p95, P99: &p99, Max: &max},
+	svc := &OpsAlertEvaluatorService{opsRepo: &stubOpsRepo{ttft: &OpsTTFTSummary{
+		SampleCount: 37,
+		TTFT:        OpsPercentiles{P95: &p95, P99: &p99, Max: &max},
 	}}}
 
 	for _, tt := range []struct {
@@ -446,14 +460,38 @@ func TestOpsAlertMetricEvaluatesTTFTPercentilesAndMaxInSeconds(t *testing.T) {
 func TestOpsAlertMetricTTFTRequiresRealTTFTSamples(t *testing.T) {
 	now := time.Now().UTC()
 	p99 := 5000
-	svc := &OpsAlertEvaluatorService{opsRepo: &stubOpsRepo{overview: &OpsDashboardOverview{
-		SuccessCount: 100, TTFTSampleCount: 0, TTFT: OpsPercentiles{P99: &p99},
+	svc := &OpsAlertEvaluatorService{opsRepo: &stubOpsRepo{ttft: &OpsTTFTSummary{
+		SampleCount: 0, TTFT: OpsPercentiles{P99: &p99},
 	}}}
 	result := svc.evaluateRuleMetric(context.Background(), &OpsAlertRule{
 		MetricType: "ttft_p99_seconds", Operator: ">", Threshold: 3,
 	}, nil, now.Add(-5*time.Minute), now, "", nil, now)
 	require.Equal(t, OpsAlertEvaluationStatusNoData, result.Status)
 	require.Equal(t, "empty_ttft_window", result.ErrorCode)
+}
+
+func TestOpsAlertMetricTTFTUsesDedicatedQueryAndCachesMatchingWindows(t *testing.T) {
+	now := time.Now().UTC()
+	p99 := 4200
+	repo := &stubOpsRepo{
+		ttft: &OpsTTFTSummary{SampleCount: 12, TTFT: OpsPercentiles{P99: &p99}},
+		// A dashboard-wide query failure must not make the dedicated TTFT metric fail.
+		err: context.DeadlineExceeded,
+	}
+	svc := &OpsAlertEvaluatorService{opsRepo: repo}
+	cache := make(map[opsAlertTTFTCacheKey]opsAlertTTFTCacheEntry)
+	rule := &OpsAlertRule{MetricType: "ttft_p99_seconds", Operator: ">", Threshold: 3}
+
+	first := svc.evaluateRuleMetricWithCache(
+		context.Background(), rule, nil, now.Add(-5*time.Minute), now, "openai", nil, now, cache,
+	)
+	second := svc.evaluateRuleMetricWithCache(
+		context.Background(), rule, nil, now.Add(-5*time.Minute), now, "openai", nil, now, cache,
+	)
+
+	require.Equal(t, OpsAlertEvaluationStatusBreached, first.Status)
+	require.Equal(t, OpsAlertEvaluationStatusBreached, second.Status)
+	require.Equal(t, 1, repo.ttftCalls)
 }
 
 func TestResetAlertRuleStateAfterEvaluationGap(t *testing.T) {

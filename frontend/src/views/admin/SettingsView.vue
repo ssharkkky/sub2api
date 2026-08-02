@@ -10241,7 +10241,9 @@ function findDuplicateDefaultSubscription(
 }
 
 async function saveSettings() {
+  if (saving.value) return;
   saving.value = true;
+  let emailPolicySaved = false;
   try {
     const normalizedTableDefaultPageSize = Math.floor(
       Number(form.table_default_page_size),
@@ -10729,6 +10731,7 @@ async function saveSettings() {
       if (!policySaved) {
         return;
       }
+      emailPolicySaved = true;
     }
 
     const updated = await settingsStepUp.run(() =>
@@ -10811,6 +10814,14 @@ async function saveSettings() {
       appStore.showSuccess(t("admin.settings.settingsSaved"));
     }
   } catch (error: unknown) {
+    if (emailPolicySaved) {
+      appStore.showError(
+        t("admin.settings.emailPolicy.partialSaveError", {
+          error: extractApiErrorMessage(error, t("admin.settings.failedToSave")),
+        }),
+      );
+      return;
+    }
     // 用户取消 step-up 验证：静默返回，不弹错误
     if (isStepUpCancelled(error)) {
       return;

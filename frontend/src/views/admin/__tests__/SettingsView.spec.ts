@@ -776,6 +776,45 @@ describe("admin SettingsView payment visible method controls", () => {
     expect(updateSettings).not.toHaveBeenCalled();
   });
 
+  it("prevents concurrent combined email saves", async () => {
+    let resolvePolicy!: (saved: boolean) => void;
+    emailPolicySave.mockReturnValueOnce(
+      new Promise((resolve) => {
+        resolvePolicy = resolve;
+      }),
+    );
+    const wrapper = mountView();
+    await flushPromises();
+    await openEmailTab(wrapper);
+
+    const form = wrapper.find("form");
+    await form.trigger("submit.prevent");
+    await form.trigger("submit.prevent");
+
+    expect(emailPolicySave).toHaveBeenCalledTimes(1);
+    expect(updateSettings).not.toHaveBeenCalled();
+
+    resolvePolicy(true);
+    await flushPromises();
+    expect(updateSettings).toHaveBeenCalledTimes(1);
+  });
+
+  it("reports when the email policy saved but the remaining settings failed", async () => {
+    updateSettings.mockRejectedValueOnce(new Error("smtp update failed"));
+    const wrapper = mountView();
+    await flushPromises();
+    await openEmailTab(wrapper);
+
+    await wrapper.find("form").trigger("submit.prevent");
+    await flushPromises();
+
+    expect(emailPolicySave).toHaveBeenCalledTimes(1);
+    expect(showError).toHaveBeenCalledWith(
+      "admin.settings.emailPolicy.partialSaveError",
+    );
+    expect(showSuccess).not.toHaveBeenCalled();
+  });
+
   it("renders panel rate limit card and saves settings", async () => {
     getPanelRateLimitSettings.mockClear();
     updatePanelRateLimitSettings.mockClear();

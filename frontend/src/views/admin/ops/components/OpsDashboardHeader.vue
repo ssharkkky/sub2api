@@ -287,6 +287,7 @@ const totalTokensLabel = computed(() => formatNumber(overview.value?.token_consu
 
 const realtimeTrafficSummary = ref<OpsRealtimeTrafficSummary | null>(null)
 const realtimeTrafficLoading = ref(false)
+let realtimeTrafficRequestID = 0
 
 function makeZeroRealtimeTrafficSummary(): OpsRealtimeTrafficSummary {
   const now = new Date().toISOString()
@@ -305,23 +306,28 @@ function makeZeroRealtimeTrafficSummary(): OpsRealtimeTrafficSummary {
 }
 
 async function loadRealtimeTrafficSummary() {
-  if (realtimeTrafficLoading.value) return
+  const requestID = ++realtimeTrafficRequestID
   if (!adminSettingsStore.opsRealtimeMonitoringEnabled) {
     realtimeTrafficSummary.value = makeZeroRealtimeTrafficSummary()
+    realtimeTrafficLoading.value = false
     return
   }
   realtimeTrafficLoading.value = true
   try {
     const res = await opsAPI.getRealtimeTrafficSummary(realtimeWindow.value, props.platform, props.groupId)
+    if (requestID !== realtimeTrafficRequestID) return
     if (res && res.enabled === false) {
       adminSettingsStore.setOpsRealtimeMonitoringEnabledLocal(false)
     }
     realtimeTrafficSummary.value = res?.summary ?? null
   } catch (err) {
+    if (requestID !== realtimeTrafficRequestID) return
     console.error('[OpsDashboardHeader] Failed to load realtime traffic summary', err)
     realtimeTrafficSummary.value = null
   } finally {
-    realtimeTrafficLoading.value = false
+    if (requestID === realtimeTrafficRequestID) {
+      realtimeTrafficLoading.value = false
+    }
   }
 }
 
@@ -338,12 +344,14 @@ watch(
   (enabled) => {
     if (!enabled) {
       // Keep UI stable when realtime monitoring is turned off.
+      realtimeTrafficRequestID++
+      realtimeTrafficLoading.value = false
       realtimeTrafficSummary.value = makeZeroRealtimeTrafficSummary()
     } else {
       loadRealtimeTrafficSummary()
     }
   },
-  { immediate: true }
+  { immediate: false }
 )
 
 // Realtime traffic refresh follows the parent (OpsDashboard) refresh cadence.

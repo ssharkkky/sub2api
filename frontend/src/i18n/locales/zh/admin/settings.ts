@@ -886,6 +886,7 @@ export default {
         legacyUnverified: '历史未验证',
         notReady: '邮件通道策略尚未加载，请刷新后重试',
         saveSuccess: '发件通道策略已保存',
+        partialSaveError: '邮件通道策略已保存，但其他邮件设置保存失败：{error}',
         subscriptionExpiry: {
           title: '订阅到期提醒',
           hint: '开启后，在订阅到期前 7 天、3 天和 1 天分别向用户账户邮箱发送提醒。'

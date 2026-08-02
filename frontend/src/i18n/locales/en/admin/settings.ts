@@ -891,6 +891,7 @@ export default {
         legacyUnverified: 'Legacy unverified',
         notReady: 'Mail channel policy is not loaded yet. Refresh and try again.',
         saveSuccess: 'Mail channel policy saved',
+        partialSaveError: 'Mail channel policy was saved, but the other email settings failed to save: {error}',
         subscriptionExpiry: {
           title: 'Subscription expiry reminders',
           hint: "When enabled, reminders are sent to the user's account email 7, 3, and 1 day before expiry."

@@ -29,6 +29,12 @@ type OpsPercentiles struct {
 	Max *int `json:"max_ms"`
 }
 
+// OpsTTFTSummary is the lightweight alert-evaluation view of first-token latency.
+type OpsTTFTSummary struct {
+	TTFT        OpsPercentiles
+	SampleCount int64
+}
+
 // OpsHealthScoreBreakdown makes the backend-owned health score explainable.
 // Component weights are expressed as a fraction of the final 100-point score.
 type OpsHealthScoreBreakdown struct {

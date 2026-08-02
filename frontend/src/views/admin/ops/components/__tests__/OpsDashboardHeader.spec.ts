@@ -3,6 +3,7 @@ import { createPinia, setActivePinia } from 'pinia'
 import { flushPromises, shallowMount } from '@vue/test-utils'
 import OpsDashboardHeader from '../OpsDashboardHeader.vue'
 import type { OpsDashboardOverview } from '@/api/admin/ops'
+import { useAdminSettingsStore } from '@/stores/adminSettings'
 
 const { getAllGroups, getRealtimeTrafficSummary } = vi.hoisted(() => ({
   getAllGroups: vi.fn(),
@@ -90,6 +91,7 @@ function mountHeader(overview: OpsDashboardOverview) {
 describe('OpsDashboardHeader health score breakdown', () => {
   beforeEach(() => {
     setActivePinia(createPinia())
+    useAdminSettingsStore().setOpsRealtimeMonitoringEnabledLocal(true)
     getAllGroups.mockReset().mockResolvedValue([])
     getRealtimeTrafficSummary.mockReset().mockResolvedValue({
       enabled: true,
@@ -145,6 +147,74 @@ describe('OpsDashboardHeader health score breakdown', () => {
       sort: 'ttft_desc',
       has_ttft: true
     })
+  })
+
+  it('keeps the latest realtime result when filters change during an in-flight request', async () => {
+    let resolveInitial!: (value: unknown) => void
+    let resolveFiltered!: (value: unknown) => void
+    getRealtimeTrafficSummary
+      .mockImplementationOnce(() => new Promise((resolve) => { resolveInitial = resolve }))
+      .mockImplementationOnce(() => new Promise((resolve) => { resolveFiltered = resolve }))
+
+    const wrapper = mountHeader(makeOverview())
+    await flushPromises()
+    expect(getRealtimeTrafficSummary).toHaveBeenCalledTimes(1)
+
+    await wrapper.setProps({ platform: 'openai' })
+    await flushPromises()
+    expect(getRealtimeTrafficSummary).toHaveBeenCalledTimes(2)
+
+    resolveFiltered({
+      enabled: true,
+      summary: {
+        qps: { current: 4, peak: 4, avg: 4 },
+        tps: { current: 1000, peak: 1000, avg: 1000 },
+        actual_cost_total: 2,
+        points: []
+      }
+    })
+    await flushPromises()
+    expect(wrapper.get('[data-testid="realtime-metric-rpm"]').text()).toContain('240.0')
+
+    resolveInitial({
+      enabled: true,
+      summary: {
+        qps: { current: 1, peak: 1, avg: 1 },
+        tps: { current: 500, peak: 500, avg: 500 },
+        actual_cost_total: 1,
+        points: []
+      }
+    })
+    await flushPromises()
+
+    expect(wrapper.get('[data-testid="realtime-metric-rpm"]').text()).toContain('240.0')
+  })
+
+  it('does not let an in-flight response overwrite the disabled realtime state', async () => {
+    let resolveRequest!: (value: unknown) => void
+    getRealtimeTrafficSummary.mockImplementationOnce(
+      () => new Promise((resolve) => { resolveRequest = resolve })
+    )
+    const wrapper = mountHeader(makeOverview())
+    await flushPromises()
+    expect(getRealtimeTrafficSummary).toHaveBeenCalledTimes(1)
+
+    useAdminSettingsStore().setOpsRealtimeMonitoringEnabledLocal(false)
+    await flushPromises()
+    expect(wrapper.get('[data-testid="realtime-metric-rpm"]').text()).toContain('0.0')
+
+    resolveRequest({
+      enabled: true,
+      summary: {
+        qps: { current: 5, peak: 5, avg: 5 },
+        tps: { current: 1000, peak: 1000, avg: 1000 },
+        actual_cost_total: 2,
+        points: []
+      }
+    })
+    await flushPromises()
+
+    expect(wrapper.get('[data-testid="realtime-metric-rpm"]').text()).toContain('0.0')
   })
 
   it('renders backend-provided deduction reasons instead of the legacy smart diagnosis', async () => {
