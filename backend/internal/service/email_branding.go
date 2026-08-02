@@ -119,7 +119,7 @@ func buildBrandedEmailDocument(options brandedEmailDocumentOptions) string {
                   </td>
                   <td>
                     <div class="brand-name">` + options.Brand + `</div>
-                    <div class="brand-tagline">AI API infrastructure</div>
+                    <div class="brand-tagline">Yet another API platform</div>
                   </td>
                 </tr>
               </table>

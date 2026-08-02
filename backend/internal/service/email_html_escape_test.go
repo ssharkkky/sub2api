@@ -31,6 +31,8 @@ func TestBuildVerifyCodeEmailBody_EscapesSiteName(t *testing.T) {
 		assert.Contains(t, body, `class="brand-name">My Site</div>`)
 		assert.Contains(t, body, `class="brand-mark" role="img" aria-label="TokenSupply"`)
 		assert.Contains(t, body, `brand-mark-bar-wide`)
+		assert.Contains(t, body, "Yet another API platform")
+		assert.NotContains(t, body, "AI API infrastructure")
 		assert.Contains(t, body, "654321")
 		assert.Contains(t, body, "#2563eb")
 		assert.NotContains(t, body, "linear-gradient")
