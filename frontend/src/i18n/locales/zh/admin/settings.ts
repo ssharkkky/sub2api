@@ -558,6 +558,7 @@ export default {
       customerService: {
         title: '在线客服',
         description: '配置 Dashboard 顶栏中的客服入口和二维码弹窗',
+        enabled: '显示客服入口',
         afterSalesTitle: '售后客服',
         officialGroupTitle: '官方群组',
         cardTitle: '卡片标题',

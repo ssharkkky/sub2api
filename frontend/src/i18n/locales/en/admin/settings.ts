@@ -563,6 +563,7 @@ export default {
       customerService: {
         title: 'Online Support',
         description: 'Configure the support entry and QR code dialog in the Dashboard header',
+        enabled: 'Show support entry',
         afterSalesTitle: 'Customer Service',
         officialGroupTitle: 'Official Group',
         cardTitle: 'Card Title',

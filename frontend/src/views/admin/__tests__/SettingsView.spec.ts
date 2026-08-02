@@ -391,6 +391,7 @@ const baseSettingsResponse = {
   site_subtitle: "",
   api_base_url: "",
   contact_info: "",
+  customer_service_enabled: true,
   doc_url: "",
   home_content: "",
   compact_home_enabled: false,
@@ -723,6 +724,26 @@ describe("admin SettingsView payment visible method controls", () => {
       expect.objectContaining({ compact_home_enabled: true }),
     );
     expect(emailPolicySave).not.toHaveBeenCalled();
+  });
+
+  it("loads and saves the customer service header switch", async () => {
+    getSettings.mockResolvedValue({
+      ...baseSettingsResponse,
+      customer_service_enabled: false,
+    });
+    const wrapper = mountView();
+    await flushPromises();
+
+    const toggle = wrapper.get('[data-testid="customer-service-enabled-toggle"]');
+    expect((toggle.element as HTMLInputElement).checked).toBe(false);
+
+    await toggle.setValue(true);
+    await wrapper.find("form").trigger("submit.prevent");
+    await flushPromises();
+
+    expect(updateSettings).toHaveBeenCalledWith(
+      expect.objectContaining({ customer_service_enabled: true }),
+    );
   });
 
   it("uses the bottom settings button to save the email policy on the email tab", async () => {
