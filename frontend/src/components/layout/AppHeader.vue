@@ -37,9 +37,6 @@
           :custom-text="publicSettings?.customer_service_text"
         />
 
-        <!-- Announcement Bell -->
-        <AnnouncementBell v-if="user" />
-
         <!-- Docs Link -->
         <a
           v-if="docUrl"
@@ -61,6 +58,9 @@
           <Icon name="grid" size="sm" />
           <span class="hidden sm:inline">{{ t('nav.modelPlaza') }}</span>
         </router-link>
+
+        <!-- Announcement Bell -->
+        <AnnouncementBell v-if="user" />
 
         <!-- Language Switcher -->
         <LocaleSwitcher />
