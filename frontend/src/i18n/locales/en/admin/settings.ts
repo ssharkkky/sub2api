@@ -888,6 +888,7 @@ export default {
         emailPlaceholder: "name{'@'}example.com",
         noRecipients: 'No recipients',
         legacyUnverified: 'Legacy unverified',
+        notReady: 'Mail channel policy is not loaded yet. Refresh and try again.',
         saveSuccess: 'Mail channel policy saved',
         subscriptionExpiry: {
           title: 'Subscription expiry reminders',

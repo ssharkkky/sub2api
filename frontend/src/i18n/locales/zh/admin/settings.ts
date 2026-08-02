@@ -883,6 +883,7 @@ export default {
         emailPlaceholder: "name{'@'}example.com",
         noRecipients: '暂无收件人',
         legacyUnverified: '历史未验证',
+        notReady: '邮件通道策略尚未加载，请刷新后重试',
         saveSuccess: '发件通道策略已保存',
         subscriptionExpiry: {
           title: '订阅到期提醒',

@@ -355,6 +355,21 @@ const ImageUploadStub = defineComponent({
   },
 });
 
+const emailPolicySave = vi.fn<
+  (options?: { announceSuccess?: boolean }) => Promise<boolean>
+>();
+const EmailNotificationPolicyCardStub = defineComponent({
+  setup(_, { expose }) {
+    expose({ savePolicy: emailPolicySave });
+    return () => h("div", { "data-testid": "email-policy-card-stub" });
+  },
+});
+
+beforeEach(() => {
+  emailPolicySave.mockReset();
+  emailPolicySave.mockResolvedValue(true);
+});
+
 const baseSettingsResponse = {
   registration_enabled: true,
   email_verify_enabled: false,
@@ -543,7 +558,7 @@ function mountView() {
         ProxySelector: true,
         ImageUpload: ImageUploadStub,
         BackupSettings: true,
-        EmailNotificationPolicyCard: true,
+        EmailNotificationPolicyCard: EmailNotificationPolicyCardStub,
       },
     },
   });
@@ -586,6 +601,16 @@ async function openUsersTab(wrapper: ReturnType<typeof mountView>) {
 
   expect(usersTabButton).toBeDefined();
   await usersTabButton?.trigger("click");
+  await flushPromises();
+}
+
+async function openEmailTab(wrapper: ReturnType<typeof mountView>) {
+  const emailTabButton = wrapper
+    .findAll("button")
+    .find((node) => node.text().includes("admin.settings.tabs.email"));
+
+  expect(emailTabButton).toBeDefined();
+  await emailTabButton?.trigger("click");
   await flushPromises();
 }
 
@@ -697,6 +722,37 @@ describe("admin SettingsView payment visible method controls", () => {
     expect(updateSettings).toHaveBeenCalledWith(
       expect.objectContaining({ compact_home_enabled: true }),
     );
+    expect(emailPolicySave).not.toHaveBeenCalled();
+  });
+
+  it("uses the bottom settings button to save the email policy on the email tab", async () => {
+    const wrapper = mountView();
+    await flushPromises();
+    await openEmailTab(wrapper);
+
+    await wrapper.find("form").trigger("submit.prevent");
+    await flushPromises();
+
+    expect(emailPolicySave).toHaveBeenCalledWith({
+      announceSuccess: false,
+    });
+    expect(updateSettings).toHaveBeenCalledTimes(1);
+    expect(emailPolicySave.mock.invocationCallOrder[0]).toBeLessThan(
+      updateSettings.mock.invocationCallOrder[0],
+    );
+  });
+
+  it("does not report a general save when the email policy save fails", async () => {
+    emailPolicySave.mockResolvedValue(false);
+    const wrapper = mountView();
+    await flushPromises();
+    await openEmailTab(wrapper);
+
+    await wrapper.find("form").trigger("submit.prevent");
+    await flushPromises();
+
+    expect(emailPolicySave).toHaveBeenCalledTimes(1);
+    expect(updateSettings).not.toHaveBeenCalled();
   });
 
   it("renders panel rate limit card and saves settings", async () => {

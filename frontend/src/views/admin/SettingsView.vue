@@ -8017,7 +8017,7 @@
             </div>
           </div>
 
-          <EmailNotificationPolicyCard />
+          <EmailNotificationPolicyCard ref="emailNotificationPolicyCardRef" />
 
           <EmailTemplateEditor />
 
@@ -8278,6 +8278,9 @@ const { copyToClipboard } = useClipboard();
 const loading = ref(true);
 const loadFailed = ref(false);
 const saving = ref(false);
+const emailNotificationPolicyCardRef = ref<InstanceType<
+  typeof EmailNotificationPolicyCard
+> | null>(null);
 const testingSmtp = ref(false);
 const sendingTestEmail = ref(false);
 const smtpPasswordManuallyEdited = ref(false);
@@ -10703,6 +10706,20 @@ async function saveSettings() {
 
     payload.default_platform_quotas = sanitizePlatformQuotasMap(form.default_platform_quotas);
     appendAuthSourceDefaultsToUpdateRequest(payload, authSourceDefaults);
+
+    if (activeTab.value === "email") {
+      const policyCard = emailNotificationPolicyCardRef.value;
+      if (!policyCard) {
+        appStore.showError(t("admin.settings.emailPolicy.notReady"));
+        return;
+      }
+      const policySaved = await policyCard.savePolicy({
+        announceSuccess: false,
+      });
+      if (!policySaved) {
+        return;
+      }
+    }
 
     const updated = await settingsStepUp.run(() =>
       adminAPI.settings.updateSettings(payload),
