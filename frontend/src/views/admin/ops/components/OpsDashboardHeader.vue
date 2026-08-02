@@ -351,43 +351,43 @@ watch(
 
 // no-op: parent controls refresh cadence
 
-const displayRealTimeQps = computed(() => {
+const displayRealTimeRpm = computed(() => {
   const v = realtimeTrafficSummary.value?.qps?.current
-  return typeof v === 'number' && Number.isFinite(v) ? v : 0
+  return typeof v === 'number' && Number.isFinite(v) ? v * 60 : 0
 })
 
-const displayRealTimeTps = computed(() => {
+const displayRealTimeTpsK = computed(() => {
   const v = realtimeTrafficSummary.value?.tps?.current
-  return typeof v === 'number' && Number.isFinite(v) ? v : 0
+  return typeof v === 'number' && Number.isFinite(v) ? v / 1000 : 0
 })
 
-const realtimeQpsPeakLabel = computed(() => {
+const realtimeRpmPeakLabel = computed(() => {
   const v = realtimeTrafficSummary.value?.qps?.peak
-  return typeof v === 'number' && Number.isFinite(v) ? v.toFixed(1) : '-'
+  return typeof v === 'number' && Number.isFinite(v) ? (v * 60).toFixed(1) : '-'
 })
-const realtimeTpsPeakLabel = computed(() => {
+const realtimeTpsKPeakLabel = computed(() => {
   const v = realtimeTrafficSummary.value?.tps?.peak
-  return typeof v === 'number' && Number.isFinite(v) ? v.toFixed(1) : '-'
+  return typeof v === 'number' && Number.isFinite(v) ? (v / 1000).toFixed(2) : '-'
 })
-const realtimeQpsAvgLabel = computed(() => {
+const realtimeRpmAvgLabel = computed(() => {
   const v = realtimeTrafficSummary.value?.qps?.avg
-  return typeof v === 'number' && Number.isFinite(v) ? v.toFixed(1) : '-'
+  return typeof v === 'number' && Number.isFinite(v) ? (v * 60).toFixed(1) : '-'
 })
-const realtimeTpsAvgLabel = computed(() => {
+const realtimeTpsKAvgLabel = computed(() => {
   const v = realtimeTrafficSummary.value?.tps?.avg
-  return typeof v === 'number' && Number.isFinite(v) ? v.toFixed(1) : '-'
+  return typeof v === 'number' && Number.isFinite(v) ? (v / 1000).toFixed(2) : '-'
 })
 
-const qpsAvgLabel = computed(() => {
+const rpmAvgLabel = computed(() => {
   const v = overview.value?.qps?.avg
   if (typeof v !== 'number') return '-'
-  return v.toFixed(1)
+  return (v * 60).toFixed(1)
 })
 
-const tpsAvgLabel = computed(() => {
+const tpsKAvgLabel = computed(() => {
   const v = overview.value?.tps?.avg
   if (typeof v !== 'number') return '-'
-  return v.toFixed(1)
+  return (v / 1000).toFixed(2)
 })
 
 const slaPercent = computed(() => {
@@ -434,6 +434,11 @@ const ttftP90Ms = computed(() => overview.value?.ttft?.p90_ms ?? null)
 const ttftP50Ms = computed(() => overview.value?.ttft?.p50_ms ?? null)
 const ttftAvgMs = computed(() => overview.value?.ttft?.avg_ms ?? null)
 const ttftMaxMs = computed(() => overview.value?.ttft?.max_ms ?? null)
+
+function formatTTFTSeconds(milliseconds: number | null): string {
+  if (typeof milliseconds !== 'number' || !Number.isFinite(milliseconds)) return '-'
+  return (milliseconds / 1000).toFixed(2)
+}
 
 // --- Health Score & Diagnosis (primary) ---
 
@@ -1133,11 +1138,11 @@ function handleToolbarRefresh() {
                 <div :class="[props.fullscreen ? 'text-xs' : 'text-[10px]', 'font-bold uppercase text-gray-400']">{{ t('admin.ops.current') }}</div>
                 <div class="mt-1 flex flex-wrap items-baseline gap-x-4 gap-y-2">
                   <div class="flex items-baseline gap-1.5">
-                    <span :class="[props.fullscreen ? 'text-4xl' : 'text-xl sm:text-2xl', 'font-black text-gray-900 dark:text-white']">{{ displayRealTimeQps.toFixed(1) }}</span>
-                    <span :class="[props.fullscreen ? 'text-sm' : 'text-xs', 'font-bold text-gray-500']">QPS</span>
+                    <span :class="[props.fullscreen ? 'text-4xl' : 'text-xl sm:text-2xl', 'font-black text-gray-900 dark:text-white']">{{ displayRealTimeRpm.toFixed(1) }}</span>
+                    <span :class="[props.fullscreen ? 'text-sm' : 'text-xs', 'font-bold text-gray-500']">RPM</span>
                   </div>
                   <div class="flex items-baseline gap-1.5">
-                    <span :class="[props.fullscreen ? 'text-4xl' : 'text-xl sm:text-2xl', 'font-black text-gray-900 dark:text-white']">{{ displayRealTimeTps.toFixed(1) }}</span>
+                    <span :class="[props.fullscreen ? 'text-4xl' : 'text-xl sm:text-2xl', 'font-black text-gray-900 dark:text-white']">{{ displayRealTimeTpsK.toFixed(2) }}</span>
                     <span :class="[props.fullscreen ? 'text-sm' : 'text-xs', 'font-bold text-gray-500']">{{ t('admin.ops.tps') }}</span>
                   </div>
                 </div>
@@ -1150,11 +1155,11 @@ function handleToolbarRefresh() {
                   <div :class="[props.fullscreen ? 'text-xs' : 'text-[10px]', 'font-bold uppercase text-gray-400']">{{ t('admin.ops.peak') }}</div>
                   <div :class="[props.fullscreen ? 'text-base' : 'text-sm', 'mt-1 space-y-0.5 font-medium text-gray-600 dark:text-gray-400']">
                     <div class="flex items-baseline gap-1.5">
-                      <span class="font-black text-gray-900 dark:text-white">{{ realtimeQpsPeakLabel }}</span>
-                      <span class="text-xs">QPS</span>
+                      <span class="font-black text-gray-900 dark:text-white">{{ realtimeRpmPeakLabel }}</span>
+                      <span class="text-xs">RPM</span>
                     </div>
                     <div class="flex items-baseline gap-1.5">
-                      <span class="font-black text-gray-900 dark:text-white">{{ realtimeTpsPeakLabel }}</span>
+                      <span class="font-black text-gray-900 dark:text-white">{{ realtimeTpsKPeakLabel }}</span>
                       <span class="text-xs">{{ t('admin.ops.tps') }}</span>
                     </div>
                   </div>
@@ -1165,11 +1170,11 @@ function handleToolbarRefresh() {
                   <div :class="[props.fullscreen ? 'text-xs' : 'text-[10px]', 'font-bold uppercase text-gray-400']">{{ t('admin.ops.average') }}</div>
                   <div :class="[props.fullscreen ? 'text-base' : 'text-sm', 'mt-1 space-y-0.5 font-medium text-gray-600 dark:text-gray-400']">
                     <div class="flex items-baseline gap-1.5">
-                      <span class="font-black text-gray-900 dark:text-white">{{ realtimeQpsAvgLabel }}</span>
-                      <span class="text-xs">QPS</span>
+                      <span class="font-black text-gray-900 dark:text-white">{{ realtimeRpmAvgLabel }}</span>
+                      <span class="text-xs">RPM</span>
                     </div>
                     <div class="flex items-baseline gap-1.5">
-                      <span class="font-black text-gray-900 dark:text-white">{{ realtimeTpsAvgLabel }}</span>
+                      <span class="font-black text-gray-900 dark:text-white">{{ realtimeTpsKAvgLabel }}</span>
                       <span class="text-xs">{{ t('admin.ops.tps') }}</span>
                     </div>
                   </div>
@@ -1232,11 +1237,11 @@ function handleToolbarRefresh() {
             </div>
             <div class="flex justify-between">
               <span class="text-gray-500">{{ t('admin.ops.avgQps') }}:</span>
-              <span class="font-bold text-gray-900 dark:text-white">{{ qpsAvgLabel }}</span>
+              <span class="font-bold text-gray-900 dark:text-white">{{ rpmAvgLabel }}</span>
             </div>
             <div class="flex justify-between">
               <span class="text-gray-500">{{ t('admin.ops.avgTps') }}:</span>
-              <span class="font-bold text-gray-900 dark:text-white">{{ tpsAvgLabel }}</span>
+              <span class="font-bold text-gray-900 dark:text-white">{{ tpsKAvgLabel }}</span>
             </div>
           </div>
         </div>
@@ -1324,7 +1329,7 @@ function handleToolbarRefresh() {
         </div>
 
         <!-- Card 5: TTFT -->
-        <div class="rounded-2xl bg-gray-50 p-4 dark:bg-dark-900" style="order: 5;">
+        <div class="rounded-2xl bg-gray-50 p-4 dark:bg-dark-900" data-testid="ttft-card" style="order: 5;">
           <div class="flex items-center justify-between">
             <div class="flex items-center gap-1">
               <span class="text-[10px] font-bold uppercase text-gray-400">TTFT</span>
@@ -1333,43 +1338,44 @@ function handleToolbarRefresh() {
             <button
               v-if="!props.fullscreen"
               class="text-[10px] font-bold text-blue-500 hover:underline"
+              data-testid="ttft-details-button"
               type="button"
-              @click="openDetails({ title: t('admin.ops.ttftLabel'), sort: 'duration_desc' })"
+              @click="openDetails({ title: t('admin.ops.ttftLabel'), kind: 'success', sort: 'ttft_desc', has_ttft: true })"
             >
               {{ t('admin.ops.requestDetails.details') }}
             </button>
           </div>
           <div class="mt-2 flex items-baseline gap-2">
             <div class="text-3xl font-black" :class="getThresholdColorClass(getTTFTThresholdLevel(ttftP99Ms))">
-              {{ ttftP99Ms ?? '-' }}
+              {{ formatTTFTSeconds(ttftP99Ms) }}
             </div>
-            <span class="text-xs font-bold text-gray-400">ms (P99)</span>
+            <span class="text-xs font-bold text-gray-400">s (P99)</span>
           </div>
           <div class="mt-3 grid grid-cols-1 gap-x-3 gap-y-1 text-xs 2xl:grid-cols-2">
             <div class="flex items-baseline gap-1 whitespace-nowrap">
               <span class="text-gray-500">P95:</span>
-              <span class="font-bold" :class="getThresholdColorClass(getTTFTThresholdLevel(ttftP95Ms))">{{ ttftP95Ms ?? '-' }}</span>
-              <span class="text-gray-400">ms</span>
+              <span class="font-bold" :class="getThresholdColorClass(getTTFTThresholdLevel(ttftP95Ms))">{{ formatTTFTSeconds(ttftP95Ms) }}</span>
+              <span class="text-gray-400">s</span>
             </div>
             <div class="flex items-baseline gap-1 whitespace-nowrap">
               <span class="text-gray-500">P90:</span>
-              <span class="font-bold" :class="getThresholdColorClass(getTTFTThresholdLevel(ttftP90Ms))">{{ ttftP90Ms ?? '-' }}</span>
-              <span class="text-gray-400">ms</span>
+              <span class="font-bold" :class="getThresholdColorClass(getTTFTThresholdLevel(ttftP90Ms))">{{ formatTTFTSeconds(ttftP90Ms) }}</span>
+              <span class="text-gray-400">s</span>
             </div>
             <div class="flex items-baseline gap-1 whitespace-nowrap">
               <span class="text-gray-500">P50:</span>
-              <span class="font-bold" :class="getThresholdColorClass(getTTFTThresholdLevel(ttftP50Ms))">{{ ttftP50Ms ?? '-' }}</span>
-              <span class="text-gray-400">ms</span>
+              <span class="font-bold" :class="getThresholdColorClass(getTTFTThresholdLevel(ttftP50Ms))">{{ formatTTFTSeconds(ttftP50Ms) }}</span>
+              <span class="text-gray-400">s</span>
             </div>
             <div class="flex items-baseline gap-1 whitespace-nowrap">
               <span class="text-gray-500">Avg:</span>
-              <span class="font-bold" :class="getThresholdColorClass(getTTFTThresholdLevel(ttftAvgMs))">{{ ttftAvgMs ?? '-' }}</span>
-              <span class="text-gray-400">ms</span>
+              <span class="font-bold" :class="getThresholdColorClass(getTTFTThresholdLevel(ttftAvgMs))">{{ formatTTFTSeconds(ttftAvgMs) }}</span>
+              <span class="text-gray-400">s</span>
             </div>
             <div class="flex items-baseline gap-1 whitespace-nowrap">
               <span class="text-gray-500">Max:</span>
-              <span class="font-bold" :class="getThresholdColorClass(getTTFTThresholdLevel(ttftMaxMs))">{{ ttftMaxMs ?? '-' }}</span>
-              <span class="text-gray-400">ms</span>
+              <span class="font-bold" :class="getThresholdColorClass(getTTFTThresholdLevel(ttftMaxMs))">{{ formatTTFTSeconds(ttftMaxMs) }}</span>
+              <span class="text-gray-400">s</span>
             </div>
           </div>
         </div>

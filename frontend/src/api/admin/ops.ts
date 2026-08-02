@@ -151,7 +151,7 @@ export interface OpsThroughputTrendResponse {
 
 export type OpsRequestKind = 'success' | 'error'
 export type OpsRequestDetailsKind = OpsRequestKind | 'all'
-export type OpsRequestDetailsSort = 'created_at_desc' | 'duration_desc'
+export type OpsRequestDetailsSort = 'created_at_desc' | 'duration_desc' | 'ttft_desc' | 'ttft_asc'
 
 export interface OpsRequestDetail {
   kind: OpsRequestKind
@@ -161,6 +161,7 @@ export interface OpsRequestDetail {
   platform?: string
   model?: string
   duration_ms?: number | null
+  first_token_ms?: number | null
   status_code?: number | null
 
   error_id?: number | null
@@ -196,6 +197,7 @@ export interface OpsRequestDetailsParams {
 
   min_duration_ms?: number
   max_duration_ms?: number
+  has_ttft?: boolean
 
   sort?: OpsRequestDetailsSort
 

@@ -97,6 +97,44 @@ describe('OpsDashboardHeader health score breakdown', () => {
     })
   })
 
+  it('shows RPM, K TPS and two-decimal TTFT seconds and opens TTFT-sorted details', async () => {
+    getRealtimeTrafficSummary.mockResolvedValue({
+      enabled: true,
+      summary: {
+        qps: { current: 2, peak: 3, avg: 1.5 },
+        tps: { current: 12345, peak: 20000, avg: 10000 }
+      }
+    })
+    const wrapper = mountHeader(makeOverview({
+      qps: { current: 2, peak: 3, avg: 1.5 },
+      tps: { current: 12345, peak: 20000, avg: 10000 },
+      ttft: {
+        p99_ms: 1234,
+        p95_ms: 1000,
+        p90_ms: 900,
+        p50_ms: 500,
+        avg_ms: 750,
+        max_ms: 2345
+      }
+    }))
+    await flushPromises()
+
+    expect(wrapper.text()).toContain('120.0')
+    expect(wrapper.text()).toContain('12.35')
+    expect(wrapper.text()).toContain('RPM')
+    expect(wrapper.get('[data-testid="ttft-card"]').text()).toContain('1.23')
+    expect(wrapper.get('[data-testid="ttft-card"]').text()).toContain('2.35')
+    expect(wrapper.get('[data-testid="ttft-card"]').text()).toContain('s (P99)')
+
+    await wrapper.get('[data-testid="ttft-details-button"]').trigger('click')
+    expect(wrapper.emitted('openRequestDetails')?.at(-1)?.[0]).toEqual({
+      title: 'admin.ops.ttftLabel',
+      kind: 'success',
+      sort: 'ttft_desc',
+      has_ttft: true
+    })
+  })
+
   it('renders backend-provided deduction reasons instead of the legacy smart diagnosis', async () => {
     const wrapper = mountHeader(makeOverview({
       health_score: 94,
