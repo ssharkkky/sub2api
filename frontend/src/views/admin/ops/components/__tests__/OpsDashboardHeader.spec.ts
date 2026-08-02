@@ -129,7 +129,7 @@ describe('OpsDashboardHeader health score breakdown', () => {
     expect(wrapper.text()).toContain('RPM')
 	expect(wrapper.get('[data-testid="realtime-traffic-card"]').text()).toContain('K token/s')
 	expect(wrapper.get('[data-testid="realtime-metric-cost"]').text()).toContain('$1.23')
-	expect(wrapper.get('[data-testid="realtime-traffic-chart"] polyline').attributes('points')).toContain('280.00,8.00')
+	expect(wrapper.get('[data-testid="realtime-traffic-chart"] polyline').attributes('points')).toContain('720.00,10.00')
 	expect(wrapper.find('[data-testid="realtime-traffic-chart"] animate').exists()).toBe(false)
 
 	await wrapper.get('[data-testid="realtime-metric-cost"]').trigger('click')

@@ -54,6 +54,11 @@ const adminSettingsStore = useAdminSettingsStore()
 const realtimeWindow = ref<RealtimeWindow>('1min')
 const realtimeChartMetric = ref<RealtimeChartMetric>('rpm')
 
+const REALTIME_CHART_WIDTH = 720
+const REALTIME_CHART_HEIGHT = 180
+const REALTIME_CHART_TOP = 10
+const REALTIME_CHART_BASELINE = 168
+
 const overview = computed(() => props.overview ?? null)
 const systemMetrics = computed(() => overview.value?.system_metrics ?? null)
 
@@ -397,8 +402,12 @@ const realtimeChartCoordinates = computed(() => {
 	const values = realtimeChartValues.value
 	const max = realtimeChartMax.value
 	return values.map((value, index) => {
-		const x = values.length === 1 ? 140 : (index / (values.length - 1)) * 280
-		const y = max <= 0 ? 68 : 68 - (value / max) * 60
+		const x = values.length === 1
+			? REALTIME_CHART_WIDTH / 2
+			: (index / (values.length - 1)) * REALTIME_CHART_WIDTH
+		const y = max <= 0
+			? REALTIME_CHART_BASELINE
+			: REALTIME_CHART_BASELINE - (value / max) * (REALTIME_CHART_BASELINE - REALTIME_CHART_TOP)
 		return { x, y, value, point: realtimeChartPoints.value[index] }
 	})
 })
@@ -408,7 +417,7 @@ const realtimeChartPolyline = computed(() => realtimeChartCoordinates.value
 const realtimeChartArea = computed(() => {
 	const line = realtimeChartPolyline.value
 	if (!line) return ''
-	return `M0 72 L${line.split(' ').join(' L')} L280 72 Z`
+	return `M0 ${REALTIME_CHART_HEIGHT} L${line.split(' ').join(' L')} L${REALTIME_CHART_WIDTH} ${REALTIME_CHART_HEIGHT} Z`
 })
 const realtimeChartUnit = computed(() => {
 	switch (realtimeChartMetric.value) {
@@ -1004,17 +1013,17 @@ function handleToolbarRefresh() {
       </div>
     </div>
 
-    <div v-if="overview" class="grid grid-cols-1 gap-6 lg:grid-cols-12">
-      <!-- Left: Health + Realtime -->
-      <div :class="['rounded-2xl bg-gray-50 dark:bg-dark-900 lg:col-span-5', props.fullscreen ? 'p-6' : 'p-4']">
-        <div class="grid h-full grid-cols-1 gap-6 md:grid-cols-[200px_1fr] md:items-center">
+    <div v-if="overview" class="space-y-6">
+      <!-- Primary overview: health + large realtime chart -->
+      <div :class="['rounded-2xl bg-gray-50 dark:bg-dark-900', props.fullscreen ? 'p-8' : 'p-6']">
+        <div class="grid min-h-[360px] grid-cols-1 gap-8 lg:grid-cols-[220px_minmax(0,1fr)] lg:items-stretch">
           <!-- 1) Health Score -->
           <div
-            class="group relative flex cursor-pointer flex-col items-center justify-center rounded-xl py-2 transition-all hover:bg-white/60 dark:hover:bg-dark-800/60 md:border-r md:border-gray-200 md:pr-6 dark:md:border-dark-700"
+            class="group relative flex cursor-pointer flex-col items-center justify-center rounded-xl py-4 transition-all hover:bg-white/60 dark:hover:bg-dark-800/60 lg:border-r lg:border-gray-200 lg:pr-8 dark:lg:border-dark-700"
           >
             <!-- Backend-owned health score breakdown (hover) -->
             <div
-              class="pointer-events-none absolute left-1/2 top-full z-50 mt-2 w-80 -translate-x-1/2 opacity-0 transition-opacity duration-200 group-hover:pointer-events-auto group-hover:opacity-100 md:left-full md:top-0 md:ml-2 md:mt-0 md:translate-x-0"
+              class="pointer-events-none absolute left-1/2 top-full z-50 mt-2 w-80 -translate-x-1/2 opacity-0 transition-opacity duration-200 group-hover:pointer-events-auto group-hover:opacity-100 lg:left-full lg:top-0 lg:ml-2 lg:mt-0 lg:translate-x-0"
               data-testid="health-score-breakdown"
             >
               <div class="rounded-xl bg-white p-4 shadow-xl ring-1 ring-black/5 dark:bg-dark-800 dark:ring-white/10">
@@ -1153,7 +1162,7 @@ function handleToolbarRefresh() {
           </div>
 
           <!-- 2) Realtime Traffic -->
-          <div class="flex h-full flex-col justify-center py-2">
+          <div class="flex min-w-0 flex-col justify-center py-2">
             <div class="mb-3 flex flex-wrap items-center justify-between gap-2">
               <div class="flex items-center gap-2">
                 <div class="relative flex h-3 w-3 shrink-0">
@@ -1182,31 +1191,31 @@ function handleToolbarRefresh() {
             </div>
 
             <div :class="props.fullscreen ? 'space-y-4' : 'space-y-3'" data-testid="realtime-traffic-card">
-              <div class="grid grid-cols-3 gap-1.5">
-                <button type="button" data-testid="realtime-metric-rpm" class="rounded-lg border px-2 py-2 text-left transition-colors" :class="realtimeChartMetric === 'rpm' ? 'border-blue-400 bg-blue-50 dark:border-blue-500 dark:bg-blue-950/30' : 'border-gray-200 bg-white hover:border-blue-200 dark:border-dark-700 dark:bg-dark-900'" @click="realtimeChartMetric = 'rpm'">
-                  <span class="block text-[9px] font-bold uppercase text-gray-400">RPM</span>
-                  <span class="mt-0.5 block text-base font-black text-gray-900 dark:text-white">{{ displayRealTimeRpm.toFixed(1) }}</span>
+              <div class="grid grid-cols-1 gap-2 sm:grid-cols-3">
+                <button type="button" data-testid="realtime-metric-rpm" class="rounded-xl border px-4 py-3 text-left transition-colors" :class="realtimeChartMetric === 'rpm' ? 'border-blue-400 bg-blue-50 shadow-sm dark:border-blue-500 dark:bg-blue-950/30' : 'border-gray-200 bg-white hover:border-blue-200 dark:border-dark-700 dark:bg-dark-900'" @click="realtimeChartMetric = 'rpm'">
+                  <span class="block text-[10px] font-bold uppercase tracking-wide text-gray-400">RPM</span>
+                  <span class="mt-1 block text-xl font-black text-gray-900 dark:text-white">{{ displayRealTimeRpm.toFixed(1) }}</span>
                 </button>
-                <button type="button" data-testid="realtime-metric-tokens" class="rounded-lg border px-2 py-2 text-left transition-colors" :class="realtimeChartMetric === 'tokens' ? 'border-blue-400 bg-blue-50 dark:border-blue-500 dark:bg-blue-950/30' : 'border-gray-200 bg-white hover:border-blue-200 dark:border-dark-700 dark:bg-dark-900'" @click="realtimeChartMetric = 'tokens'">
-                  <span class="block whitespace-nowrap text-[9px] font-bold uppercase text-gray-400">K token/s</span>
-                  <span class="mt-0.5 block text-base font-black text-gray-900 dark:text-white">{{ displayRealTimeTpsK.toFixed(2) }}</span>
+                <button type="button" data-testid="realtime-metric-tokens" class="rounded-xl border px-4 py-3 text-left transition-colors" :class="realtimeChartMetric === 'tokens' ? 'border-blue-400 bg-blue-50 shadow-sm dark:border-blue-500 dark:bg-blue-950/30' : 'border-gray-200 bg-white hover:border-blue-200 dark:border-dark-700 dark:bg-dark-900'" @click="realtimeChartMetric = 'tokens'">
+                  <span class="block whitespace-nowrap text-[10px] font-bold uppercase tracking-wide text-gray-400">K token/s</span>
+                  <span class="mt-1 block text-xl font-black text-gray-900 dark:text-white">{{ displayRealTimeTpsK.toFixed(2) }}</span>
                 </button>
-                <button type="button" data-testid="realtime-metric-cost" class="rounded-lg border px-2 py-2 text-left transition-colors" :class="realtimeChartMetric === 'cost' ? 'border-blue-400 bg-blue-50 dark:border-blue-500 dark:bg-blue-950/30' : 'border-gray-200 bg-white hover:border-blue-200 dark:border-dark-700 dark:bg-dark-900'" @click="realtimeChartMetric = 'cost'">
-                  <span class="block whitespace-nowrap text-[9px] font-bold uppercase text-gray-400">{{ t('admin.ops.realtime.actualDeduction') }}</span>
-                  <span class="mt-0.5 block text-base font-black text-gray-900 dark:text-white">{{ formatRealtimeActualCostTotal(displayRealtimeActualCost) }}</span>
+                <button type="button" data-testid="realtime-metric-cost" class="rounded-xl border px-4 py-3 text-left transition-colors" :class="realtimeChartMetric === 'cost' ? 'border-blue-400 bg-blue-50 shadow-sm dark:border-blue-500 dark:bg-blue-950/30' : 'border-gray-200 bg-white hover:border-blue-200 dark:border-dark-700 dark:bg-dark-900'" @click="realtimeChartMetric = 'cost'">
+                  <span class="block whitespace-nowrap text-[10px] font-bold uppercase tracking-wide text-gray-400">{{ t('admin.ops.realtime.actualDeduction') }}</span>
+                  <span class="mt-1 block text-xl font-black text-gray-900 dark:text-white">{{ formatRealtimeActualCostTotal(displayRealtimeActualCost) }}</span>
                 </button>
               </div>
 
-              <div class="rounded-xl border border-gray-100 bg-white px-2.5 pb-1.5 pt-2 dark:border-dark-700 dark:bg-dark-900" data-testid="realtime-traffic-chart">
-                <div class="mb-1 flex items-center justify-between text-[9px] font-semibold text-gray-400">
+              <div class="rounded-2xl border border-gray-100 bg-white px-4 pb-3 pt-4 dark:border-dark-700 dark:bg-dark-900" data-testid="realtime-traffic-chart">
+                <div class="mb-2 flex items-center justify-between text-[10px] font-semibold text-gray-400">
                   <span>{{ realtimeChartUnit }}</span>
                   <span>{{ t('admin.ops.realtime.windowTotal', { window: realtimeWindow }) }}</span>
                 </div>
-                <div v-if="realtimeChartPoints.length" class="relative h-[72px]">
+                <div v-if="realtimeChartPoints.length" class="relative h-[180px] xl:h-[220px]">
                   <div class="pointer-events-none absolute inset-0 flex flex-col justify-between py-1">
-                    <span v-for="line in 3" :key="line" class="block border-t border-dashed border-gray-100 dark:border-dark-700"></span>
+                    <span v-for="line in 5" :key="line" class="block border-t border-dashed border-gray-100 dark:border-dark-700"></span>
                   </div>
-                  <svg class="relative h-full w-full overflow-visible" viewBox="0 0 280 72" preserveAspectRatio="none" role="img" :aria-label="realtimeChartUnit">
+                  <svg class="relative h-full w-full overflow-visible" viewBox="0 0 720 180" preserveAspectRatio="none" role="img" :aria-label="realtimeChartUnit">
                     <path :d="realtimeChartArea" fill="rgba(59, 130, 246, 0.10)" />
                     <polyline :points="realtimeChartPolyline" fill="none" stroke="#3b82f6" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" vector-effect="non-scaling-stroke" />
 					<circle v-for="(coordinate, index) in realtimeChartCoordinates" :key="`${coordinate.point?.time}-${index}`" :cx="coordinate.x" :cy="coordinate.y" r="1.8" fill="#3b82f6" fill-opacity="0.35">
@@ -1215,8 +1224,8 @@ function handleToolbarRefresh() {
                   </svg>
                   <span class="absolute right-1 top-0 rounded bg-white/90 px-1 text-[9px] font-semibold text-blue-600 dark:bg-dark-900/90 dark:text-blue-400">{{ formatRealtimeMetric(realtimeChartMax) }}</span>
                 </div>
-                <div v-else class="flex h-[72px] items-center justify-center text-[10px] text-gray-400">{{ t('admin.ops.realtime.noChartData') }}</div>
-                <div class="mt-0.5 flex justify-between text-[9px] text-gray-400">
+                <div v-else class="flex h-[180px] items-center justify-center text-xs text-gray-400 xl:h-[220px]">{{ t('admin.ops.realtime.noChartData') }}</div>
+                <div class="mt-1 flex justify-between text-[10px] text-gray-400">
                   <span>{{ realtimeChartStartLabel }}</span>
                   <span>{{ realtimeChartEndLabel }}</span>
                 </div>
@@ -1226,8 +1235,8 @@ function handleToolbarRefresh() {
         </div>
       </div>
 
-      <!-- Right: 6 cards (3 cols x 2 rows) -->
-      <div class="grid h-full grid-cols-1 content-center gap-4 sm:grid-cols-2 lg:col-span-7 lg:grid-cols-3">
+      <!-- Secondary overview: 6 cards (3 cols x 2 rows) -->
+      <div class="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3">
         <!-- Card 1: Requests -->
         <div class="rounded-2xl bg-gray-50 p-4 dark:bg-dark-900" style="order: 1;">
           <div class="flex items-center justify-between">
