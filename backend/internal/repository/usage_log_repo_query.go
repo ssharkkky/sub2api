@@ -222,10 +222,6 @@ func (r *usageLogRepository) listUsageLogsWithPaginationFrom(ctx context.Context
 	return logs, paginationResultFromTotal(total, params), nil
 }
 
-func (r *usageLogRepository) listUsageLogsWithFastPagination(ctx context.Context, whereClause string, args []any, params pagination.PaginationParams) ([]service.UsageLog, *pagination.PaginationResult, error) {
-	return r.listUsageLogsWithFastPaginationFrom(ctx, usageLogDefaultListSource, whereClause, args, params)
-}
-
 func (r *usageLogRepository) listUsageLogsWithFastPaginationFrom(ctx context.Context, listSource, whereClause string, args []any, params pagination.PaginationParams) ([]service.UsageLog, *pagination.PaginationResult, error) {
 	limit := params.Limit()
 	offset := params.Offset()
