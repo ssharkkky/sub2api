@@ -120,6 +120,7 @@ func (r *usageLogRepository) ListWithFilters(ctx context.Context, params paginat
 		conditions = append(conditions, fmt.Sprintf("request_id = $%d", len(args)+1))
 		args = append(args, requestID)
 	}
+	conditions, args = appendUsageLogPlatformWhereCondition(conditions, args, filters.Platform)
 	conditions, args = appendUsageLogModelWhereCondition(conditions, args, filters.Model, filters.ModelFilterSource)
 	conditions, args = appendRequestTypeOrStreamWhereCondition(conditions, args, filters.RequestType, filters.Stream)
 	if filters.BillingType != nil {
@@ -135,6 +136,7 @@ func (r *usageLogRepository) ListWithFilters(ctx context.Context, params paginat
 		conditions = append(conditions, fmt.Sprintf("created_at < $%d", len(args)+1))
 		args = append(args, *filters.EndTime)
 	}
+	conditions = appendUsageLogTTFTWhereCondition(conditions, filters.HasTTFT)
 
 	whereClause := buildWhere(conditions)
 	var (
@@ -155,6 +157,33 @@ func (r *usageLogRepository) ListWithFilters(ctx context.Context, params paginat
 		return nil, nil, err
 	}
 	return logs, page, nil
+}
+
+func appendUsageLogPlatformWhereCondition(conditions []string, args []any, rawPlatform string) ([]string, []any) {
+	platform := strings.TrimSpace(strings.ToLower(rawPlatform))
+	if platform == "" {
+		return conditions, args
+	}
+
+	conditions = append(conditions, fmt.Sprintf(`LOWER(COALESCE(CASE
+			WHEN (SELECT g.platform FROM groups g WHERE g.id = usage_logs.group_id) = 'composite'
+				THEN (SELECT a.platform FROM accounts a WHERE a.id = usage_logs.account_id)
+			ELSE COALESCE(
+				NULLIF((SELECT g.platform FROM groups g WHERE g.id = usage_logs.group_id), ''),
+				(SELECT a.platform FROM accounts a WHERE a.id = usage_logs.account_id)
+			)
+		END, '')) = $%d`, len(args)+1))
+	return conditions, append(args, platform)
+}
+
+func appendUsageLogTTFTWhereCondition(conditions []string, hasTTFT *bool) []string {
+	if hasTTFT == nil {
+		return conditions
+	}
+	if *hasTTFT {
+		return append(conditions, "first_token_ms IS NOT NULL")
+	}
+	return append(conditions, "first_token_ms IS NULL")
 }
 
 func shouldUseFastUsageLogTotal(filters UsageLogFilters) bool {
@@ -220,6 +249,10 @@ func usageLogOrderBy(params pagination.PaginationParams) string {
 	switch sortBy {
 	case "model":
 		column = "COALESCE(NULLIF(TRIM(requested_model), ''), model)"
+	case "first_token_ms":
+		column = "first_token_ms"
+	case "duration_ms":
+		column = "duration_ms"
 	case "created_at":
 		column = "created_at"
 	default:
