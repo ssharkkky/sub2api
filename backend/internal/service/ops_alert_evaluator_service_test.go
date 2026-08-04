@@ -35,6 +35,7 @@ type statefulTTFTAlertRepo struct {
 	eventsCreated    int
 	eventsResolved   int
 	emailQueuedMarks int
+	emailQueuedErr   error
 }
 
 func newStatefulTTFTAlertRepo(rule *OpsAlertRule, ttft *OpsTTFTSummary) *statefulTTFTAlertRepo {
@@ -94,6 +95,9 @@ func (r *statefulTTFTAlertRepo) CreateAlertEvent(_ context.Context, event *OpsAl
 }
 
 func (r *statefulTTFTAlertRepo) UpdateAlertEventEmailQueued(_ context.Context, eventID int64, queued bool) error {
+	if r.emailQueuedErr != nil {
+		return r.emailQueuedErr
+	}
 	if r.activeEvent != nil && r.activeEvent.ID == eventID {
 		r.activeEvent.EmailQueued = queued
 	}
@@ -418,13 +422,21 @@ func TestOpsAlertEmailUsesDurableDispatcherAndTransitionDedup(t *testing.T) {
 	rule := &OpsAlertRule{ID: 9, Name: "availability", Severity: "P1", NotifyEmail: true, MetricType: "error_rate", Operator: ">", Threshold: 5}
 	event := &OpsAlertEvent{ID: 42, RuleID: rule.ID, Status: OpsAlertStatusFiring, FiredAt: time.Now().UTC()}
 
-	require.Equal(t, 1, svc.maybeEnqueueAlertEmail(ctx, nil, opsAlertEmailTransitionFiring, rule, event))
-	require.Zero(t, svc.maybeEnqueueAlertEmail(ctx, nil, opsAlertEmailTransitionFiring, rule, event), "an existing deduplicated delivery is not newly queued")
+	first := svc.maybeEnqueueAlertEmail(ctx, nil, opsAlertEmailTransitionFiring, rule, event)
+	require.Equal(t, 1, first.Created)
+	require.True(t, first.Complete)
+	require.False(t, first.RetryNeeded)
+	deduplicated := svc.maybeEnqueueAlertEmail(ctx, nil, opsAlertEmailTransitionFiring, rule, event)
+	require.Zero(t, deduplicated.Created, "an existing deduplicated delivery is not newly queued")
+	require.True(t, deduplicated.Complete)
+	require.False(t, deduplicated.RetryNeeded)
 
 	event.Status = OpsAlertStatusResolved
 	resolvedAt := time.Now().UTC()
 	event.ResolvedAt = &resolvedAt
-	require.Equal(t, 1, svc.maybeEnqueueAlertEmail(ctx, nil, opsAlertEmailTransitionResolved, rule, event))
+	resolved := svc.maybeEnqueueAlertEmail(ctx, nil, opsAlertEmailTransitionResolved, rule, event)
+	require.Equal(t, 1, resolved.Created)
+	require.True(t, resolved.Complete)
 	require.Len(t, deliveryRepo.items, 2)
 	require.Contains(t, deliveryRepo.items[0].ReminderKey, opsAlertEmailTransitionFiring)
 	require.Contains(t, deliveryRepo.items[1].ReminderKey, opsAlertEmailTransitionResolved)
@@ -594,6 +606,138 @@ func TestOpsAlertTTFTQueueFailureRetriesWithoutDuplicatingEvent(t *testing.T) {
 	require.Equal(t, 1, repo.emailQueuedMarks)
 }
 
+func TestOpsAlertTTFTQueueFailureRetriesFiringBeforeRecovery(t *testing.T) {
+	p99 := 28000
+	rule := &OpsAlertRule{
+		ID: 21, Name: "p99 queue recovery", Enabled: true, Severity: "P1",
+		MetricType: "ttft_p99_seconds", Operator: ">", Threshold: 20,
+		WindowMinutes: 5, SustainedMinutes: 1, RecoverySustainedMinutes: 1,
+		MinimumSamples: 10, NotifyEmail: true,
+	}
+	repo := newStatefulTTFTAlertRepo(rule, &OpsTTFTSummary{
+		SampleCount: 20,
+		TTFT:        OpsPercentiles{P99: &p99},
+	})
+	svc, deliveryRepo := newTTFTAlertEvaluatorTestService(t, repo, true)
+	deliveryRepo.enqueueErr = errors.New("queue unavailable")
+
+	svc.evaluateOnce(time.Minute)
+	require.NotNil(t, repo.activeEvent)
+	require.False(t, repo.activeEvent.EmailQueued)
+	require.Empty(t, deliveryRepo.items)
+
+	p99 = 1000
+	deliveryRepo.enqueueErr = nil
+	svc.evaluateOnce(time.Minute)
+
+	require.Equal(t, 1, repo.eventsResolved)
+	require.Nil(t, repo.activeEvent)
+	require.Len(t, deliveryRepo.items, 2)
+	require.Contains(t, deliveryRepo.items[0].ReminderKey, opsAlertEmailTransitionFiring)
+	require.Contains(t, deliveryRepo.items[1].ReminderKey, opsAlertEmailTransitionResolved)
+}
+
+func TestOpsAlertTTFTQueueFailureRetriesWhenMetricBecomesUnavailable(t *testing.T) {
+	p99 := 28000
+	rule := &OpsAlertRule{
+		ID: 24, Name: "p99 unavailable retry", Enabled: true, Severity: "P1",
+		MetricType: "ttft_p99_seconds", Operator: ">", Threshold: 20,
+		WindowMinutes: 5, SustainedMinutes: 1, MinimumSamples: 10, NotifyEmail: true,
+	}
+	repo := newStatefulTTFTAlertRepo(rule, &OpsTTFTSummary{
+		SampleCount: 20,
+		TTFT:        OpsPercentiles{P99: &p99},
+	})
+	svc, deliveryRepo := newTTFTAlertEvaluatorTestService(t, repo, true)
+	deliveryRepo.enqueueErr = errors.New("queue unavailable")
+
+	svc.evaluateOnce(time.Minute)
+	require.NotNil(t, repo.activeEvent)
+	require.False(t, repo.activeEvent.EmailQueued)
+
+	repo.ttft.SampleCount = 0
+	deliveryRepo.enqueueErr = nil
+	svc.evaluateOnce(time.Minute)
+
+	require.NotNil(t, repo.activeEvent)
+	require.True(t, repo.activeEvent.EmailQueued)
+	require.Len(t, deliveryRepo.items, 1)
+	require.Equal(t, OpsAlertEvaluationStatusNoData, repo.evaluations[len(repo.evaluations)-1].Status)
+}
+
+func TestOpsAlertTTFTQueueRetryCompletesEveryRecipient(t *testing.T) {
+	p99 := 28000
+	rule := &OpsAlertRule{
+		ID: 22, Name: "p99 recipient retry", Enabled: true, Severity: "P1",
+		MetricType: "ttft_p99_seconds", Operator: ">", Threshold: 20,
+		WindowMinutes: 5, SustainedMinutes: 1, MinimumSamples: 10, NotifyEmail: true,
+	}
+	repo := newStatefulTTFTAlertRepo(rule, &OpsTTFTSummary{
+		SampleCount: 20,
+		TTFT:        OpsPercentiles{P99: &p99},
+	})
+	svc, deliveryRepo := newTTFTAlertEvaluatorTestService(t, repo, true)
+	_, err := svc.opsService.UpdateEmailNotificationConfig(context.Background(), &OpsEmailNotificationConfigUpdateRequest{
+		Alert: &OpsEmailAlertConfig{
+			Enabled: true, Recipients: []string{"first@example.com", "second@example.com"},
+			MinSeverity: "warning", IncludeResolvedAlerts: true,
+		},
+	})
+	require.NoError(t, err)
+	deliveryRepo.enqueueErrByRecipient["second@example.com"] = errors.New("recipient queue unavailable")
+
+	svc.evaluateOnce(time.Minute)
+	require.NotNil(t, repo.activeEvent)
+	require.False(t, repo.activeEvent.EmailQueued)
+	require.Len(t, deliveryRepo.items, 1)
+	require.Equal(t, "first@example.com", deliveryRepo.items[0].RecipientEmail)
+
+	delete(deliveryRepo.enqueueErrByRecipient, "second@example.com")
+	svc.evaluateOnce(time.Minute)
+
+	require.True(t, repo.activeEvent.EmailQueued)
+	require.Len(t, deliveryRepo.items, 2)
+	require.ElementsMatch(t, []string{"first@example.com", "second@example.com"}, []string{
+		deliveryRepo.items[0].RecipientEmail,
+		deliveryRepo.items[1].RecipientEmail,
+	})
+	require.Equal(t, 1, repo.emailQueuedMarks)
+}
+
+func TestOpsAlertTTFTQueueRetryRepairsEventMarkerAfterDedup(t *testing.T) {
+	p99 := 28000
+	rule := &OpsAlertRule{
+		ID: 23, Name: "p99 marker retry", Enabled: true, Severity: "P1",
+		MetricType: "ttft_p99_seconds", Operator: ">", Threshold: 20,
+		WindowMinutes: 5, SustainedMinutes: 1, MinimumSamples: 10, NotifyEmail: true,
+	}
+	repo := newStatefulTTFTAlertRepo(rule, &OpsTTFTSummary{
+		SampleCount: 20,
+		TTFT:        OpsPercentiles{P99: &p99},
+	})
+	repo.emailQueuedErr = errors.New("event update unavailable")
+	svc, deliveryRepo := newTTFTAlertEvaluatorTestService(t, repo, true)
+	_, err := svc.opsService.UpdateEmailNotificationConfig(context.Background(), &OpsEmailNotificationConfigUpdateRequest{
+		Alert: &OpsEmailAlertConfig{
+			Enabled: true, Recipients: []string{"ops@example.com"}, MinSeverity: "warning",
+			IncludeResolvedAlerts: true, RateLimitPerHour: 1,
+		},
+	})
+	require.NoError(t, err)
+
+	svc.evaluateOnce(time.Minute)
+	require.NotNil(t, repo.activeEvent)
+	require.False(t, repo.activeEvent.EmailQueued)
+	require.Len(t, deliveryRepo.items, 1)
+
+	repo.emailQueuedErr = nil
+	svc.evaluateOnce(time.Minute)
+
+	require.True(t, repo.activeEvent.EmailQueued)
+	require.Len(t, deliveryRepo.items, 1, "the existing durable delivery must be reused")
+	require.Equal(t, 1, repo.emailQueuedMarks)
+}
+
 func TestOpsAlertTTFTRestartUsesPersistedStateWithoutDuplicates(t *testing.T) {
 	p99 := 28000
 	rule := &OpsAlertRule{
@@ -647,8 +791,8 @@ func TestOpsAlertEmailEnforcesPerRecipientHourlyLimit(t *testing.T) {
 	first := &OpsAlertEvent{ID: 41, RuleID: rule.ID, Status: OpsAlertStatusFiring, FiredAt: time.Now().UTC()}
 	second := &OpsAlertEvent{ID: 42, RuleID: rule.ID, Status: OpsAlertStatusFiring, FiredAt: time.Now().UTC()}
 
-	require.Equal(t, 1, svc.maybeEnqueueAlertEmail(ctx, nil, opsAlertEmailTransitionFiring, rule, first))
-	require.Zero(t, svc.maybeEnqueueAlertEmail(ctx, nil, opsAlertEmailTransitionFiring, rule, second))
+	require.Equal(t, 1, svc.maybeEnqueueAlertEmail(ctx, nil, opsAlertEmailTransitionFiring, rule, first).Created)
+	require.Zero(t, svc.maybeEnqueueAlertEmail(ctx, nil, opsAlertEmailTransitionFiring, rule, second).Created)
 	require.Len(t, deliveryRepo.items, 1)
 }
 
@@ -673,8 +817,8 @@ func TestOpsAlertEmailMergesSameIncidentWithinConfiguredWindow(t *testing.T) {
 	first := &OpsAlertEvent{ID: 41, RuleID: rule.ID, Status: OpsAlertStatusFiring, FiredAt: time.Now().UTC()}
 	second := &OpsAlertEvent{ID: 42, RuleID: rule.ID, Status: OpsAlertStatusFiring, FiredAt: time.Now().UTC()}
 
-	require.Equal(t, 1, svc.maybeEnqueueAlertEmail(ctx, nil, opsAlertEmailTransitionFiring, rule, first))
-	require.Zero(t, svc.maybeEnqueueAlertEmail(ctx, nil, opsAlertEmailTransitionFiring, rule, second))
+	require.Equal(t, 1, svc.maybeEnqueueAlertEmail(ctx, nil, opsAlertEmailTransitionFiring, rule, first).Created)
+	require.Zero(t, svc.maybeEnqueueAlertEmail(ctx, nil, opsAlertEmailTransitionFiring, rule, second).Created)
 	require.Len(t, deliveryRepo.items, 1)
 }
 
@@ -698,7 +842,7 @@ func TestOpsAlertResolvedEmailRequiresFineGrainedSwitch(t *testing.T) {
 	rule := &OpsAlertRule{ID: 9, Severity: "P0", NotifyEmail: true}
 	event := &OpsAlertEvent{ID: 42, RuleID: rule.ID, Status: OpsAlertStatusResolved}
 
-	require.Zero(t, svc.maybeEnqueueAlertEmail(ctx, nil, opsAlertEmailTransitionResolved, rule, event))
+	require.Zero(t, svc.maybeEnqueueAlertEmail(ctx, nil, opsAlertEmailTransitionResolved, rule, event).Created)
 	require.Empty(t, deliveryRepo.items)
 }
 

@@ -261,9 +261,7 @@ func (s *OpsAlertEvaluatorService) evaluateOnce(interval time.Duration) {
 
 		var activeEvent *OpsAlertEvent
 		var activeEventErr error
-		if metric.Status == OpsAlertEvaluationStatusOK || metric.Status == OpsAlertEvaluationStatusBreached {
-			activeEvent, activeEventErr = s.opsRepo.GetActiveAlertEvent(ctx, rule.ID)
-		}
+		activeEvent, activeEventErr = s.opsRepo.GetActiveAlertEvent(ctx, rule.ID)
 		if stateErr == nil && activeEventErr == nil {
 			annotateOpsAlertEvaluationProgress(&metric, rule, state, activeEvent, interval)
 		}
@@ -286,6 +284,25 @@ func (s *OpsAlertEvaluatorService) evaluateOnce(interval time.Duration) {
 		rulesEvaluated++
 		evaluationStatuses[evaluation.Status]++
 
+		if activeEventErr != nil {
+			logger.LegacyPrintf("service.ops_alert_evaluator", "[OpsAlertEvaluator] get active event failed (rule=%d): %v", rule.ID, activeEventErr)
+			continue
+		}
+		if activeEvent != nil && !activeEvent.EmailQueued {
+			outcome := s.maybeEnqueueAlertEmail(ctx, runtimeCfg, opsAlertEmailTransitionFiring, rule, activeEvent)
+			emailsQueued += outcome.Created
+			if outcome.Complete {
+				if err := s.opsRepo.UpdateAlertEventEmailQueued(ctx, activeEvent.ID, true); err != nil {
+					logger.LegacyPrintf("service.ops_alert_evaluator", "[OpsAlertEvaluator] mark retried email queued failed (event=%d): %v", activeEvent.ID, err)
+					continue
+				}
+				activeEvent.EmailQueued = true
+			}
+			if outcome.RetryNeeded {
+				continue
+			}
+		}
+
 		if stateErr != nil {
 			logger.LegacyPrintf("service.ops_alert_evaluator", "[OpsAlertEvaluator] load rule state failed (rule=%d): %v", rule.ID, stateErr)
 			continue
@@ -307,23 +324,7 @@ func (s *OpsAlertEvaluatorService) evaluateOnce(interval time.Duration) {
 		}
 		breachedNow := metric.Breached
 
-		if activeEventErr != nil {
-			logger.LegacyPrintf("service.ops_alert_evaluator", "[OpsAlertEvaluator] get active event failed (rule=%d): %v", rule.ID, activeEventErr)
-			continue
-		}
-
 		if activeEvent != nil {
-			if breachedNow && !activeEvent.EmailQueued {
-				queued := s.maybeEnqueueAlertEmail(ctx, runtimeCfg, opsAlertEmailTransitionFiring, rule, activeEvent)
-				emailsQueued += queued
-				if queued > 0 {
-					if err := s.opsRepo.UpdateAlertEventEmailQueued(ctx, activeEvent.ID, true); err != nil {
-						logger.LegacyPrintf("service.ops_alert_evaluator", "[OpsAlertEvaluator] mark retried email queued failed (event=%d): %v", activeEvent.ID, err)
-					} else {
-						activeEvent.EmailQueued = true
-					}
-				}
-			}
 			if familyEvent := activeIncidents[incidentKey]; familyEvent != nil && familyEvent.ID != activeEvent.ID &&
 				opsAlertSeverityRank(familyEvent.Severity) <= opsAlertSeverityRank(activeEvent.Severity) {
 				resolvedAt := now
@@ -363,9 +364,9 @@ func (s *OpsAlertEvaluatorService) evaluateOnce(interval time.Duration) {
 				}
 				activeEvent.Status = OpsAlertStatusResolved
 				activeEvent.ResolvedAt = &resolvedAt
-				queued := s.maybeEnqueueAlertEmail(ctx, runtimeCfg, opsAlertEmailTransitionResolved, rule, activeEvent)
-				emailsQueued += queued
-				if queued > 0 {
+				outcome := s.maybeEnqueueAlertEmail(ctx, runtimeCfg, opsAlertEmailTransitionResolved, rule, activeEvent)
+				emailsQueued += outcome.Created
+				if outcome.Complete {
 					if err := s.opsRepo.UpdateAlertEventEmailQueued(ctx, activeEvent.ID, true); err != nil {
 						logger.LegacyPrintf("service.ops_alert_evaluator", "[OpsAlertEvaluator] mark email queued failed (event=%d): %v", activeEvent.ID, err)
 					}
@@ -449,9 +450,9 @@ func (s *OpsAlertEvaluatorService) evaluateOnce(interval time.Duration) {
 			eventsCreated++
 			if created != nil && created.ID > 0 {
 				activeIncidents[incidentKey] = created
-				queued := s.maybeEnqueueAlertEmail(ctx, runtimeCfg, opsAlertEmailTransitionFiring, rule, created)
-				emailsQueued += queued
-				if queued > 0 {
+				outcome := s.maybeEnqueueAlertEmail(ctx, runtimeCfg, opsAlertEmailTransitionFiring, rule, created)
+				emailsQueued += outcome.Created
+				if outcome.Complete {
 					if err := s.opsRepo.UpdateAlertEventEmailQueued(ctx, created.ID, true); err != nil {
 						logger.LegacyPrintf("service.ops_alert_evaluator", "[OpsAlertEvaluator] mark email queued failed (event=%d): %v", created.ID, err)
 					}
@@ -1193,39 +1194,45 @@ func buildOpsAlertDescription(rule *OpsAlertRule, value float64, sampleCount, ba
 	)
 }
 
-func (s *OpsAlertEvaluatorService) maybeEnqueueAlertEmail(ctx context.Context, runtimeCfg *OpsAlertRuntimeSettings, transition string, rule *OpsAlertRule, event *OpsAlertEvent) int {
+type opsAlertEmailEnqueueOutcome struct {
+	Created     int
+	Complete    bool
+	RetryNeeded bool
+}
+
+func (s *OpsAlertEvaluatorService) maybeEnqueueAlertEmail(ctx context.Context, runtimeCfg *OpsAlertRuntimeSettings, transition string, rule *OpsAlertRule, event *OpsAlertEvent) opsAlertEmailEnqueueOutcome {
 	if s == nil || s.notificationDispatcher == nil || s.opsService == nil || event == nil || rule == nil {
-		return 0
+		return opsAlertEmailEnqueueOutcome{}
 	}
 	if !rule.NotifyEmail {
-		return 0
+		return opsAlertEmailEnqueueOutcome{}
 	}
 
 	emailCfg, err := s.opsService.GetEmailNotificationConfig(ctx)
 	if err != nil || emailCfg == nil {
-		return 0
+		return opsAlertEmailEnqueueOutcome{RetryNeeded: true}
 	}
 	alertEnabled := emailCfg.Alert.Enabled
 	recipients := normalizeEmails(emailCfg.Alert.Recipients)
 	if notificationService := s.notificationDispatcher.emailService; notificationService != nil {
 		channel, configured, channelErr := notificationService.GetChannelPolicyState(ctx, NotificationEmailChannelOpsAlert)
 		if channelErr != nil {
-			return 0
+			return opsAlertEmailEnqueueOutcome{RetryNeeded: true}
 		}
 		if configured {
 			alertEnabled = channel.Enabled
 			resolved, resolveErr := notificationService.ResolveGroupRecipients(ctx, NotificationEmailChannelOpsAlert)
 			if resolveErr != nil {
-				return 0
+				return opsAlertEmailEnqueueOutcome{RetryNeeded: true}
 			}
 			recipients = resolved
 		}
 	}
 	if !alertEnabled || len(recipients) == 0 {
-		return 0
+		return opsAlertEmailEnqueueOutcome{}
 	}
 	if !shouldSendOpsAlertEmailByMinSeverity(strings.TrimSpace(emailCfg.Alert.MinSeverity), strings.TrimSpace(rule.Severity)) {
-		return 0
+		return opsAlertEmailEnqueueOutcome{}
 	}
 
 	transition = strings.ToLower(strings.TrimSpace(transition))
@@ -1233,19 +1240,19 @@ func (s *OpsAlertEvaluatorService) maybeEnqueueAlertEmail(ctx context.Context, r
 	case opsAlertEmailTransitionFiring:
 	case opsAlertEmailTransitionResolved:
 		if !emailCfg.Alert.IncludeResolvedAlerts {
-			return 0
+			return opsAlertEmailEnqueueOutcome{}
 		}
 	default:
-		return 0
+		return opsAlertEmailEnqueueOutcome{}
 	}
 
 	if runtimeCfg != nil && runtimeCfg.Silencing.Enabled {
 		if isOpsAlertSilenced(time.Now().UTC(), rule, event, runtimeCfg.Silencing) {
-			return 0
+			return opsAlertEmailEnqueueOutcome{}
 		}
 	}
 
-	queued := 0
+	outcome := opsAlertEmailEnqueueOutcome{Complete: true}
 	incidentKey := opsAlertIncidentKeyFromEvent(rule, event)
 	reminderKey := transition
 	if incidentKey != "" {
@@ -1253,6 +1260,16 @@ func (s *OpsAlertEvaluatorService) maybeEnqueueAlertEmail(ctx context.Context, r
 	}
 	reminderKey = truncateString(reminderKey, 200)
 	for _, recipient := range recipients {
+		exists, existsErr := s.hasOpsAlertEmailDelivery(ctx, event.ID, recipient, reminderKey)
+		if existsErr != nil {
+			logger.LegacyPrintf("service.ops_alert_evaluator", "[OpsAlertEvaluator] inspect existing email delivery failed (event=%d transition=%s): %v", event.ID, transition, existsErr)
+			outcome.Complete = false
+			outcome.RetryNeeded = true
+			continue
+		}
+		if exists {
+			continue
+		}
 		suppressed, suppressReason, suppressErr := s.shouldSuppressOpsAlertEmail(
 			ctx,
 			recipient,
@@ -1263,10 +1280,13 @@ func (s *OpsAlertEvaluatorService) maybeEnqueueAlertEmail(ctx context.Context, r
 		)
 		if suppressErr != nil {
 			logger.LegacyPrintf("service.ops_alert_evaluator", "[OpsAlertEvaluator] inspect email limits failed (event=%d transition=%s): %v", event.ID, transition, suppressErr)
+			outcome.Complete = false
+			outcome.RetryNeeded = true
 			continue
 		}
 		if suppressed {
 			logger.LegacyPrintf("service.ops_alert_evaluator", "[OpsAlertEvaluator] email suppressed (event=%d transition=%s recipient=%s reason=%s)", event.ID, transition, maskNotificationEmail(recipient), suppressReason)
+			outcome.Complete = false
 			continue
 		}
 		result, enqueueErr := s.notificationDispatcher.Enqueue(ctx, NotificationEmailSendInput{
@@ -1282,13 +1302,39 @@ func (s *OpsAlertEvaluatorService) maybeEnqueueAlertEmail(ctx context.Context, r
 			if !errors.Is(enqueueErr, ErrNotificationEmailChannelDisabled) {
 				logger.LegacyPrintf("service.ops_alert_evaluator", "[OpsAlertEvaluator] enqueue email failed (event=%d transition=%s): %v", event.ID, transition, enqueueErr)
 			}
+			outcome.Complete = false
+			outcome.RetryNeeded = true
+			continue
+		}
+		if result.ID <= 0 {
+			outcome.Complete = false
+			outcome.RetryNeeded = true
 			continue
 		}
 		if result.Created {
-			queued++
+			outcome.Created++
 		}
 	}
-	return queued
+	return outcome
+}
+
+func (s *OpsAlertEvaluatorService) hasOpsAlertEmailDelivery(ctx context.Context, eventID int64, recipient, reminderKey string) (bool, error) {
+	if s == nil || s.notificationDispatcher == nil || s.notificationDispatcher.repo == nil || eventID <= 0 {
+		return false, nil
+	}
+	result, err := s.notificationDispatcher.repo.List(ctx, NotificationEmailDeliveryListFilter{
+		Page:          1,
+		PageSize:      1,
+		Event:         NotificationEmailEventOpsAlert,
+		SourceType:    "ops_alert_event",
+		SourceID:      fmt.Sprintf("%d", eventID),
+		RecipientHash: notificationEmailHash(strings.ToLower(strings.TrimSpace(recipient))),
+		ReminderKey:   reminderKey,
+	})
+	if err != nil {
+		return false, err
+	}
+	return result.Total > 0 || len(result.Items) > 0, nil
 }
 
 func (s *OpsAlertEvaluatorService) shouldSuppressOpsAlertEmail(

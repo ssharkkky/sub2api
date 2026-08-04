@@ -89,11 +89,14 @@ func TestAppendUsageLogPlatformWhereCondition(t *testing.T) {
 	conditions, args := appendUsageLogPlatformWhereCondition([]string{"user_id = $1"}, []any{int64(7)}, " OpenAI ")
 
 	require.Len(t, conditions, 2)
-	require.Contains(t, conditions[1], "g.platform")
-	require.Contains(t, conditions[1], "= 'composite'")
-	require.Contains(t, conditions[1], "a.platform")
+	require.Contains(t, conditions[1], "effective_platform")
 	require.Contains(t, conditions[1], "= $2")
+	require.NotContains(t, strings.ToUpper(conditions[1]), "SELECT")
 	require.Equal(t, []any{int64(7), "openai"}, args)
+
+	require.Contains(t, usageLogPlatformListSource, "LEFT JOIN groups g ON g.id = ul.group_id")
+	require.Contains(t, usageLogPlatformListSource, "LEFT JOIN accounts a ON a.id = ul.account_id")
+	require.Contains(t, usageLogPlatformListSource, usageLogEffectivePlatformExpr)
 }
 
 func TestAppendUsageLogTTFTWhereCondition(t *testing.T) {

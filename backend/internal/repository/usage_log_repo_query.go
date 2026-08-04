@@ -21,6 +21,15 @@ import (
 
 const usageLogSelectColumns = "id, user_id, api_key_id, account_id, request_id, model, requested_model, upstream_model, group_id, subscription_id, input_tokens, output_tokens, cache_creation_tokens, cache_read_tokens, cache_creation_5m_tokens, cache_creation_1h_tokens, image_output_tokens, image_output_cost, image_input_tokens, image_input_cost, input_cost, output_cost, cache_creation_cost, cache_read_cost, total_cost, actual_cost, rate_multiplier, account_rate_multiplier, billing_type, request_type, stream, openai_ws_mode, duration_ms, first_token_ms, user_agent, ip_address, image_count, image_size, image_input_size, image_output_size, image_size_source, image_size_breakdown, video_count, video_resolution, video_duration_seconds, service_tier, reasoning_effort, inbound_endpoint, upstream_endpoint, cache_ttl_overridden, long_context_billing_applied, channel_id, model_mapping_chain, billing_tier, billing_mode, account_stats_cost, session_id, created_at"
 
+const usageLogDefaultListSource = "usage_logs"
+
+var usageLogPlatformListSource = fmt.Sprintf(`(
+	SELECT ul.*, %s AS effective_platform
+	FROM usage_logs ul
+	LEFT JOIN groups g ON g.id = ul.group_id
+	LEFT JOIN accounts a ON a.id = ul.account_id
+) usage_logs`, usageLogEffectivePlatformExpr)
+
 func (r *usageLogRepository) GetByID(ctx context.Context, id int64) (log *service.UsageLog, err error) {
 	query := "SELECT " + usageLogSelectColumns + " FROM usage_logs WHERE id = $1"
 	rows, err := r.sql.QueryContext(ctx, query, id)
@@ -139,15 +148,19 @@ func (r *usageLogRepository) ListWithFilters(ctx context.Context, params paginat
 	conditions = appendUsageLogTTFTWhereCondition(conditions, filters.HasTTFT)
 
 	whereClause := buildWhere(conditions)
+	listSource := usageLogDefaultListSource
+	if strings.TrimSpace(filters.Platform) != "" {
+		listSource = usageLogPlatformListSource
+	}
 	var (
 		logs []service.UsageLog
 		page *pagination.PaginationResult
 		err  error
 	)
 	if shouldUseFastUsageLogTotal(filters) {
-		logs, page, err = r.listUsageLogsWithFastPagination(ctx, whereClause, args, params)
+		logs, page, err = r.listUsageLogsWithFastPaginationFrom(ctx, listSource, whereClause, args, params)
 	} else {
-		logs, page, err = r.listUsageLogsWithPagination(ctx, whereClause, args, params)
+		logs, page, err = r.listUsageLogsWithPaginationFrom(ctx, listSource, whereClause, args, params)
 	}
 	if err != nil {
 		return nil, nil, err
@@ -165,14 +178,7 @@ func appendUsageLogPlatformWhereCondition(conditions []string, args []any, rawPl
 		return conditions, args
 	}
 
-	conditions = append(conditions, fmt.Sprintf(`LOWER(COALESCE(CASE
-			WHEN (SELECT g.platform FROM groups g WHERE g.id = usage_logs.group_id) = 'composite'
-				THEN (SELECT a.platform FROM accounts a WHERE a.id = usage_logs.account_id)
-			ELSE COALESCE(
-				NULLIF((SELECT g.platform FROM groups g WHERE g.id = usage_logs.group_id), ''),
-				(SELECT a.platform FROM accounts a WHERE a.id = usage_logs.account_id)
-			)
-		END, '')) = $%d`, len(args)+1))
+	conditions = append(conditions, fmt.Sprintf("LOWER(COALESCE(effective_platform, '')) = $%d", len(args)+1))
 	return conditions, append(args, platform)
 }
 
@@ -195,7 +201,11 @@ func shouldUseFastUsageLogTotal(filters UsageLogFilters) bool {
 }
 
 func (r *usageLogRepository) listUsageLogsWithPagination(ctx context.Context, whereClause string, args []any, params pagination.PaginationParams) ([]service.UsageLog, *pagination.PaginationResult, error) {
-	countQuery := "SELECT COUNT(*) FROM usage_logs " + whereClause
+	return r.listUsageLogsWithPaginationFrom(ctx, usageLogDefaultListSource, whereClause, args, params)
+}
+
+func (r *usageLogRepository) listUsageLogsWithPaginationFrom(ctx context.Context, listSource, whereClause string, args []any, params pagination.PaginationParams) ([]service.UsageLog, *pagination.PaginationResult, error) {
+	countQuery := "SELECT COUNT(*) FROM " + listSource + " " + whereClause
 	var total int64
 	if err := scanSingleRow(ctx, r.sql, countQuery, args, &total); err != nil {
 		return nil, nil, err
@@ -204,7 +214,7 @@ func (r *usageLogRepository) listUsageLogsWithPagination(ctx context.Context, wh
 	limitPos := len(args) + 1
 	offsetPos := len(args) + 2
 	listArgs := append(append([]any{}, args...), params.Limit(), params.Offset())
-	query := fmt.Sprintf("SELECT %s FROM usage_logs %s ORDER BY %s LIMIT $%d OFFSET $%d", usageLogSelectColumns, whereClause, usageLogOrderBy(params), limitPos, offsetPos)
+	query := fmt.Sprintf("SELECT %s FROM %s %s ORDER BY %s LIMIT $%d OFFSET $%d", usageLogSelectColumns, listSource, whereClause, usageLogOrderBy(params), limitPos, offsetPos)
 	logs, err := r.queryUsageLogs(ctx, query, listArgs...)
 	if err != nil {
 		return nil, nil, err
@@ -213,13 +223,17 @@ func (r *usageLogRepository) listUsageLogsWithPagination(ctx context.Context, wh
 }
 
 func (r *usageLogRepository) listUsageLogsWithFastPagination(ctx context.Context, whereClause string, args []any, params pagination.PaginationParams) ([]service.UsageLog, *pagination.PaginationResult, error) {
+	return r.listUsageLogsWithFastPaginationFrom(ctx, usageLogDefaultListSource, whereClause, args, params)
+}
+
+func (r *usageLogRepository) listUsageLogsWithFastPaginationFrom(ctx context.Context, listSource, whereClause string, args []any, params pagination.PaginationParams) ([]service.UsageLog, *pagination.PaginationResult, error) {
 	limit := params.Limit()
 	offset := params.Offset()
 
 	limitPos := len(args) + 1
 	offsetPos := len(args) + 2
 	listArgs := append(append([]any{}, args...), limit+1, offset)
-	query := fmt.Sprintf("SELECT %s FROM usage_logs %s ORDER BY %s LIMIT $%d OFFSET $%d", usageLogSelectColumns, whereClause, usageLogOrderBy(params), limitPos, offsetPos)
+	query := fmt.Sprintf("SELECT %s FROM %s %s ORDER BY %s LIMIT $%d OFFSET $%d", usageLogSelectColumns, listSource, whereClause, usageLogOrderBy(params), limitPos, offsetPos)
 
 	logs, err := r.queryUsageLogs(ctx, query, listArgs...)
 	if err != nil {
