@@ -12,8 +12,11 @@ func TestConfigDefaultsManagedBackupSettings(t *testing.T) {
 	cfg := testConfig(t, 19080)
 	cfg.BackupRootPath = ""
 	cfg.BackupDatabaseService = ""
+	cfg.BackupApplicationConfigPath = ""
+	cfg.BackupDockerConfigPath = ""
 	cfg.BackupDeployerBinaryPath = ""
 	cfg.BackupTimeout = Duration{}
+	cfg.LoadedFrom = filepath.Join(filepath.Dir(cfg.StatePath), "config.json")
 	cfg.applyDefaults()
 
 	if cfg.BackupRootPath != filepath.Join(filepath.Dir(cfg.StatePath), "backups") {
@@ -21,6 +24,12 @@ func TestConfigDefaultsManagedBackupSettings(t *testing.T) {
 	}
 	if cfg.BackupDatabaseService != "postgres" {
 		t.Fatalf("database service=%q", cfg.BackupDatabaseService)
+	}
+	if cfg.BackupApplicationConfigPath != filepath.Join(cfg.ComposeWorkDir, "data", "config.yaml") {
+		t.Fatalf("application config=%q", cfg.BackupApplicationConfigPath)
+	}
+	if cfg.BackupDockerConfigPath != filepath.Join(filepath.Dir(cfg.LoadedFrom), "docker", "config.json") {
+		t.Fatalf("docker config=%q", cfg.BackupDockerConfigPath)
 	}
 	if !filepath.IsAbs(cfg.BackupDeployerBinaryPath) {
 		t.Fatalf("deployer binary=%q", cfg.BackupDeployerBinaryPath)
@@ -41,6 +50,8 @@ func TestConfigRejectsInvalidManagedBackupSettings(t *testing.T) {
 	}{
 		{name: "relative root", mutate: func(cfg *Config) { cfg.BackupRootPath = "backups" }, want: "backup_root_path"},
 		{name: "unsafe service", mutate: func(cfg *Config) { cfg.BackupDatabaseService = "postgres;rm" }, want: "backup_database_service"},
+		{name: "relative application config", mutate: func(cfg *Config) { cfg.BackupApplicationConfigPath = "data/config.yaml" }, want: "backup_application_config_path"},
+		{name: "relative docker config", mutate: func(cfg *Config) { cfg.BackupDockerConfigPath = "docker/config.json" }, want: "backup_docker_config_path"},
 		{name: "relative binary", mutate: func(cfg *Config) { cfg.BackupDeployerBinaryPath = "sub2api-deployer" }, want: "backup_deployer_binary_path"},
 		{name: "short timeout", mutate: func(cfg *Config) { cfg.BackupTimeout = Duration{Duration: 59 * time.Second} }, want: "backup_timeout"},
 	}

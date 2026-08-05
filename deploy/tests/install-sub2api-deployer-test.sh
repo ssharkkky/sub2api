@@ -518,6 +518,8 @@ if ! jq -e \
     and .socket_gid == 987
     and .backup_root_path == ($state | sub("/image.env$"; "/backups"))
     and .backup_database_service == "postgres"
+    and (.backup_application_config_path | endswith("/app/data/config.yaml"))
+    and (.backup_docker_config_path | endswith("/etc/sub2api-deployer/docker/config.json"))
     and (.backup_deployer_binary_path | endswith("/usr/local/sbin/sub2api-deployer"))
     and .backup_timeout == "30m"
     and .control_plane_upgrade_path == ($state | sub("/image.env$"; "/control-plane-upgrade.json"))

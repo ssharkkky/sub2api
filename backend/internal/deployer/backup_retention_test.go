@@ -18,6 +18,18 @@ import (
 
 func TestCreateAutomaticBackupWritesVerifiedManifest(t *testing.T) {
 	cfg := testConfig(t, 19081)
+	cfg.LoadedFrom = filepath.Join(cfg.ComposeWorkDir, "deployer-config.json")
+	if err := os.WriteFile(cfg.LoadedFrom, []byte("{}\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	dockerConfig := filepath.Join(filepath.Dir(cfg.LoadedFrom), "docker", "config.json")
+	if err := os.MkdirAll(filepath.Dir(dockerConfig), 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(dockerConfig, []byte("{\"auths\":{}}\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	cfg.BackupDockerConfigPath = dockerConfig
 	now := time.Date(2026, 8, 5, 8, 0, 0, 123, time.UTC)
 	state := State{
 		ActiveVersion: "0.1.171-ts.1",
@@ -66,6 +78,17 @@ func TestCreateAutomaticBackupWritesVerifiedManifest(t *testing.T) {
 	if manifest.Database.Format != "postgresql-custom" || len(manifest.Files) < 8 {
 		t.Fatalf("backup did not contain the required files: %+v", manifest)
 	}
+	requiredNames := map[string]bool{"application-config": false, "deployer-docker-config": false}
+	for _, record := range manifest.Files {
+		if _, required := requiredNames[record.Name]; required {
+			requiredNames[record.Name] = true
+		}
+	}
+	for name, found := range requiredNames {
+		if !found {
+			t.Fatalf("backup is missing %s: %+v", name, manifest.Files)
+		}
+	}
 	dump, err := os.ReadFile(filepath.Join(path, manifest.Database.File))
 	if err != nil || !strings.HasPrefix(string(dump), "PGDMP") {
 		t.Fatalf("database dump signature=%q err=%v", string(dump), err)
@@ -73,6 +96,38 @@ func TestCreateAutomaticBackupWritesVerifiedManifest(t *testing.T) {
 	info, err := os.Stat(path)
 	if err != nil || info.Mode().Perm() != 0700 {
 		t.Fatalf("backup mode=%v err=%v", info.Mode(), err)
+	}
+}
+
+func TestAutomaticBackupRecordsMissingOptionalConfig(t *testing.T) {
+	cfg := testConfig(t, 19090)
+	cfg.BackupApplicationConfigPath = filepath.Join(cfg.ComposeWorkDir, "missing", "config.yaml")
+	cfg.BackupDockerConfigPath = filepath.Join(cfg.ComposeWorkDir, "missing", "docker-config.json")
+	state := State{ActiveVersion: "0.1.171-ts.1", ActiveImage: managedTestImage('a'), UpdatedAt: time.Now().UTC()}
+	if err := saveState(cfg.StatePath, state); err != nil {
+		t.Fatal(err)
+	}
+	manager := &Manager{cfg: cfg, runner: &fakeRunner{}, now: time.Now, state: state}
+	path, err := manager.createAutomaticBackup(context.Background(), &Job{
+		ID: "missing-optional-config-0001", FromVersion: state.ActiveVersion, FromImage: state.ActiveImage, TargetVersion: "0.1.172-ts.1",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	data, err := os.ReadFile(filepath.Join(path, "manifest.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var manifest backupManifest
+	if err := json.Unmarshal(data, &manifest); err != nil {
+		t.Fatal(err)
+	}
+	skipped := map[string]bool{}
+	for _, record := range manifest.Skipped {
+		skipped[record.Name] = record.Reason == "source file does not exist"
+	}
+	if !skipped["application-config"] || !skipped["deployer-docker-config"] {
+		t.Fatalf("missing optional sources were not recorded: %+v", manifest.Skipped)
 	}
 }
 
@@ -288,7 +343,7 @@ func TestAutomaticBackupRetentionDoesNotDeleteUnrecognizedDirectory(t *testing.T
 	}
 }
 
-func TestPostSuccessCleanupFailureOnlyAddsWarning(t *testing.T) {
+func TestPostSuccessCleanupFailureReturnsWarningWithoutChangingResult(t *testing.T) {
 	cfg := testConfig(t, 19088)
 	automatic := filepath.Join(cfg.BackupRootPath, "automatic")
 	if err := os.MkdirAll(filepath.Join(automatic, "unrecognized"), 0700); err != nil {
@@ -313,12 +368,12 @@ func TestPostSuccessCleanupFailureOnlyAddsWarning(t *testing.T) {
 		t.Fatal(err)
 	}
 	manager := &Manager{cfg: cfg, runner: &fakeRunner{}, now: time.Now, state: state}
-	manager.performPostSuccessMaintenance(state.Job.ID)
+	warning := manager.performPostSuccessMaintenance(state.Job.ID)
 	job, err := manager.Job(state.Job.ID)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if job.Status != JobStatusSucceeded || job.CleanupWarning == "" || !strings.Contains(job.CleanupWarning, "retention cleanup failed") {
+	if job.Status != JobStatusSucceeded || job.CleanupWarning != "" || !strings.Contains(warning, "retention cleanup failed") {
 		t.Fatalf("cleanup changed deployment result incorrectly: %+v", job)
 	}
 }

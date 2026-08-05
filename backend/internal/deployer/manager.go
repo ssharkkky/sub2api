@@ -820,6 +820,7 @@ func (m *Manager) completeRecoveredDeployment(jobID string) error {
 		_ = m.writeControlPlaneUpgradeStatus(job, "failed", controlPlaneErr.Error())
 		cleanupWarning = "application update recovered successfully, but the deployer control-plane upgrade could not be prepared: " + controlPlaneErr.Error()
 	}
+	cleanupWarning = joinWarnings(cleanupWarning, m.performPostSuccessMaintenance(jobID))
 	job.CleanupWarning = cleanupWarning
 	if err := m.finishRecoveredJob(*job, JobStatusSucceeded, "Recovered deployment after deployer restart", ""); err != nil {
 		if activationLock != nil {
@@ -831,7 +832,6 @@ func (m *Manager) completeRecoveredDeployment(jobID string) error {
 	if activationLock != nil {
 		_ = activationLock.Close()
 	}
-	m.performPostSuccessMaintenance(jobID)
 	if controlPlanePrepared {
 		if err := m.startControlPlaneUpgrade(job); err != nil {
 			_ = m.appendCleanupWarning(jobID, "application update recovered successfully, but the deployer control-plane upgrade was not scheduled: "+err.Error())
@@ -1167,6 +1167,7 @@ func (m *Manager) finishCandidateDeployment(ctx context.Context, jobID string, c
 		_ = m.writeControlPlaneUpgradeStatus(job, "failed", controlPlaneErr.Error())
 		cleanupWarning = "application update succeeded, but the deployer control-plane upgrade could not be prepared: " + controlPlaneErr.Error()
 	}
+	cleanupWarning = joinWarnings(cleanupWarning, m.performPostSuccessMaintenance(jobID))
 	if err := m.complete(jobID, "Deployment completed", cleanupWarning); err != nil {
 		if activationLock != nil {
 			m.discardPreparedControlPlaneUpgrade(job.ID)
@@ -1177,12 +1178,21 @@ func (m *Manager) finishCandidateDeployment(ctx context.Context, jobID string, c
 	if activationLock != nil {
 		_ = activationLock.Close()
 	}
-	m.performPostSuccessMaintenance(jobID)
 	if controlPlanePrepared {
 		if err := m.startControlPlaneUpgrade(job); err != nil {
 			_ = m.appendCleanupWarning(jobID, "application update succeeded, but the deployer control-plane upgrade was not scheduled: "+err.Error())
 		}
 	}
+}
+
+func joinWarnings(warnings ...string) string {
+	var joined []string
+	for _, warning := range warnings {
+		if warning = strings.TrimSpace(warning); warning != "" {
+			joined = append(joined, warning)
+		}
+	}
+	return strings.Join(joined, "; ")
 }
 
 type controlPlaneUpgradeStatus struct {

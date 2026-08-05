@@ -52,13 +52,14 @@ func sameRelease(left, right retainedRelease) bool {
 		strings.TrimPrefix(left.version, "v") == strings.TrimPrefix(right.version, "v")
 }
 
-func (m *Manager) performPostSuccessMaintenance(jobID string) {
+func (m *Manager) performPostSuccessMaintenance(jobID string) string {
+	var warnings []string
 	removedBackups, backupBytes, backupErr := m.pruneAutomaticBackups()
 	if len(removedBackups) > 0 {
 		log.Printf("sub2api-deployer job_id=%q cleanup=automatic_backup removed=%q reclaimed_bytes=%d", jobID, strings.Join(removedBackups, ","), backupBytes)
 	}
 	if backupErr != nil {
-		_ = m.appendCleanupWarning(jobID, "automatic backup retention cleanup failed: "+backupErr.Error())
+		warnings = append(warnings, "automatic backup retention cleanup failed: "+backupErr.Error())
 	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), m.cfg.StopTimeout.Duration)
@@ -68,8 +69,9 @@ func (m *Manager) performPostSuccessMaintenance(jobID string) {
 		log.Printf("sub2api-deployer job_id=%q cleanup=managed_image removed=%q estimated_reclaimed_bytes=%d", jobID, strings.Join(removedImages, ","), imageBytes)
 	}
 	if imageErr != nil {
-		_ = m.appendCleanupWarning(jobID, "managed image retention cleanup failed: "+imageErr.Error())
+		warnings = append(warnings, "managed image retention cleanup failed: "+imageErr.Error())
 	}
+	return strings.Join(warnings, "; ")
 }
 
 func (m *Manager) pruneManagedImages(ctx context.Context) ([]string, int64, error) {

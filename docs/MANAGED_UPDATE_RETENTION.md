@@ -36,9 +36,13 @@ backups/
 Each completed automatic backup contains:
 
 - `database.dump`: complete PostgreSQL custom-format dump.
+- `application-config`: the host-side application `config.yaml` configured by
+  the installer (normally `/opt/sub2api/data/config.yaml`).
 - Compose environment files, including `.env` and the managed image state.
 - Base Compose and deployer override files.
 - Deployer configuration, state, and installed binary.
+- Private registry Docker credentials when they are configured for the
+  deployer.
 - Nginx site and managed upstream configuration.
 - `manifest.json`: source/target versions, image digest, deployer build, file
   sizes, and hashes.
@@ -48,6 +52,11 @@ Each completed automatic backup contains:
 Files and directories use private permissions. A crash can leave a
 `.pending-*` directory; the next update removes pending directories before it
 creates a new backup.
+
+The application config and private registry credentials are optional for
+compatibility with older layouts. When either path does not exist, the
+manifest records it under `skipped`; any other read or copy error blocks the
+update.
 
 ## Application retention
 

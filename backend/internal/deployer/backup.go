@@ -24,16 +24,17 @@ const (
 )
 
 type backupManifest struct {
-	Schema        int                  `json:"schema"`
-	Kind          string               `json:"kind"`
-	CreatedAt     time.Time            `json:"created_at"`
-	JobID         string               `json:"job_id"`
-	FromVersion   string               `json:"from_version"`
-	FromImage     string               `json:"from_image"`
-	TargetVersion string               `json:"target_version"`
-	Database      backupDatabaseRecord `json:"database"`
-	Deployer      BuildInfo            `json:"deployer"`
-	Files         []backupFileRecord   `json:"files"`
+	Schema        int                   `json:"schema"`
+	Kind          string                `json:"kind"`
+	CreatedAt     time.Time             `json:"created_at"`
+	JobID         string                `json:"job_id"`
+	FromVersion   string                `json:"from_version"`
+	FromImage     string                `json:"from_image"`
+	TargetVersion string                `json:"target_version"`
+	Database      backupDatabaseRecord  `json:"database"`
+	Deployer      BuildInfo             `json:"deployer"`
+	Files         []backupFileRecord    `json:"files"`
+	Skipped       []backupSkippedRecord `json:"skipped,omitempty"`
 }
 
 type backupDatabaseRecord struct {
@@ -50,9 +51,16 @@ type backupFileRecord struct {
 	Size   int64  `json:"size"`
 }
 
+type backupSkippedRecord struct {
+	Name   string `json:"name"`
+	Source string `json:"source"`
+	Reason string `json:"reason"`
+}
+
 type backupSource struct {
-	name string
-	path string
+	name     string
+	path     string
+	optional bool
 }
 
 func (m *Manager) createAutomaticBackup(ctx context.Context, job *Job) (string, error) {
@@ -116,6 +124,12 @@ func (m *Manager) createAutomaticBackup(ctx context.Context, job *Job) (string, 
 		destinationName := source.name
 		destinationPath := filepath.Join(tempDir, destinationName)
 		if err := copyBackupFile(source.path, destinationPath); err != nil {
+			if source.optional && errors.Is(err, os.ErrNotExist) {
+				manifest.Skipped = append(manifest.Skipped, backupSkippedRecord{
+					Name: source.name, Source: source.path, Reason: "source file does not exist",
+				})
+				continue
+			}
 			return "", fmt.Errorf("copy %s from %s: %w", source.name, source.path, err)
 		}
 		record, err := inspectBackupFile(source.name, destinationName, source.path, destinationPath)
@@ -233,13 +247,20 @@ func (m *Manager) backupSources() []backupSource {
 			sources = append(sources, backupSource{name: name, path: filepath.Clean(path)})
 		}
 	}
+	appendOptionalSource := func(name, path string) {
+		if strings.TrimSpace(path) != "" {
+			sources = append(sources, backupSource{name: name, path: filepath.Clean(path), optional: true})
+		}
+	}
 	for index, path := range m.cfg.ComposeEnvFiles {
 		appendSource(fmt.Sprintf("compose-env-%02d", index+1), path)
 	}
 	for index, path := range m.cfg.ComposeFiles {
 		appendSource(fmt.Sprintf("compose-file-%02d", index+1), path)
 	}
+	appendOptionalSource("application-config", m.cfg.BackupApplicationConfigPath)
 	appendSource("deployer-config", m.cfg.LoadedFrom)
+	appendOptionalSource("deployer-docker-config", m.cfg.BackupDockerConfigPath)
 	appendSource("deployer-binary", m.cfg.BackupDeployerBinaryPath)
 	appendSource("deployer-state", m.cfg.StatePath)
 	appendSource("nginx-site", m.cfg.NginxSitePath)

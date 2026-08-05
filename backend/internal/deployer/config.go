@@ -20,48 +20,50 @@ var (
 )
 
 type Config struct {
-	LoadedFrom                 string            `json:"-"`
-	SocketPath                 string            `json:"socket_path"`
-	SocketMode                 uint32            `json:"socket_mode"`
-	SocketGID                  int               `json:"socket_gid"`
-	StatePath                  string            `json:"state_path"`
-	ImageStatePath             string            `json:"image_state_path"`
-	ImageRepository            string            `json:"image_repository"`
-	RequiredImageLabels        map[string]string `json:"required_image_labels"`
-	DockerBinary               string            `json:"docker_binary"`
-	ComposeWorkDir             string            `json:"compose_work_dir"`
-	ComposeProject             string            `json:"compose_project"`
-	ComposeEnvFiles            []string          `json:"compose_env_files"`
-	ComposeFiles               []string          `json:"compose_files"`
-	ComposeService             string            `json:"compose_service"`
-	ImageEnvironment           string            `json:"image_environment"`
-	ContainerPort              int               `json:"container_port"`
-	DeploymentStatePath        string            `json:"deployment_state_path"`
-	DeploymentStateFile        string            `json:"deployment_state_file"`
-	Slots                      []Slot            `json:"slots"`
-	InitialContainer           string            `json:"initial_container"`
-	InitialVersion             string            `json:"initial_version"`
-	NginxUpstreamPath          string            `json:"nginx_upstream_path"`
-	NginxSitePath              string            `json:"nginx_site_path"`
-	NginxUpstreamName          string            `json:"nginx_upstream_name"`
-	NginxTestCommand           []string          `json:"nginx_test_command"`
-	NginxDumpCommand           []string          `json:"nginx_dump_command"`
-	NginxReloadCommand         []string          `json:"nginx_reload_command"`
-	NginxProbeURL              string            `json:"nginx_probe_url"`
-	NginxProbeHost             string            `json:"nginx_probe_host,omitempty"`
-	RouteConfirmationTimeout   Duration          `json:"route_confirmation_timeout"`
-	HealthPath                 string            `json:"health_path"`
-	HealthTimeout              Duration          `json:"health_timeout"`
-	StabilizeDuration          Duration          `json:"stabilize_duration"`
-	DrainDuration              Duration          `json:"drain_duration"`
-	DrainTimeout               Duration          `json:"drain_timeout"`
-	StopTimeout                Duration          `json:"stop_timeout"`
-	ControlPlaneUpgradePath    string            `json:"control_plane_upgrade_path,omitempty"`
-	ControlPlaneUpgradeCommand []string          `json:"control_plane_upgrade_command,omitempty"`
-	BackupRootPath             string            `json:"backup_root_path"`
-	BackupDatabaseService      string            `json:"backup_database_service"`
-	BackupDeployerBinaryPath   string            `json:"backup_deployer_binary_path"`
-	BackupTimeout              Duration          `json:"backup_timeout"`
+	LoadedFrom                  string            `json:"-"`
+	SocketPath                  string            `json:"socket_path"`
+	SocketMode                  uint32            `json:"socket_mode"`
+	SocketGID                   int               `json:"socket_gid"`
+	StatePath                   string            `json:"state_path"`
+	ImageStatePath              string            `json:"image_state_path"`
+	ImageRepository             string            `json:"image_repository"`
+	RequiredImageLabels         map[string]string `json:"required_image_labels"`
+	DockerBinary                string            `json:"docker_binary"`
+	ComposeWorkDir              string            `json:"compose_work_dir"`
+	ComposeProject              string            `json:"compose_project"`
+	ComposeEnvFiles             []string          `json:"compose_env_files"`
+	ComposeFiles                []string          `json:"compose_files"`
+	ComposeService              string            `json:"compose_service"`
+	ImageEnvironment            string            `json:"image_environment"`
+	ContainerPort               int               `json:"container_port"`
+	DeploymentStatePath         string            `json:"deployment_state_path"`
+	DeploymentStateFile         string            `json:"deployment_state_file"`
+	Slots                       []Slot            `json:"slots"`
+	InitialContainer            string            `json:"initial_container"`
+	InitialVersion              string            `json:"initial_version"`
+	NginxUpstreamPath           string            `json:"nginx_upstream_path"`
+	NginxSitePath               string            `json:"nginx_site_path"`
+	NginxUpstreamName           string            `json:"nginx_upstream_name"`
+	NginxTestCommand            []string          `json:"nginx_test_command"`
+	NginxDumpCommand            []string          `json:"nginx_dump_command"`
+	NginxReloadCommand          []string          `json:"nginx_reload_command"`
+	NginxProbeURL               string            `json:"nginx_probe_url"`
+	NginxProbeHost              string            `json:"nginx_probe_host,omitempty"`
+	RouteConfirmationTimeout    Duration          `json:"route_confirmation_timeout"`
+	HealthPath                  string            `json:"health_path"`
+	HealthTimeout               Duration          `json:"health_timeout"`
+	StabilizeDuration           Duration          `json:"stabilize_duration"`
+	DrainDuration               Duration          `json:"drain_duration"`
+	DrainTimeout                Duration          `json:"drain_timeout"`
+	StopTimeout                 Duration          `json:"stop_timeout"`
+	ControlPlaneUpgradePath     string            `json:"control_plane_upgrade_path,omitempty"`
+	ControlPlaneUpgradeCommand  []string          `json:"control_plane_upgrade_command,omitempty"`
+	BackupRootPath              string            `json:"backup_root_path"`
+	BackupDatabaseService       string            `json:"backup_database_service"`
+	BackupApplicationConfigPath string            `json:"backup_application_config_path,omitempty"`
+	BackupDockerConfigPath      string            `json:"backup_docker_config_path,omitempty"`
+	BackupDeployerBinaryPath    string            `json:"backup_deployer_binary_path"`
+	BackupTimeout               Duration          `json:"backup_timeout"`
 }
 
 type Duration struct {
@@ -124,6 +126,12 @@ func (c *Config) applyDefaults() {
 	}
 	if c.BackupDatabaseService == "" {
 		c.BackupDatabaseService = "postgres"
+	}
+	if c.BackupApplicationConfigPath == "" && c.ComposeWorkDir != "" {
+		c.BackupApplicationConfigPath = filepath.Join(c.ComposeWorkDir, "data", "config.yaml")
+	}
+	if c.BackupDockerConfigPath == "" && c.LoadedFrom != "" {
+		c.BackupDockerConfigPath = filepath.Join(filepath.Dir(c.LoadedFrom), "docker", "config.json")
 	}
 	if c.BackupDeployerBinaryPath == "" {
 		if executable, err := os.Executable(); err == nil && filepath.IsAbs(executable) {
@@ -219,6 +227,12 @@ func (c Config) validate() error {
 	}
 	if !composeServicePattern.MatchString(c.BackupDatabaseService) {
 		return errors.New("backup_database_service must match ^[A-Za-z0-9][A-Za-z0-9_.-]*$")
+	}
+	if c.BackupApplicationConfigPath != "" && !filepath.IsAbs(c.BackupApplicationConfigPath) {
+		return errors.New("backup_application_config_path must be an absolute path")
+	}
+	if c.BackupDockerConfigPath != "" && !filepath.IsAbs(c.BackupDockerConfigPath) {
+		return errors.New("backup_docker_config_path must be an absolute path")
 	}
 	if !filepath.IsAbs(c.BackupDeployerBinaryPath) {
 		return errors.New("backup_deployer_binary_path must be an absolute path")
