@@ -58,6 +58,10 @@ type Config struct {
 	StopTimeout                Duration          `json:"stop_timeout"`
 	ControlPlaneUpgradePath    string            `json:"control_plane_upgrade_path,omitempty"`
 	ControlPlaneUpgradeCommand []string          `json:"control_plane_upgrade_command,omitempty"`
+	BackupRootPath             string            `json:"backup_root_path"`
+	BackupDatabaseService      string            `json:"backup_database_service"`
+	BackupDeployerBinaryPath   string            `json:"backup_deployer_binary_path"`
+	BackupTimeout              Duration          `json:"backup_timeout"`
 }
 
 type Duration struct {
@@ -115,6 +119,19 @@ func (c *Config) applyDefaults() {
 	if c.DeploymentStatePath == "" && c.StatePath != "" {
 		c.DeploymentStatePath = filepath.Join(filepath.Dir(c.StatePath), "runtime", "active-slot")
 	}
+	if c.BackupRootPath == "" && c.StatePath != "" {
+		c.BackupRootPath = filepath.Join(filepath.Dir(c.StatePath), "backups")
+	}
+	if c.BackupDatabaseService == "" {
+		c.BackupDatabaseService = "postgres"
+	}
+	if c.BackupDeployerBinaryPath == "" {
+		if executable, err := os.Executable(); err == nil && filepath.IsAbs(executable) {
+			c.BackupDeployerBinaryPath = executable
+		} else {
+			c.BackupDeployerBinaryPath = "/usr/local/sbin/sub2api-deployer"
+		}
+	}
 	if c.NginxUpstreamName == "" {
 		c.NginxUpstreamName = "sub2api_managed"
 	}
@@ -138,6 +155,9 @@ func (c *Config) applyDefaults() {
 	}
 	if c.StopTimeout.Duration == 0 {
 		c.StopTimeout.Duration = 2 * time.Minute
+	}
+	if c.BackupTimeout.Duration == 0 {
+		c.BackupTimeout.Duration = 30 * time.Minute
 	}
 	for i := range c.ComposeEnvFiles {
 		c.ComposeEnvFiles[i] = resolvePath(c.ComposeWorkDir, c.ComposeEnvFiles[i])
@@ -194,6 +214,15 @@ func (c Config) validate() error {
 	if !filepath.IsAbs(c.DeploymentStatePath) {
 		return errors.New("deployment_state_path must be an absolute host path")
 	}
+	if !filepath.IsAbs(c.BackupRootPath) {
+		return errors.New("backup_root_path must be an absolute path")
+	}
+	if !composeServicePattern.MatchString(c.BackupDatabaseService) {
+		return errors.New("backup_database_service must match ^[A-Za-z0-9][A-Za-z0-9_.-]*$")
+	}
+	if !filepath.IsAbs(c.BackupDeployerBinaryPath) {
+		return errors.New("backup_deployer_binary_path must be an absolute path")
+	}
 	if c.Slots[0].Name == c.Slots[1].Name || c.Slots[0].Port == c.Slots[1].Port {
 		return errors.New("deployment slots must use distinct names and ports")
 	}
@@ -233,6 +262,9 @@ func (c Config) validate() error {
 	}
 	if c.RouteConfirmationTimeout.Duration < time.Second || c.HealthTimeout.Duration < time.Second || c.DrainTimeout.Duration < time.Second || c.StopTimeout.Duration < time.Second {
 		return errors.New("route_confirmation_timeout, health_timeout, drain_timeout, and stop_timeout must be at least one second")
+	}
+	if c.BackupTimeout.Duration < time.Minute {
+		return errors.New("backup_timeout must be at least one minute")
 	}
 	if c.HealthTimeout.Duration < 10*time.Minute {
 		return errors.New("health_timeout must cover the 10 minute application migration budget")

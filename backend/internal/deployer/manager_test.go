@@ -313,6 +313,12 @@ func (f *fakeRunner) Run(_ context.Context, _ map[string]string, name string, ar
 	if strings.Contains(command, "image inspect --format {{json .Config.Labels}}") {
 		return `{"org.opencontainers.image.source":"https://github.com/ssharkkky/sub2api","io.tokensupply.sub2api.update-protocol":"2"}`, nil
 	}
+	if strings.Contains(command, " pg_dump ") {
+		return "PGDMPtest-backup", nil
+	}
+	if strings.Contains(command, "image ls --all --no-trunc --quiet") {
+		return "", nil
+	}
 	if strings.Contains(command, "container inspect --format") {
 		container := fakeContainerName(args[len(args)-1])
 		if container == "sub2api-green" && !f.candidate {
@@ -434,6 +440,20 @@ func testConfig(t *testing.T, candidatePort int) Config {
 	if err := os.WriteFile(site, []byte("proxy_pass http://sub2api_managed;\n"), 0644); err != nil {
 		t.Fatal(err)
 	}
+	envFile := filepath.Join(dir, ".env")
+	imageStateFile := filepath.Join(dir, ".deployer.env")
+	composeFile := filepath.Join(dir, "compose.yaml")
+	deployerBinary := filepath.Join(dir, "sub2api-deployer")
+	for path, data := range map[string]string{
+		envFile:        "POSTGRES_USER=sub2api\nPOSTGRES_DB=sub2api\n",
+		imageStateFile: "SUB2API_IMAGE=ghcr.io/ssharkkky/sub2api:0.1.1-ts.1\n",
+		composeFile:    "services:\n  postgres:\n    image: postgres:18-alpine\n",
+		deployerBinary: "test deployer binary\n",
+	} {
+		if err := os.WriteFile(path, []byte(data), 0600); err != nil {
+			t.Fatal(err)
+		}
+	}
 	proxy := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		port, readErr := readUpstreamPort(upstream)
 		if readErr != nil {
@@ -461,7 +481,7 @@ func testConfig(t *testing.T, candidatePort int) Config {
 		SocketMode:      0660,
 		SocketGID:       os.Getgid(),
 		StatePath:       filepath.Join(dir, "state.json"),
-		ImageStatePath:  filepath.Join(dir, ".deployer.env"),
+		ImageStatePath:  imageStateFile,
 		ImageRepository: "ghcr.io/ssharkkky/sub2api",
 		RequiredImageLabels: map[string]string{
 			"org.opencontainers.image.source":        "https://github.com/ssharkkky/sub2api",
@@ -470,8 +490,8 @@ func testConfig(t *testing.T, candidatePort int) Config {
 		DockerBinary:        "docker",
 		ComposeWorkDir:      dir,
 		ComposeProject:      "sub2api",
-		ComposeEnvFiles:     []string{filepath.Join(dir, ".env"), filepath.Join(dir, ".deployer.env")},
-		ComposeFiles:        []string{filepath.Join(dir, "compose.yaml")},
+		ComposeEnvFiles:     []string{envFile, imageStateFile},
+		ComposeFiles:        []string{composeFile},
 		ComposeService:      "sub2api",
 		ImageEnvironment:    "SUB2API_IMAGE",
 		ContainerPort:       8080,
@@ -498,6 +518,10 @@ func testConfig(t *testing.T, candidatePort int) Config {
 		StopTimeout:                Duration{Duration: time.Second},
 		ControlPlaneUpgradePath:    filepath.Join(dir, "control-plane-upgrade.json"),
 		ControlPlaneUpgradeCommand: []string{"/bin/systemctl", "start", "--no-block", "sub2api-deployer-upgrade.service"},
+		BackupRootPath:             filepath.Join(dir, "backups"),
+		BackupDatabaseService:      "postgres",
+		BackupDeployerBinaryPath:   deployerBinary,
+		BackupTimeout:              Duration{Duration: time.Minute},
 	}
 }
 
@@ -2561,6 +2585,10 @@ func TestDegradedLatchBlocksStartUntilSafeReconciliation(t *testing.T) {
 		ActivePort:      cfg.Slots[0].Port,
 		ActiveVersion:   "0.1.1-ts.1",
 		ActiveImage:     "ghcr.io/ssharkkky/sub2api:0.1.1-ts.1",
+		PreviousVersion: "0.1.0-ts.2",
+		PreviousImage:   managedTestImage('b'),
+		OlderVersion:    "0.1.0-ts.1",
+		OlderImage:      managedTestImage('c'),
 		Degraded:        true,
 		DegradedReason:  "rollback route was uncertain",
 		Job: &Job{
@@ -2598,6 +2626,9 @@ func TestDegradedLatchBlocksStartUntilSafeReconciliation(t *testing.T) {
 	}
 	if err := manager.Reconcile(context.Background(), "blue"); err != nil {
 		t.Fatalf("reconcile active slot: %v", err)
+	}
+	if manager.state.PreviousVersion != "0.1.0-ts.2" || manager.state.OlderVersion != "0.1.0-ts.1" {
+		t.Fatalf("same-release reconciliation rotated retained releases: %+v", manager.state)
 	}
 	job, err := manager.Start(request)
 	if err != nil {

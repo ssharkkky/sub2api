@@ -1,10 +1,59 @@
 package deployer
 
 import (
+	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 )
+
+func TestConfigDefaultsManagedBackupSettings(t *testing.T) {
+	cfg := testConfig(t, 19080)
+	cfg.BackupRootPath = ""
+	cfg.BackupDatabaseService = ""
+	cfg.BackupDeployerBinaryPath = ""
+	cfg.BackupTimeout = Duration{}
+	cfg.applyDefaults()
+
+	if cfg.BackupRootPath != filepath.Join(filepath.Dir(cfg.StatePath), "backups") {
+		t.Fatalf("backup root=%q", cfg.BackupRootPath)
+	}
+	if cfg.BackupDatabaseService != "postgres" {
+		t.Fatalf("database service=%q", cfg.BackupDatabaseService)
+	}
+	if !filepath.IsAbs(cfg.BackupDeployerBinaryPath) {
+		t.Fatalf("deployer binary=%q", cfg.BackupDeployerBinaryPath)
+	}
+	if cfg.BackupTimeout.Duration != 30*time.Minute {
+		t.Fatalf("backup timeout=%s", cfg.BackupTimeout.Duration)
+	}
+	if _, err := os.Stat(cfg.BackupDeployerBinaryPath); err != nil {
+		t.Fatalf("default deployer binary is not readable: %v", err)
+	}
+}
+
+func TestConfigRejectsInvalidManagedBackupSettings(t *testing.T) {
+	tests := []struct {
+		name   string
+		mutate func(*Config)
+		want   string
+	}{
+		{name: "relative root", mutate: func(cfg *Config) { cfg.BackupRootPath = "backups" }, want: "backup_root_path"},
+		{name: "unsafe service", mutate: func(cfg *Config) { cfg.BackupDatabaseService = "postgres;rm" }, want: "backup_database_service"},
+		{name: "relative binary", mutate: func(cfg *Config) { cfg.BackupDeployerBinaryPath = "sub2api-deployer" }, want: "backup_deployer_binary_path"},
+		{name: "short timeout", mutate: func(cfg *Config) { cfg.BackupTimeout = Duration{Duration: 59 * time.Second} }, want: "backup_timeout"},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			cfg := testConfig(t, 19080)
+			test.mutate(&cfg)
+			if err := cfg.validate(); err == nil || !strings.Contains(err.Error(), test.want) {
+				t.Fatalf("validation error=%v", err)
+			}
+		})
+	}
+}
 
 func TestConfigRejectsNegativeDeploymentPhaseDurations(t *testing.T) {
 	t.Parallel()
