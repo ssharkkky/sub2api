@@ -133,15 +133,6 @@ func ClassifyOpsError(input OpsErrorClassificationInput) OpsErrorClassification 
 		return result
 	}
 
-	if isOpsUnsupportedModel(message) {
-		result.FinalOutcome = OpsFinalOutcomeClientRejected
-		result.Responsibility = OpsResponsibilityClient
-		result.ErrorCategory = OpsErrorCategoryUnsupportedModel
-		result.AlertFamily = OpsAlertFamilyCompatibility
-		result.ClassificationReason = "unsupported_or_unconfigured_model"
-		return result
-	}
-
 	if upstreamStatus > 0 || phase == "upstream" || phase == "account_auth" || source == "upstream_http" {
 		effectiveUpstreamStatus := upstreamStatus
 		// Older and compatibility paths did not always persist a separate upstream
@@ -151,6 +142,15 @@ func ClassifyOpsError(input OpsErrorClassificationInput) OpsErrorClassification 
 			effectiveUpstreamStatus = status
 		}
 		return classifyOpsUpstreamFailure(result, status, effectiveUpstreamStatus, phase, errType, message)
+	}
+
+	if isOpsUnsupportedModel(message) {
+		result.FinalOutcome = OpsFinalOutcomeClientRejected
+		result.Responsibility = OpsResponsibilityClient
+		result.ErrorCategory = OpsErrorCategoryUnsupportedModel
+		result.AlertFamily = OpsAlertFamilyCompatibility
+		result.ClassificationReason = "unsupported_or_unconfigured_model"
+		return result
 	}
 
 	if isOpsUserBusinessLimit(errType, status, message) {
@@ -305,7 +305,8 @@ func recoveredOpsAlertFamily(upstreamStatus int, phase, errType, message string)
 	if strings.Contains(message, "context canceled") || strings.Contains(message, "client disconnected") {
 		return OpsAlertFamilyClientQuality
 	}
-	if isOpsExplicitUpstreamRequestRejection(upstreamStatus, errType, message) || strings.Contains(message, "invalid") {
+	if isOpsExplicitUpstreamRequestRejection(upstreamStatus, errType, message) ||
+		isOpsUnsupportedModel(message) || strings.Contains(message, "invalid") {
 		return OpsAlertFamilyCompatibility
 	}
 	if upstreamStatus >= 400 || phase == "upstream" || phase == "account_auth" {
@@ -325,7 +326,7 @@ func recoveredOpsResponsibility(upstreamStatus int, phase, errType, message stri
 		return OpsResponsibilityProvider
 	}
 	if isOpsExplicitUpstreamRequestRejection(upstreamStatus, errType, message) {
-		return OpsResponsibilityClient
+		return OpsResponsibilityPlatform
 	}
 	if upstreamStatus >= 400 && upstreamStatus < 500 {
 		return OpsResponsibilityProvider
@@ -341,6 +342,7 @@ func isOpsExplicitUpstreamRequestRejection(upstreamStatus int, errType, message 
 		return true
 	}
 	return strings.Contains(message, "invalid request") ||
+		strings.Contains(message, "invalid_request_error") ||
 		strings.Contains(message, "invalid parameter") ||
 		strings.Contains(message, "unknown parameter") ||
 		strings.Contains(message, "unsupported parameter") ||

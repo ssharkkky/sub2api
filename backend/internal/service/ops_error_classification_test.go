@@ -70,6 +70,30 @@ func TestClassifyOpsError(t *testing.T) {
 			category: OpsErrorCategoryProviderRateLimit, family: OpsAlertFamilyProviderHealth, sla: true,
 		},
 		{
+			name:    "gateway 499 does not hide upstream timeout",
+			input:   OpsErrorClassificationInput{StatusCode: 499, UpstreamStatusCode: intPtr(504), ErrorPhase: "upstream", ErrorType: "api_error"},
+			outcome: OpsFinalOutcomeProviderFailed, responsibility: OpsResponsibilityProvider,
+			category: OpsErrorCategoryProviderServer, family: OpsAlertFamilyProviderHealth, sla: true,
+		},
+		{
+			name:    "recovered upstream invalid request is platform compatibility not client fault",
+			input:   OpsErrorClassificationInput{StatusCode: 200, UpstreamStatusCode: intPtr(400), ErrorPhase: "upstream", ErrorType: "upstream_error", UpstreamMessage: "invalid_request_error"},
+			outcome: OpsFinalOutcomeRecovered, responsibility: OpsResponsibilityPlatform,
+			category: OpsErrorCategoryRecovered, family: OpsAlertFamilyCompatibility,
+		},
+		{
+			name:    "upstream unsupported model is provider failure not local client rejection",
+			input:   OpsErrorClassificationInput{StatusCode: 502, UpstreamStatusCode: intPtr(404), ErrorPhase: "upstream", ErrorType: "upstream_error", UpstreamMessage: "model is not supported by this provider"},
+			outcome: OpsFinalOutcomeProviderFailed, responsibility: OpsResponsibilityProvider,
+			category: OpsErrorCategoryProviderServer, family: OpsAlertFamilyProviderHealth, sla: true,
+		},
+		{
+			name:    "recovered upstream unsupported model is compatibility signal",
+			input:   OpsErrorClassificationInput{StatusCode: 200, UpstreamStatusCode: intPtr(400), ErrorPhase: "upstream", ErrorType: "upstream_error", UpstreamMessage: "model is not supported by this provider"},
+			outcome: OpsFinalOutcomeRecovered, responsibility: OpsResponsibilityProvider,
+			category: OpsErrorCategoryRecovered, family: OpsAlertFamilyCompatibility,
+		},
+		{
 			name:    "managed credential rejection is platform responsibility",
 			input:   OpsErrorClassificationInput{StatusCode: 502, UpstreamStatusCode: intPtr(401), ErrorPhase: "upstream", ErrorMessage: "OAuth access token has been revoked"},
 			outcome: OpsFinalOutcomePlatformFailed, responsibility: OpsResponsibilityPlatform,
