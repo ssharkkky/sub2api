@@ -64,6 +64,12 @@ func TestClassifyOpsError(t *testing.T) {
 			category: OpsErrorCategoryRecovered, family: OpsAlertFamilyProviderHealth,
 		},
 		{
+			name:    "gateway 499 does not hide upstream rate limit",
+			input:   OpsErrorClassificationInput{StatusCode: 499, UpstreamStatusCode: intPtr(429), ErrorPhase: "upstream", ErrorType: "api_error", UpstreamMessage: "Upstream rate limit exceeded"},
+			outcome: OpsFinalOutcomeProviderFailed, responsibility: OpsResponsibilityProvider,
+			category: OpsErrorCategoryProviderRateLimit, family: OpsAlertFamilyProviderHealth, sla: true,
+		},
+		{
 			name:    "managed credential rejection is platform responsibility",
 			input:   OpsErrorClassificationInput{StatusCode: 502, UpstreamStatusCode: intPtr(401), ErrorPhase: "upstream", ErrorMessage: "OAuth access token has been revoked"},
 			outcome: OpsFinalOutcomePlatformFailed, responsibility: OpsResponsibilityPlatform,

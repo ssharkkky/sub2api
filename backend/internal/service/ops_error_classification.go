@@ -103,7 +103,9 @@ func ClassifyOpsError(input OpsErrorClassificationInput) OpsErrorClassification 
 		return result
 	}
 
-	if isOpsClientCancellation(status, message) {
+	// A gateway 499 may be emitted while closing a connection after an
+	// upstream failure. Prefer the explicit upstream status when it exists.
+	if isOpsClientCancellation(status, message) && upstreamStatus == 0 {
 		result.FinalOutcome = OpsFinalOutcomeCancelled
 		result.Responsibility = OpsResponsibilityClient
 		result.ErrorCategory = OpsErrorCategoryClientCancelled
