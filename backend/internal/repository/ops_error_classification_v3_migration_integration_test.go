@@ -17,6 +17,7 @@ type opsV3MigrationExpectation struct {
 	name           string
 	statusCode     int
 	upstreamStatus int
+	errorType      string
 	finalOutcome   string
 	message        string
 	wantOutcome    string
@@ -67,6 +68,25 @@ func TestMigration209BackfillsAndGuardsMixedVersionOpsWrites(t *testing.T) {
 			wantSLA: false, wantFamily: "compatibility",
 		},
 		{
+			name: "invalid request type hidden by gateway", statusCode: 502, upstreamStatus: 400,
+			errorType: "invalid_request_error", finalOutcome: "client_rejected",
+			message:     "provider rejected request without semantic message",
+			wantOutcome: "platform_failed", wantOwner: "platform", wantCategory: "product_compatibility",
+			wantSLA: false, wantFamily: "compatibility",
+		},
+		{
+			name: "capacity rejection with upstream 402", statusCode: 502, upstreamStatus: 402,
+			finalOutcome: "client_rejected", message: "insufficient_balance",
+			wantOutcome: "platform_failed", wantOwner: "platform", wantCategory: "platform_capacity",
+			wantSLA: true, wantFamily: "capacity",
+		},
+		{
+			name: "capability rejection with upstream 404", statusCode: 502, upstreamStatus: 404,
+			finalOutcome: "client_rejected", message: "capability is not enabled",
+			wantOutcome: "platform_failed", wantOwner: "platform", wantCategory: "product_compatibility",
+			wantSLA: false, wantFamily: "compatibility",
+		},
+		{
 			name: "recovered expired token", statusCode: 200, upstreamStatus: 403,
 			finalOutcome: "recovered", message: "OAuth access token expired",
 			wantOutcome: "recovered", wantOwner: "platform", wantCategory: "recovered",
@@ -76,6 +96,10 @@ func TestMigration209BackfillsAndGuardsMixedVersionOpsWrites(t *testing.T) {
 
 	ids := make(map[string]int64, len(fixtures))
 	for _, fixture := range fixtures {
+		errorType := fixture.errorType
+		if errorType == "" {
+			errorType = "upstream_error"
+		}
 		var id int64
 		err := tx.QueryRowContext(ctx, `
 			INSERT INTO ops_error_logs (
@@ -84,12 +108,12 @@ func TestMigration209BackfillsAndGuardsMixedVersionOpsWrites(t *testing.T) {
 				counts_toward_sla, alert_family, classification_reason,
 				classification_version, is_count_tokens, created_at
 			) VALUES (
-				'ops-migration-209', 'upstream', 'upstream_error', $1, $2,
-				$3, $4, 'client', 'invalid_request',
+				'ops-migration-209', 'upstream', $1, $2, $3,
+				$4, $5, 'client', 'invalid_request',
 				FALSE, 'client_quality', 'legacy_v2_fixture',
 				2, FALSE, NOW()
 			) RETURNING id
-		`, fixture.statusCode, fixture.upstreamStatus, fixture.message, fixture.finalOutcome).Scan(&id)
+		`, errorType, fixture.statusCode, fixture.upstreamStatus, fixture.message, fixture.finalOutcome).Scan(&id)
 		require.NoError(t, err, fixture.name)
 		ids[fixture.name] = id
 	}

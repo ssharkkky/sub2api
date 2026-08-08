@@ -472,6 +472,24 @@ WHERE COALESCE(classification_version, 0) < 3
   AND (
       error_phase = 'account_auth'
       OR upstream_status_code = 401
+      OR COALESCE(error_message, '') ILIKE '%insufficient%balance%'
+      OR COALESCE(upstream_error_message, '') ILIKE '%insufficient%balance%'
+      OR COALESCE(error_message, '') ILIKE '%预扣费额度失败%'
+      OR COALESCE(upstream_error_message, '') ILIKE '%预扣费额度失败%'
+      OR COALESCE(error_message, '') ILIKE '%用户剩余额度%'
+      OR COALESCE(upstream_error_message, '') ILIKE '%用户剩余额度%'
+      OR COALESCE(error_message, '') ILIKE ANY (ARRAY[
+             '%not enabled for this group%',
+             '%disabled for this group%',
+             '%capability is not enabled%',
+             '%permission is not enabled%'
+         ])
+      OR COALESCE(upstream_error_message, '') ILIKE ANY (ARRAY[
+             '%not enabled for this group%',
+             '%disabled for this group%',
+             '%capability is not enabled%',
+             '%permission is not enabled%'
+         ])
       OR (
           upstream_status_code = 403
           AND (
@@ -532,7 +550,11 @@ WHERE COALESCE(classification_version, 0) < 3
   AND COALESCE(responsibility, '') IN ('', 'client', 'provider')
   AND COALESCE(status_code, 0) >= 500
   AND (
-      COALESCE(error_message, '') ILIKE '%context_length_exceeded%'
+      (
+          error_type = 'invalid_request_error'
+          AND upstream_status_code IN (400, 422)
+      )
+      OR COALESCE(error_message, '') ILIKE '%context_length_exceeded%'
       OR COALESCE(upstream_error_message, '') ILIKE '%context_length_exceeded%'
       OR COALESCE(error_message, '') ILIKE '%exceeds the context window%'
       OR COALESCE(upstream_error_message, '') ILIKE '%exceeds the context window%'
