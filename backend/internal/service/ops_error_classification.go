@@ -3,7 +3,7 @@ package service
 import "strings"
 
 const (
-	OpsErrorClassificationVersion = 2
+	OpsErrorClassificationVersion = 3
 
 	OpsFinalOutcomeRecovered       = "recovered"
 	OpsFinalOutcomeClientRejected  = "client_rejected"
@@ -97,8 +97,8 @@ func ClassifyOpsError(input OpsErrorClassificationInput) OpsErrorClassification 
 		result.FinalOutcome = OpsFinalOutcomeRecovered
 		result.ErrorCategory = OpsErrorCategoryRecovered
 		result.CountsTowardSLA = false
-		result.AlertFamily = recoveredOpsAlertFamily(upstreamStatus, phase, message)
-		result.Responsibility = recoveredOpsResponsibility(upstreamStatus, phase, message)
+		result.AlertFamily = recoveredOpsAlertFamily(upstreamStatus, phase, errType, message)
+		result.Responsibility = recoveredOpsResponsibility(upstreamStatus, phase, errType, message)
 		result.ClassificationReason = "final_request_recovered"
 		return result
 	}
@@ -227,17 +227,32 @@ func classifyOpsUpstreamFailure(result OpsErrorClassification, status, upstreamS
 		result.ClassificationReason = "managed_upstream_credential_rejected"
 		return result
 	}
-	if upstreamStatus >= 400 && upstreamStatus < 500 && upstreamStatus != 429 {
+	if isOpsExplicitUpstreamRequestRejection(upstreamStatus, errType, message) {
 		result.FinalOutcome = OpsFinalOutcomeClientRejected
 		result.Responsibility = OpsResponsibilityClient
 		result.ErrorCategory = OpsErrorCategoryInvalidRequest
 		result.AlertFamily = OpsAlertFamilyClientQuality
 		result.ClassificationReason = "upstream_rejected_request_semantics"
 		if status >= 500 || status == 0 {
+			result.FinalOutcome = OpsFinalOutcomePlatformFailed
+			result.Responsibility = OpsResponsibilityPlatform
 			result.ErrorCategory = OpsErrorCategoryProductCompatibility
 			result.AlertFamily = OpsAlertFamilyCompatibility
-			result.ClassificationReason = "upstream_4xx_exposed_as_gateway_failure"
+			result.ClassificationReason = "upstream_request_incompatibility_exposed_as_gateway_failure"
 		}
+		return result
+	}
+	// An upstream 4xx is not automatically a client-side mistake. Provider
+	// account/workspace states (such as 402 deactivated_workspace), endpoint
+	// availability, and undocumented provider gates are all reported as 4xx.
+	// Treat only explicit invalid-request evidence as client responsibility.
+	if upstreamStatus >= 400 && upstreamStatus < 500 && upstreamStatus != 429 {
+		result.FinalOutcome = OpsFinalOutcomeProviderFailed
+		result.Responsibility = OpsResponsibilityProvider
+		result.ErrorCategory = OpsErrorCategoryProviderServer
+		result.CountsTowardSLA = true
+		result.AlertFamily = OpsAlertFamilyProviderHealth
+		result.ClassificationReason = "upstream_provider_rejected_request"
 		return result
 	}
 	if upstreamStatus == 429 {
@@ -284,20 +299,20 @@ func classifyOpsUpstreamFailure(result OpsErrorClassification, status, upstreamS
 	return result
 }
 
-func recoveredOpsAlertFamily(upstreamStatus int, phase, message string) string {
+func recoveredOpsAlertFamily(upstreamStatus int, phase, errType, message string) string {
 	if strings.Contains(message, "context canceled") || strings.Contains(message, "client disconnected") {
 		return OpsAlertFamilyClientQuality
 	}
-	if upstreamStatus == 429 || upstreamStatus >= 500 || phase == "upstream" || phase == "account_auth" {
-		return OpsAlertFamilyProviderHealth
-	}
-	if upstreamStatus >= 400 || strings.Contains(message, "invalid") {
+	if isOpsExplicitUpstreamRequestRejection(upstreamStatus, errType, message) || strings.Contains(message, "invalid") {
 		return OpsAlertFamilyCompatibility
+	}
+	if upstreamStatus >= 400 || phase == "upstream" || phase == "account_auth" {
+		return OpsAlertFamilyProviderHealth
 	}
 	return OpsAlertFamilyNone
 }
 
-func recoveredOpsResponsibility(upstreamStatus int, phase, message string) string {
+func recoveredOpsResponsibility(upstreamStatus int, phase, errType, message string) string {
 	if strings.Contains(message, "context canceled") || strings.Contains(message, "client disconnected") {
 		return OpsResponsibilityClient
 	}
@@ -307,10 +322,27 @@ func recoveredOpsResponsibility(upstreamStatus int, phase, message string) strin
 	if upstreamStatus == 429 || upstreamStatus >= 500 || strings.Contains(message, "overloaded") {
 		return OpsResponsibilityProvider
 	}
-	if upstreamStatus >= 400 && upstreamStatus < 500 {
+	if isOpsExplicitUpstreamRequestRejection(upstreamStatus, errType, message) {
 		return OpsResponsibilityClient
 	}
+	if upstreamStatus >= 400 && upstreamStatus < 500 {
+		return OpsResponsibilityProvider
+	}
 	return OpsResponsibilityUnknown
+}
+
+func isOpsExplicitUpstreamRequestRejection(upstreamStatus int, errType, message string) bool {
+	if upstreamStatus != 400 && upstreamStatus != 422 {
+		return false
+	}
+	if errType == "invalid_request_error" {
+		return true
+	}
+	return strings.Contains(message, "invalid request") ||
+		strings.Contains(message, "invalid parameter") ||
+		strings.Contains(message, "unknown parameter") ||
+		strings.Contains(message, "unsupported parameter") ||
+		strings.Contains(message, "malformed request")
 }
 
 func isOpsClientCancellation(status int, message string) bool {

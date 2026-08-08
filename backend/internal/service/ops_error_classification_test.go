@@ -42,7 +42,7 @@ func TestClassifyOpsError(t *testing.T) {
 		{
 			name:    "upstream invalid request exposed as 502 is compatibility",
 			input:   OpsErrorClassificationInput{StatusCode: 502, UpstreamStatusCode: intPtr(400), ErrorPhase: "upstream", ErrorType: "invalid_request_error"},
-			outcome: OpsFinalOutcomeClientRejected, responsibility: OpsResponsibilityClient,
+			outcome: OpsFinalOutcomePlatformFailed, responsibility: OpsResponsibilityPlatform,
 			category: OpsErrorCategoryProductCompatibility, family: OpsAlertFamilyCompatibility,
 		},
 		{
@@ -50,6 +50,18 @@ func TestClassifyOpsError(t *testing.T) {
 			input:   OpsErrorClassificationInput{StatusCode: 400, UpstreamStatusCode: intPtr(400), ErrorPhase: "upstream", ErrorType: "invalid_request_error"},
 			outcome: OpsFinalOutcomeClientRejected, responsibility: OpsResponsibilityClient,
 			category: OpsErrorCategoryInvalidRequest, family: OpsAlertFamilyClientQuality,
+		},
+		{
+			name:    "upstream workspace failure is provider health not client rejection",
+			input:   OpsErrorClassificationInput{StatusCode: 502, UpstreamStatusCode: intPtr(402), ErrorPhase: "upstream", ErrorType: "upstream_error", UpstreamMessage: `{"code":"deactivated_workspace"}`},
+			outcome: OpsFinalOutcomeProviderFailed, responsibility: OpsResponsibilityProvider,
+			category: OpsErrorCategoryProviderServer, family: OpsAlertFamilyProviderHealth, sla: true,
+		},
+		{
+			name:    "recovered upstream workspace failure remains provider attributed",
+			input:   OpsErrorClassificationInput{StatusCode: 200, UpstreamStatusCode: intPtr(402), ErrorPhase: "upstream", ErrorType: "upstream_error", UpstreamMessage: `{"code":"deactivated_workspace"}`},
+			outcome: OpsFinalOutcomeRecovered, responsibility: OpsResponsibilityProvider,
+			category: OpsErrorCategoryRecovered, family: OpsAlertFamilyProviderHealth,
 		},
 		{
 			name:    "managed credential rejection is platform responsibility",
