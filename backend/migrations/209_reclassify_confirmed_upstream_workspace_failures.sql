@@ -2,6 +2,7 @@
 -- workspace failures. The raw status/message columns remain untouched.
 -- Only rows written by classification v2 and carrying the provider-specific
 -- 402 status are updated; ambiguous upstream 4xx rows stay unchanged.
+-- sub2api-managed-update: reviewed-compatible
 UPDATE ops_error_logs
 SET
     final_outcome = CASE WHEN COALESCE(status_code, 0) < 400 THEN 'recovered' ELSE 'provider_failed' END,
