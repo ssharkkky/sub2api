@@ -57,7 +57,10 @@ BEGIN
         OR message_text LIKE '%请重新登录%'
         OR message_text LIKE '%检查 api key%';
     request_semantics :=
-        NEW.error_type = 'invalid_request_error'
+        (
+            NEW.error_type = 'invalid_request_error'
+            AND NEW.upstream_status_code IN (400, 422)
+        )
         OR message_text LIKE '%context_length_exceeded%'
         OR message_text LIKE '%exceeds the context window%'
         OR message_text LIKE '%maximum context length%'
@@ -103,7 +106,11 @@ BEGIN
         NEW.error_category := 'recovered';
         NEW.counts_toward_sla := FALSE;
         NEW.classification_reason := 'final_request_recovered';
-        IF security_message AND upstream_evidence THEN
+        IF message_text LIKE '%context canceled%'
+           OR message_text LIKE '%client disconnected%' THEN
+            NEW.responsibility := 'client';
+            NEW.alert_family := 'client_quality';
+        ELSIF security_message AND upstream_evidence THEN
             NEW.responsibility := 'provider';
             NEW.alert_family := 'security';
         ELSIF capacity_message THEN
@@ -128,6 +135,36 @@ BEGIN
             NEW.responsibility := COALESCE(NULLIF(NEW.responsibility, ''), 'unknown');
             NEW.alert_family := 'none';
         END IF;
+        NEW.classification_version := 3;
+        RETURN NEW;
+    END IF;
+
+    IF COALESCE(NEW.upstream_status_code, 0) = 0
+       AND (
+           NEW.status_code IN (408, 499)
+           OR message_text LIKE '%context canceled%'
+           OR message_text LIKE '%client disconnected%'
+           OR message_text LIKE '%client closed%'
+           OR message_text LIKE '%request canceled%'
+           OR message_text LIKE '%broken pipe%'
+       ) THEN
+        NEW.final_outcome := 'cancelled';
+        NEW.responsibility := 'client';
+        NEW.error_category := 'client_cancelled';
+        NEW.counts_toward_sla := FALSE;
+        NEW.alert_family := 'client_quality';
+        NEW.classification_reason := 'client_cancel_or_disconnect';
+        NEW.classification_version := 3;
+        RETURN NEW;
+    END IF;
+
+    IF NOT upstream_evidence AND security_message THEN
+        NEW.final_outcome := 'security_blocked';
+        NEW.responsibility := 'client';
+        NEW.error_category := 'security_policy';
+        NEW.counts_toward_sla := FALSE;
+        NEW.alert_family := 'security';
+        NEW.classification_reason := 'security_policy_rejection';
         NEW.classification_version := 3;
         RETURN NEW;
     END IF;
@@ -210,7 +247,9 @@ BEGIN
                 NEW.counts_toward_sla := TRUE;
                 NEW.alert_family := 'provider_health';
                 NEW.classification_reason := 'upstream_capacity_or_rate_limit';
-            ELSIF effective_upstream_status = 529 OR message_text LIKE '%overloaded%' THEN
+            ELSIF effective_upstream_status = 529
+                  OR message_text LIKE '%overloaded%'
+                  OR NEW.error_type = 'overloaded_error' THEN
                 NEW.final_outcome := 'provider_failed';
                 NEW.responsibility := 'provider';
                 NEW.error_category := 'provider_overloaded';

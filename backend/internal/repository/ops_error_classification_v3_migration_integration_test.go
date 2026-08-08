@@ -124,6 +124,68 @@ func TestMigration209BackfillsAndGuardsMixedVersionOpsWrites(t *testing.T) {
 	require.NoError(t, err)
 	assertOpsV3MigrationRow(t, tx, rollingID, rollingWriter)
 
+	rollingBoundaryCases := []struct {
+		fixture       opsV3MigrationExpectation
+		errorType     string
+		upstreamValue any
+	}{
+		{
+			fixture: opsV3MigrationExpectation{
+				name: "invalid request type with upstream 503", statusCode: 502, upstreamStatus: 503,
+				finalOutcome: "client_rejected", message: "provider failed without request semantics",
+				wantOutcome: "provider_failed", wantOwner: "provider", wantCategory: "provider_server",
+				wantSLA: true, wantFamily: "provider_health",
+			},
+			errorType: "invalid_request_error", upstreamValue: 503,
+		},
+		{
+			fixture: opsV3MigrationExpectation{
+				name: "client cancellation without upstream status", statusCode: 499,
+				finalOutcome: "client_rejected", message: "client closed request",
+				wantOutcome: "cancelled", wantOwner: "client", wantCategory: "client_cancelled",
+				wantSLA: false, wantFamily: "client_quality",
+			},
+			errorType: "upstream_error", upstreamValue: nil,
+		},
+		{
+			fixture: opsV3MigrationExpectation{
+				name: "overload type without upstream status", statusCode: 502,
+				finalOutcome: "client_rejected", message: "provider request failed",
+				wantOutcome: "provider_failed", wantOwner: "provider", wantCategory: "provider_overloaded",
+				wantSLA: true, wantFamily: "provider_health",
+			},
+			errorType: "overloaded_error", upstreamValue: nil,
+		},
+		{
+			fixture: opsV3MigrationExpectation{
+				name: "recovered client cancellation", statusCode: 200,
+				finalOutcome: "recovered", message: "client disconnected after upstream attempt",
+				wantOutcome: "recovered", wantOwner: "client", wantCategory: "recovered",
+				wantSLA: false, wantFamily: "client_quality",
+			},
+			errorType: "api_error", upstreamValue: 503,
+		},
+	}
+	for _, boundary := range rollingBoundaryCases {
+		var id int64
+		err = tx.QueryRowContext(ctx, `
+			INSERT INTO ops_error_logs (
+				platform, error_phase, error_type, status_code, upstream_status_code,
+				error_message, final_outcome, responsibility, error_category,
+				counts_toward_sla, alert_family, classification_reason,
+				classification_version, is_count_tokens, created_at
+			) VALUES (
+				'ops-migration-209', 'upstream', $1, $2, $3,
+				$4, $5, 'client', 'invalid_request',
+				FALSE, 'client_quality', 'rolling_v2_boundary_fixture',
+				2, FALSE, NOW()
+			) RETURNING id
+		`, boundary.errorType, boundary.fixture.statusCode, boundary.upstreamValue,
+			boundary.fixture.message, boundary.fixture.finalOutcome).Scan(&id)
+		require.NoError(t, err, boundary.fixture.name)
+		assertOpsV3MigrationRow(t, tx, id, boundary.fixture)
+	}
+
 	var preservedVersion int
 	err = tx.QueryRowContext(ctx, `
 		INSERT INTO ops_error_logs (
