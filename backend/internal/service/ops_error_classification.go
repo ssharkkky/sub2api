@@ -403,11 +403,11 @@ func recoveredOpsResponsibility(upstreamStatus int, phase, errType, message stri
 		(upstreamStatus == 403 && isOpsManagedCredentialMessage(message)) {
 		return OpsResponsibilityPlatform
 	}
-	if upstreamStatus == 429 || upstreamStatus >= 500 || strings.Contains(message, "overloaded") {
-		return OpsResponsibilityProvider
-	}
 	if isOpsExplicitUpstreamRequestRejection(upstreamStatus, errType, message) {
 		return OpsResponsibilityPlatform
+	}
+	if upstreamStatus == 429 || upstreamStatus >= 500 || strings.Contains(message, "overloaded") {
+		return OpsResponsibilityProvider
 	}
 	if upstreamStatus >= 400 && upstreamStatus < 500 {
 		return OpsResponsibilityProvider

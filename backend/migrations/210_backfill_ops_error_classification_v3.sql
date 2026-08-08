@@ -353,6 +353,13 @@ WHERE classification_version = 2
               OR error_source = 'upstream_http'
               OR error_type = 'upstream_error'
           )
+          AND NOT (
+              final_outcome = 'recovered'
+              AND (
+                  COALESCE(error_message, '') ILIKE 'Recovered upstream error%'
+                  OR COALESCE(error_message, '') ILIKE 'Recovered account authentication failure%'
+              )
+          )
       )
   );
 
@@ -580,10 +587,24 @@ SET
     classification_reason = 'final_request_recovered',
     classification_version = 3
 WHERE classification_version = 2
-  AND error_phase = 'upstream'
-  AND responsibility = 'client'
+  AND final_outcome = 'recovered'
   AND COALESCE(status_code, 0) < 400
-  AND upstream_status_code >= 400;
+  AND (
+      (
+          error_phase = 'upstream'
+          AND (
+              upstream_status_code >= 400
+              OR COALESCE(error_message, '') ILIKE 'Recovered upstream error%'
+          )
+      )
+      OR (
+          error_phase = 'account_auth'
+          AND (
+              upstream_status_code >= 400
+              OR COALESCE(error_message, '') ILIKE 'Recovered account authentication failure%'
+          )
+      )
+  );
 
 -- Legacy callers marked some routing failures as business-limited. A gateway
 -- 5xx is still a platform availability failure regardless of that broad flag.

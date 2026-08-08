@@ -17,6 +17,7 @@ type opsV3MigrationExpectation struct {
 	name           string
 	statusCode     int
 	upstreamStatus int
+	upstreamNull   bool
 	errorType      string
 	finalOutcome   string
 	message        string
@@ -112,6 +113,24 @@ func TestMigration209BackfillsAndGuardsMixedVersionOpsWrites(t *testing.T) {
 			wantOutcome: "recovered", wantOwner: "provider", wantCategory: "recovered",
 			wantSLA: false, wantFamily: "compatibility",
 		},
+		{
+			name: "trusted recovered broken pipe without upstream status", statusCode: 200, upstreamNull: true,
+			finalOutcome: "recovered", message: "Recovered upstream error: upstream stream disconnected: broken pipe",
+			wantOutcome: "recovered", wantOwner: "provider", wantCategory: "recovered",
+			wantSLA: false, wantFamily: "provider_health",
+		},
+		{
+			name: "trusted recovered upstream failure without status", statusCode: 200, upstreamNull: true,
+			finalOutcome: "recovered", message: "Recovered upstream error: connection reset",
+			wantOutcome: "recovered", wantOwner: "provider", wantCategory: "recovered",
+			wantSLA: false, wantFamily: "provider_health",
+		},
+		{
+			name: "recovered semantic failure with upstream 503", statusCode: 200, upstreamStatus: 503,
+			finalOutcome: "recovered", message: "maximum context length exceeded",
+			wantOutcome: "recovered", wantOwner: "platform", wantCategory: "recovered",
+			wantSLA: false, wantFamily: "compatibility",
+		},
 	}
 
 	ids := make(map[string]int64, len(fixtures))
@@ -121,6 +140,10 @@ func TestMigration209BackfillsAndGuardsMixedVersionOpsWrites(t *testing.T) {
 			errorType = "upstream_error"
 		}
 		var id int64
+		var upstreamValue any = fixture.upstreamStatus
+		if fixture.upstreamNull {
+			upstreamValue = nil
+		}
 		err := tx.QueryRowContext(ctx, `
 			INSERT INTO ops_error_logs (
 				platform, error_phase, error_type, status_code, upstream_status_code,
@@ -133,7 +156,7 @@ func TestMigration209BackfillsAndGuardsMixedVersionOpsWrites(t *testing.T) {
 				FALSE, 'client_quality', 'legacy_v2_fixture',
 				2, FALSE, NOW()
 			) RETURNING id
-		`, errorType, fixture.statusCode, fixture.upstreamStatus, fixture.message, fixture.finalOutcome).Scan(&id)
+		`, errorType, fixture.statusCode, upstreamValue, fixture.message, fixture.finalOutcome).Scan(&id)
 		require.NoError(t, err, fixture.name)
 		ids[fixture.name] = id
 	}
@@ -246,6 +269,15 @@ func TestMigration209BackfillsAndGuardsMixedVersionOpsWrites(t *testing.T) {
 				wantSLA: false, wantFamily: "compatibility",
 			},
 			errorType: "upstream_error", upstreamValue: 400,
+		},
+		{
+			fixture: opsV3MigrationExpectation{
+				name: "rolling recovered semantic failure with upstream 503", statusCode: 200, upstreamStatus: 503,
+				finalOutcome: "recovered", message: "maximum context length exceeded",
+				wantOutcome: "recovered", wantOwner: "platform", wantCategory: "recovered",
+				wantSLA: false, wantFamily: "compatibility",
+			},
+			errorType: "upstream_error", upstreamValue: 503,
 		},
 		{
 			fixture: opsV3MigrationExpectation{

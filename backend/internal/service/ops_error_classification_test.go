@@ -112,6 +112,12 @@ func TestClassifyOpsError(t *testing.T) {
 			category: OpsErrorCategoryRecovered, family: OpsAlertFamilyCompatibility,
 		},
 		{
+			name:    "recovered semantic failure with upstream 503 remains platform compatibility",
+			input:   OpsErrorClassificationInput{StatusCode: 200, UpstreamStatusCode: intPtr(503), ErrorPhase: "upstream", ErrorType: "upstream_error", UpstreamMessage: "maximum context length exceeded", Recovered: true},
+			outcome: OpsFinalOutcomeRecovered, responsibility: OpsResponsibilityPlatform,
+			category: OpsErrorCategoryRecovered, family: OpsAlertFamilyCompatibility,
+		},
+		{
 			name:    "upstream unsupported model is provider failure not local client rejection",
 			input:   OpsErrorClassificationInput{StatusCode: 502, UpstreamStatusCode: intPtr(404), ErrorPhase: "upstream", ErrorType: "upstream_error", UpstreamMessage: "model is not supported by this provider"},
 			outcome: OpsFinalOutcomeProviderFailed, responsibility: OpsResponsibilityProvider,
