@@ -67,16 +67,25 @@ WHERE COALESCE(classification_version, 0) < 3
       OR COALESCE(upstream_error_message, '') ILIKE '%cybersecurity risk%'
   );
 
--- Final managed upstream 401/403 responses need their own branches. The old
--- v2 rule only covered client-attributed records, leaving already-final logs
--- out of the capacity, credential and capability views.
+-- Managed credentials, capabilities and platform-owned routing capacity must
+-- be resolved before generic provider status handling. Previous upstream
+-- attempt metadata can remain on a final account-pool or concurrency failure.
 -- sub2api-managed-update: reviewed-compatible
 UPDATE ops_error_logs
 SET
     final_outcome = 'platform_failed',
     responsibility = 'platform',
     error_category = CASE
-        WHEN COALESCE(error_message, '') ILIKE '%insufficient%balance%'
+        WHEN (COALESCE(error_message, '') || ' ' || COALESCE(upstream_error_message, '')) ILIKE ANY (ARRAY[
+                 '%no available account%',
+                 '%concurrency limit exceeded for account%',
+                 '%too many pending requests%'
+             ])
+          OR (
+              (COALESCE(error_message, '') || ' ' || COALESCE(upstream_error_message, '')) ILIKE '%account pool%'
+              AND (COALESCE(error_message, '') || ' ' || COALESCE(upstream_error_message, '')) ILIKE '%unavailable%'
+          )
+          OR COALESCE(error_message, '') ILIKE '%insufficient%balance%'
           OR COALESCE(upstream_error_message, '') ILIKE '%insufficient%balance%'
           OR COALESCE(error_message, '') ILIKE '%预扣费额度失败%'
           OR COALESCE(upstream_error_message, '') ILIKE '%预扣费额度失败%'
@@ -115,7 +124,16 @@ SET
         ELSE TRUE
     END,
     alert_family = CASE
-        WHEN COALESCE(error_message, '') ILIKE '%insufficient%balance%'
+        WHEN (COALESCE(error_message, '') || ' ' || COALESCE(upstream_error_message, '')) ILIKE ANY (ARRAY[
+                 '%no available account%',
+                 '%concurrency limit exceeded for account%',
+                 '%too many pending requests%'
+             ])
+          OR (
+              (COALESCE(error_message, '') || ' ' || COALESCE(upstream_error_message, '')) ILIKE '%account pool%'
+              AND (COALESCE(error_message, '') || ' ' || COALESCE(upstream_error_message, '')) ILIKE '%unavailable%'
+          )
+          OR COALESCE(error_message, '') ILIKE '%insufficient%balance%'
           OR COALESCE(upstream_error_message, '') ILIKE '%insufficient%balance%'
           OR COALESCE(error_message, '') ILIKE '%预扣费额度失败%'
           OR COALESCE(upstream_error_message, '') ILIKE '%预扣费额度失败%'
@@ -138,6 +156,16 @@ SET
         ELSE 'credential'
     END,
     classification_reason = CASE
+        WHEN (COALESCE(error_message, '') || ' ' || COALESCE(upstream_error_message, '')) ILIKE ANY (ARRAY[
+                 '%no available account%',
+                 '%concurrency limit exceeded for account%',
+                 '%too many pending requests%'
+             ])
+          OR (
+              (COALESCE(error_message, '') || ' ' || COALESCE(upstream_error_message, '')) ILIKE '%account pool%'
+              AND (COALESCE(error_message, '') || ' ' || COALESCE(upstream_error_message, '')) ILIKE '%unavailable%'
+          )
+            THEN 'platform_capacity_unavailable'
         WHEN COALESCE(error_message, '') ILIKE '%insufficient%balance%'
           OR COALESCE(upstream_error_message, '') ILIKE '%insufficient%balance%'
           OR COALESCE(error_message, '') ILIKE '%预扣费额度失败%'
@@ -173,6 +201,15 @@ WHERE COALESCE(classification_version, 0) < 3
   AND (
       error_phase = 'account_auth'
       OR upstream_status_code = 401
+      OR (COALESCE(error_message, '') || ' ' || COALESCE(upstream_error_message, '')) ILIKE ANY (ARRAY[
+             '%no available account%',
+             '%concurrency limit exceeded for account%',
+             '%too many pending requests%'
+         ])
+      OR (
+          (COALESCE(error_message, '') || ' ' || COALESCE(upstream_error_message, '')) ILIKE '%account pool%'
+          AND (COALESCE(error_message, '') || ' ' || COALESCE(upstream_error_message, '')) ILIKE '%unavailable%'
+      )
       OR COALESCE(error_message, '') ILIKE '%insufficient%balance%'
       OR COALESCE(upstream_error_message, '') ILIKE '%insufficient%balance%'
       OR COALESCE(error_message, '') ILIKE '%预扣费额度失败%'
@@ -277,6 +314,48 @@ WHERE COALESCE(classification_version, 0) < 3
       OR COALESCE(upstream_error_message, '') ILIKE '%malformed request%'
   );
 
+-- Classification v2 treated every HTTP 2xx log as recovered and could also
+-- mistake an upstream broken pipe for a client cancellation. Run this before
+-- the broad provider update so stale upstream status metadata cannot override
+-- explicit transport evidence.
+-- sub2api-managed-update: reviewed-compatible
+UPDATE ops_error_logs
+SET
+    final_outcome = 'platform_failed',
+    responsibility = 'platform',
+    error_category = 'network_transport',
+    counts_toward_sla = TRUE,
+    alert_family = 'provider_health',
+    classification_reason = 'upstream_transport_or_unclassified_failure',
+    classification_version = 3
+WHERE classification_version = 2
+  AND (
+      (
+          final_outcome = 'recovered'
+          AND COALESCE(status_code, 0) > 0
+          AND COALESCE(status_code, 0) < 400
+          AND error_type = 'upstream_error'
+          AND upstream_status_code IS NULL
+          AND COALESCE(error_message, '') NOT ILIKE 'Recovered upstream error%'
+          AND COALESCE(error_message, '') NOT ILIKE 'Recovered account authentication failure%'
+      )
+      OR (
+          (
+              COALESCE(error_message, '') ILIKE '%upstream stream disconnected%'
+              OR COALESCE(upstream_error_message, '') ILIKE '%upstream stream disconnected%'
+              OR COALESCE(error_message, '') ILIKE '%stream read error%'
+              OR COALESCE(upstream_error_message, '') ILIKE '%stream read error%'
+              OR COALESCE(error_message, '') ILIKE '%broken pipe%'
+              OR COALESCE(upstream_error_message, '') ILIKE '%broken pipe%'
+          )
+          AND (
+              error_phase IN ('upstream', 'network')
+              OR error_source = 'upstream_http'
+              OR error_type = 'upstream_error'
+          )
+      )
+  );
+
 -- sub2api-managed-update: reviewed-compatible
 UPDATE ops_error_logs
 SET
@@ -369,7 +448,16 @@ WHERE classification_version = 2
 UPDATE ops_error_logs
 SET
     responsibility = CASE
-        WHEN COALESCE(error_message, '') ILIKE '%insufficient%balance%'
+        WHEN (COALESCE(error_message, '') || ' ' || COALESCE(upstream_error_message, '')) ILIKE ANY (ARRAY[
+                 '%no available account%',
+                 '%concurrency limit exceeded for account%',
+                 '%too many pending requests%'
+             ])
+          OR (
+              (COALESCE(error_message, '') || ' ' || COALESCE(upstream_error_message, '')) ILIKE '%account pool%'
+              AND (COALESCE(error_message, '') || ' ' || COALESCE(upstream_error_message, '')) ILIKE '%unavailable%'
+          )
+          OR COALESCE(error_message, '') ILIKE '%insufficient%balance%'
           OR COALESCE(upstream_error_message, '') ILIKE '%insufficient%balance%'
           OR COALESCE(error_message, '') ILIKE '%预扣费额度失败%'
           OR COALESCE(upstream_error_message, '') ILIKE '%预扣费额度失败%'
@@ -426,7 +514,16 @@ SET
     error_category = 'recovered',
     counts_toward_sla = FALSE,
     alert_family = CASE
-        WHEN COALESCE(error_message, '') ILIKE '%insufficient%balance%'
+        WHEN (COALESCE(error_message, '') || ' ' || COALESCE(upstream_error_message, '')) ILIKE ANY (ARRAY[
+                 '%no available account%',
+                 '%concurrency limit exceeded for account%',
+                 '%too many pending requests%'
+             ])
+          OR (
+              (COALESCE(error_message, '') || ' ' || COALESCE(upstream_error_message, '')) ILIKE '%account pool%'
+              AND (COALESCE(error_message, '') || ' ' || COALESCE(upstream_error_message, '')) ILIKE '%unavailable%'
+          )
+          OR COALESCE(error_message, '') ILIKE '%insufficient%balance%'
           OR COALESCE(upstream_error_message, '') ILIKE '%insufficient%balance%'
           OR COALESCE(error_message, '') ILIKE '%预扣费额度失败%'
           OR COALESCE(upstream_error_message, '') ILIKE '%预扣费额度失败%'
@@ -487,28 +584,6 @@ WHERE classification_version = 2
   AND responsibility = 'client'
   AND COALESCE(status_code, 0) < 400
   AND upstream_status_code >= 400;
-
--- Classification v2 treated every HTTP 2xx log as recovered. Stream failures
--- can commit 200 before an error event, so only the dedicated recovery logger's
--- explicit message is trusted as historical recovery evidence.
--- sub2api-managed-update: reviewed-compatible
-UPDATE ops_error_logs
-SET
-    final_outcome = 'platform_failed',
-    responsibility = 'platform',
-    error_category = 'network_transport',
-    counts_toward_sla = TRUE,
-    alert_family = 'provider_health',
-    classification_reason = 'upstream_transport_or_unclassified_failure',
-    classification_version = 3
-WHERE classification_version = 2
-  AND final_outcome = 'recovered'
-  AND COALESCE(status_code, 0) > 0
-  AND COALESCE(status_code, 0) < 400
-  AND error_type = 'upstream_error'
-  AND upstream_status_code IS NULL
-  AND COALESCE(error_message, '') NOT ILIKE 'Recovered upstream error%'
-  AND COALESCE(error_message, '') NOT ILIKE 'Recovered account authentication failure%';
 
 -- Legacy callers marked some routing failures as business-limited. A gateway
 -- 5xx is still a platform availability failure regardless of that broad flag.

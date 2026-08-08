@@ -15,8 +15,12 @@ DECLARE
         COALESCE(NEW.upstream_status_code, 0) > 0
         OR NEW.error_phase IN ('upstream', 'account_auth')
         OR NEW.error_source = 'upstream_http'
+        OR NEW.error_owner = 'provider'
+        OR message_text LIKE '%upstream stream disconnected%'
+        OR message_text LIKE '%stream read error%'
         OR NEW.error_type = 'upstream_error';
     security_message BOOLEAN;
+    platform_capacity_message BOOLEAN;
     capacity_message BOOLEAN;
     capability_message BOOLEAN;
     credential_message BOOLEAN;
@@ -34,6 +38,11 @@ BEGIN
         OR message_text LIKE '%cyber policy%'
         OR message_text LIKE '%cyber-security policy%'
         OR message_text LIKE '%cybersecurity risk%';
+    platform_capacity_message :=
+        message_text LIKE '%no available account%'
+        OR message_text LIKE '%concurrency limit exceeded for account%'
+        OR message_text LIKE '%too many pending requests%'
+        OR (message_text LIKE '%account pool%' AND message_text LIKE '%unavailable%');
     capacity_message :=
         message_text LIKE '%insufficient balance%'
         OR message_text LIKE '%insufficient_account_balance%'
@@ -113,7 +122,7 @@ BEGIN
         ELSIF security_message AND upstream_evidence THEN
             NEW.responsibility := 'provider';
             NEW.alert_family := 'security';
-        ELSIF capacity_message THEN
+        ELSIF platform_capacity_message OR capacity_message THEN
             NEW.responsibility := 'platform';
             NEW.alert_family := 'capacity';
         ELSIF capability_message THEN
@@ -124,8 +133,11 @@ BEGIN
               OR (NEW.upstream_status_code = 403 AND credential_message) THEN
             NEW.responsibility := 'platform';
             NEW.alert_family := 'credential';
-        ELSIF recovered_compatibility THEN
+        ELSIF request_semantics THEN
             NEW.responsibility := 'platform';
+            NEW.alert_family := 'compatibility';
+        ELSIF recovered_compatibility THEN
+            NEW.responsibility := 'provider';
             NEW.alert_family := 'compatibility';
         ELSIF COALESCE(NEW.upstream_status_code, 0) >= 400
               OR NEW.error_phase IN ('upstream', 'account_auth') THEN
@@ -139,14 +151,42 @@ BEGIN
         RETURN NEW;
     END IF;
 
+    IF platform_capacity_message THEN
+        NEW.final_outcome := 'platform_failed';
+        NEW.responsibility := 'platform';
+        NEW.error_category := 'platform_capacity';
+        NEW.counts_toward_sla := TRUE;
+        NEW.alert_family := 'capacity';
+        NEW.classification_reason := 'platform_capacity_unavailable';
+        NEW.classification_version := 3;
+        RETURN NEW;
+    END IF;
+
+    IF COALESCE(NEW.status_code, 0) >= 500
+       AND (
+           NEW.error_phase IN ('routing', 'internal')
+           OR (NEW.error_owner = 'platform' AND NEW.error_source = 'gateway')
+       ) THEN
+        NEW.final_outcome := 'platform_failed';
+        NEW.responsibility := 'platform';
+        NEW.error_category := 'platform_internal';
+        NEW.counts_toward_sla := TRUE;
+        NEW.alert_family := 'availability';
+        NEW.classification_reason := 'platform_internal_or_routing_failure';
+        NEW.classification_version := 3;
+        RETURN NEW;
+    END IF;
+
     IF COALESCE(NEW.upstream_status_code, 0) = 0
+       AND message_text NOT LIKE '%upstream stream disconnected%'
+       AND message_text NOT LIKE '%stream read error%'
+       AND NOT (upstream_evidence AND message_text LIKE '%broken pipe%')
        AND (
            NEW.status_code IN (408, 499)
            OR message_text LIKE '%context canceled%'
            OR message_text LIKE '%client disconnected%'
            OR message_text LIKE '%client closed%'
            OR message_text LIKE '%request canceled%'
-           OR message_text LIKE '%broken pipe%'
        ) THEN
         NEW.final_outcome := 'cancelled';
         NEW.responsibility := 'client';
@@ -229,6 +269,9 @@ BEGIN
             END;
         ELSE
             IF effective_upstream_status = 0
+               AND message_text NOT LIKE '%upstream stream disconnected%'
+               AND message_text NOT LIKE '%stream read error%'
+               AND message_text NOT LIKE '%broken pipe%'
                AND ((NEW.status_code >= 400 AND NEW.status_code < 500) OR NEW.status_code = 529) THEN
                 effective_upstream_status := NEW.status_code;
             END IF;

@@ -40,6 +40,18 @@ func TestClassifyOpsError(t *testing.T) {
 			category: OpsErrorCategoryPlatformCapacity, family: OpsAlertFamilyCapacity, sla: true,
 		},
 		{
+			name:    "stale upstream status does not hide account pool capacity",
+			input:   OpsErrorClassificationInput{StatusCode: 499, UpstreamStatusCode: intPtr(503), ErrorPhase: "upstream", ErrorOwner: "platform", ErrorMessage: "No available accounts"},
+			outcome: OpsFinalOutcomePlatformFailed, responsibility: OpsResponsibilityPlatform,
+			category: OpsErrorCategoryPlatformCapacity, family: OpsAlertFamilyCapacity, sla: true,
+		},
+		{
+			name:    "stale upstream rate limit does not hide account concurrency",
+			input:   OpsErrorClassificationInput{StatusCode: 499, UpstreamStatusCode: intPtr(429), ErrorPhase: "upstream", ErrorOwner: "platform", ErrorMessage: "Concurrency limit exceeded for account"},
+			outcome: OpsFinalOutcomePlatformFailed, responsibility: OpsResponsibilityPlatform,
+			category: OpsErrorCategoryPlatformCapacity, family: OpsAlertFamilyCapacity, sla: true,
+		},
+		{
 			name:    "user concurrency is a business limit",
 			input:   OpsErrorClassificationInput{StatusCode: 429, ErrorMessage: "Concurrency limit exceeded for user, please retry later", IsBusinessLimited: true},
 			outcome: OpsFinalOutcomeBusinessLimited, responsibility: OpsResponsibilityClient,
@@ -172,8 +184,20 @@ func TestClassifyOpsError(t *testing.T) {
 			category: OpsErrorCategoryClientCancelled, family: OpsAlertFamilyClientQuality,
 		},
 		{
+			name:    "upstream broken pipe is transport failure not client cancellation",
+			input:   OpsErrorClassificationInput{StatusCode: 499, ErrorPhase: "upstream", ErrorType: "upstream_error", ErrorMessage: "upstream stream disconnected: broken pipe"},
+			outcome: OpsFinalOutcomePlatformFailed, responsibility: OpsResponsibilityPlatform,
+			category: OpsErrorCategoryNetworkTransport, family: OpsAlertFamilyProviderHealth, sla: true,
+		},
+		{
 			name:    "recovered provider server error is a non SLA signal",
 			input:   OpsErrorClassificationInput{StatusCode: 200, UpstreamStatusCode: intPtr(503), ErrorPhase: "upstream", Recovered: true},
+			outcome: OpsFinalOutcomeRecovered, responsibility: OpsResponsibilityProvider,
+			category: OpsErrorCategoryRecovered, family: OpsAlertFamilyProviderHealth,
+		},
+		{
+			name:    "recovered upstream phase without status remains provider signal",
+			input:   OpsErrorClassificationInput{StatusCode: 200, ErrorPhase: "upstream", ErrorType: "upstream_error", ErrorMessage: "Recovered upstream error: connection reset", Recovered: true},
 			outcome: OpsFinalOutcomeRecovered, responsibility: OpsResponsibilityProvider,
 			category: OpsErrorCategoryRecovered, family: OpsAlertFamilyProviderHealth,
 		},

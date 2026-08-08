@@ -83,6 +83,18 @@ func TestMigration209BackfillsAndGuardsMixedVersionOpsWrites(t *testing.T) {
 			wantSLA: true, wantFamily: "capacity",
 		},
 		{
+			name: "account pool capacity with stale upstream 503", statusCode: 499, upstreamStatus: 503,
+			finalOutcome: "client_rejected", message: "No available accounts",
+			wantOutcome: "platform_failed", wantOwner: "platform", wantCategory: "platform_capacity",
+			wantSLA: true, wantFamily: "capacity",
+		},
+		{
+			name: "account concurrency with stale upstream 429", statusCode: 499, upstreamStatus: 429,
+			finalOutcome: "client_rejected", message: "Concurrency limit exceeded for account",
+			wantOutcome: "platform_failed", wantOwner: "platform", wantCategory: "platform_capacity",
+			wantSLA: true, wantFamily: "capacity",
+		},
+		{
 			name: "capability rejection with upstream 404", statusCode: 502, upstreamStatus: 404,
 			finalOutcome: "client_rejected", message: "capability is not enabled",
 			wantOutcome: "platform_failed", wantOwner: "platform", wantCategory: "product_compatibility",
@@ -93,6 +105,12 @@ func TestMigration209BackfillsAndGuardsMixedVersionOpsWrites(t *testing.T) {
 			finalOutcome: "recovered", message: "OAuth access token expired",
 			wantOutcome: "recovered", wantOwner: "platform", wantCategory: "recovered",
 			wantSLA: false, wantFamily: "credential",
+		},
+		{
+			name: "recovered unsupported model", statusCode: 200, upstreamStatus: 400,
+			finalOutcome: "recovered", message: "model is not supported by this provider",
+			wantOutcome: "recovered", wantOwner: "provider", wantCategory: "recovered",
+			wantSLA: false, wantFamily: "compatibility",
 		},
 	}
 
@@ -168,6 +186,24 @@ func TestMigration209BackfillsAndGuardsMixedVersionOpsWrites(t *testing.T) {
 		},
 		{
 			fixture: opsV3MigrationExpectation{
+				name: "rolling account pool capacity with stale upstream 503", statusCode: 499, upstreamStatus: 503,
+				finalOutcome: "client_rejected", message: "No available accounts",
+				wantOutcome: "platform_failed", wantOwner: "platform", wantCategory: "platform_capacity",
+				wantSLA: true, wantFamily: "capacity",
+			},
+			errorType: "upstream_error", upstreamValue: 503,
+		},
+		{
+			fixture: opsV3MigrationExpectation{
+				name: "rolling account concurrency with stale upstream 429", statusCode: 499, upstreamStatus: 429,
+				finalOutcome: "client_rejected", message: "Concurrency limit exceeded for account",
+				wantOutcome: "platform_failed", wantOwner: "platform", wantCategory: "platform_capacity",
+				wantSLA: true, wantFamily: "capacity",
+			},
+			errorType: "upstream_error", upstreamValue: 429,
+		},
+		{
+			fixture: opsV3MigrationExpectation{
 				name: "client cancellation without upstream status", statusCode: 499,
 				finalOutcome: "client_rejected", message: "client closed request",
 				wantOutcome: "cancelled", wantOwner: "client", wantCategory: "client_cancelled",
@@ -183,6 +219,33 @@ func TestMigration209BackfillsAndGuardsMixedVersionOpsWrites(t *testing.T) {
 				wantSLA: true, wantFamily: "provider_health",
 			},
 			errorType: "overloaded_error", upstreamValue: nil,
+		},
+		{
+			fixture: opsV3MigrationExpectation{
+				name: "upstream broken pipe without status", statusCode: 499,
+				finalOutcome: "cancelled", message: "upstream stream disconnected: broken pipe",
+				wantOutcome: "platform_failed", wantOwner: "platform", wantCategory: "network_transport",
+				wantSLA: true, wantFamily: "provider_health",
+			},
+			errorType: "upstream_error", upstreamValue: nil,
+		},
+		{
+			fixture: opsV3MigrationExpectation{
+				name: "recovered upstream phase without status", statusCode: 200,
+				finalOutcome: "recovered", message: "Recovered upstream error: connection reset",
+				wantOutcome: "recovered", wantOwner: "provider", wantCategory: "recovered",
+				wantSLA: false, wantFamily: "provider_health",
+			},
+			errorType: "upstream_error", upstreamValue: nil,
+		},
+		{
+			fixture: opsV3MigrationExpectation{
+				name: "rolling recovered unsupported model", statusCode: 200, upstreamStatus: 400,
+				finalOutcome: "recovered", message: "model is not supported by this provider",
+				wantOutcome: "recovered", wantOwner: "provider", wantCategory: "recovered",
+				wantSLA: false, wantFamily: "compatibility",
+			},
+			errorType: "upstream_error", upstreamValue: 400,
 		},
 		{
 			fixture: opsV3MigrationExpectation{

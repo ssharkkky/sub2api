@@ -84,6 +84,7 @@ func ClassifyOpsError(input OpsErrorClassificationInput) OpsErrorClassification 
 	phase := strings.ToLower(strings.TrimSpace(input.ErrorPhase))
 	errType := strings.ToLower(strings.TrimSpace(input.ErrorType))
 	source := strings.ToLower(strings.TrimSpace(input.ErrorSource))
+	owner := strings.ToLower(strings.TrimSpace(input.ErrorOwner))
 	message := strings.ToLower(strings.TrimSpace(input.ErrorMessage + " " + input.UpstreamMessage))
 
 	result := OpsErrorClassification{
@@ -95,7 +96,8 @@ func ClassifyOpsError(input OpsErrorClassificationInput) OpsErrorClassification 
 		ClassificationVersion: OpsErrorClassificationVersion,
 	}
 
-	upstreamEvidence := isOpsUpstreamEvidence(upstreamStatus, phase, source, errType)
+	upstreamEvidence := isOpsUpstreamEvidence(upstreamStatus, phase, source, owner, errType) ||
+		isOpsUpstreamTransportMessage(message)
 
 	// Local cyber/Turnstile decisions are explicit client-facing security
 	// blocks. Upstream responses can use the same error type, so require an
@@ -123,9 +125,35 @@ func ClassifyOpsError(input OpsErrorClassificationInput) OpsErrorClassification 
 		return result
 	}
 
+	// Account-pool exhaustion and gateway routing capacity are platform-owned
+	// even when a previous upstream attempt left status evidence on the request.
+	if isOpsPlatformCapacityFailure(message) {
+		result.FinalOutcome = OpsFinalOutcomePlatformFailed
+		result.Responsibility = OpsResponsibilityPlatform
+		result.ErrorCategory = OpsErrorCategoryPlatformCapacity
+		result.CountsTowardSLA = true
+		result.AlertFamily = OpsAlertFamilyCapacity
+		result.ClassificationReason = "platform_capacity_unavailable"
+		return result
+	}
+
+	// Explicit gateway ownership must win over stale upstream-attempt metadata.
+	if status >= 500 && (phase == "routing" || phase == "internal" ||
+		(owner == OpsResponsibilityPlatform && source == "gateway")) {
+		result.FinalOutcome = OpsFinalOutcomePlatformFailed
+		result.Responsibility = OpsResponsibilityPlatform
+		result.ErrorCategory = OpsErrorCategoryPlatformInternal
+		result.CountsTowardSLA = true
+		result.AlertFamily = OpsAlertFamilyAvailability
+		result.ClassificationReason = "platform_internal_or_routing_failure"
+		return result
+	}
+
 	// A gateway 499 may be emitted while closing a connection after an
 	// upstream failure. Prefer the explicit upstream status when it exists.
-	if isOpsClientCancellation(status, message) && upstreamStatus == 0 {
+	if isOpsClientCancellation(status, message) && upstreamStatus == 0 &&
+		!isOpsUpstreamTransportMessage(message) &&
+		(!upstreamEvidence || !strings.Contains(message, "broken pipe")) {
 		result.FinalOutcome = OpsFinalOutcomeCancelled
 		result.Responsibility = OpsResponsibilityClient
 		result.ErrorCategory = OpsErrorCategoryClientCancelled
@@ -147,7 +175,9 @@ func ClassifyOpsError(input OpsErrorClassificationInput) OpsErrorClassification 
 		// Older and compatibility paths did not always persist a separate upstream
 		// status. A preserved upstream 4xx still carries reliable request semantics;
 		// synthetic 5xx values remain transport/platform failures without evidence.
-		if effectiveUpstreamStatus == 0 && ((status >= 400 && status < 500) || status == 529) {
+		if effectiveUpstreamStatus == 0 && !isOpsUpstreamTransportMessage(message) &&
+			!strings.Contains(message, "broken pipe") &&
+			((status >= 400 && status < 500) || status == 529) {
 			effectiveUpstreamStatus = status
 		}
 		return classifyOpsUpstreamFailure(result, status, effectiveUpstreamStatus, phase, errType, message)
@@ -159,29 +189,6 @@ func ClassifyOpsError(input OpsErrorClassificationInput) OpsErrorClassification 
 		result.ErrorCategory = OpsErrorCategorySecurityPolicy
 		result.AlertFamily = OpsAlertFamilySecurity
 		result.ClassificationReason = "security_policy_rejection"
-		return result
-	}
-
-	if isOpsPlatformCapacityFailure(message) {
-		result.FinalOutcome = OpsFinalOutcomePlatformFailed
-		result.Responsibility = OpsResponsibilityPlatform
-		result.ErrorCategory = OpsErrorCategoryPlatformCapacity
-		result.CountsTowardSLA = true
-		result.AlertFamily = OpsAlertFamilyCapacity
-		result.ClassificationReason = "platform_capacity_unavailable"
-		return result
-	}
-
-	// Routing/internal 5xx failures are owned by the gateway even when legacy
-	// callers also set the broad business-limited marker. Keep lower status
-	// codes on their more specific client/model/security paths below.
-	if status >= 500 && (phase == "routing" || phase == "internal") {
-		result.FinalOutcome = OpsFinalOutcomePlatformFailed
-		result.Responsibility = OpsResponsibilityPlatform
-		result.ErrorCategory = OpsErrorCategoryPlatformInternal
-		result.CountsTowardSLA = true
-		result.AlertFamily = OpsAlertFamilyAvailability
-		result.ClassificationReason = "platform_internal_or_routing_failure"
 		return result
 	}
 
@@ -364,7 +371,7 @@ func recoveredOpsAlertFamily(upstreamStatus int, phase, errType, message string)
 	if strings.Contains(message, "context canceled") || strings.Contains(message, "client disconnected") {
 		return OpsAlertFamilyClientQuality
 	}
-	if isOpsManagedCapacityMessage(message) {
+	if isOpsPlatformCapacityFailure(message) || isOpsManagedCapacityMessage(message) {
 		return OpsAlertFamilyCapacity
 	}
 	if isOpsCapabilityConfigurationMessage(message) {
@@ -388,7 +395,8 @@ func recoveredOpsResponsibility(upstreamStatus int, phase, errType, message stri
 	if strings.Contains(message, "context canceled") || strings.Contains(message, "client disconnected") {
 		return OpsResponsibilityClient
 	}
-	if isOpsManagedCapacityMessage(message) || isOpsCapabilityConfigurationMessage(message) {
+	if isOpsPlatformCapacityFailure(message) || isOpsManagedCapacityMessage(message) ||
+		isOpsCapabilityConfigurationMessage(message) {
 		return OpsResponsibilityPlatform
 	}
 	if phase == "account_auth" || upstreamStatus == 401 ||
@@ -402,6 +410,9 @@ func recoveredOpsResponsibility(upstreamStatus int, phase, errType, message stri
 		return OpsResponsibilityPlatform
 	}
 	if upstreamStatus >= 400 && upstreamStatus < 500 {
+		return OpsResponsibilityProvider
+	}
+	if phase == "upstream" {
 		return OpsResponsibilityProvider
 	}
 	return OpsResponsibilityUnknown
@@ -426,7 +437,7 @@ func isOpsExplicitUpstreamRequestRejection(upstreamStatus int, errType, message 
 func isOpsClientCancellation(status int, message string) bool {
 	return status == 408 || status == 499 || strings.Contains(message, "context canceled") ||
 		strings.Contains(message, "client disconnected") || strings.Contains(message, "client closed") ||
-		strings.Contains(message, "request canceled") || strings.Contains(message, "broken pipe")
+		strings.Contains(message, "request canceled")
 }
 
 func isOpsExplicitLocalSecurityRejection(errType, message string) bool {
@@ -439,9 +450,14 @@ func isOpsSecurityPolicyMessage(message string) bool {
 		strings.Contains(message, "cybersecurity risk")
 }
 
-func isOpsUpstreamEvidence(upstreamStatus int, phase, source, errType string) bool {
+func isOpsUpstreamEvidence(upstreamStatus int, phase, source, owner, errType string) bool {
 	return upstreamStatus > 0 || phase == "upstream" || phase == "account_auth" ||
-		source == "upstream_http" || errType == "upstream_error"
+		source == "upstream_http" || owner == OpsResponsibilityProvider || errType == "upstream_error"
+}
+
+func isOpsUpstreamTransportMessage(message string) bool {
+	return strings.Contains(message, "upstream stream disconnected") ||
+		strings.Contains(message, "stream read error")
 }
 
 func isOpsPlatformCapacityFailure(message string) bool {
