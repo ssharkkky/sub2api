@@ -137,6 +137,18 @@ func ClassifyOpsError(input OpsErrorClassificationInput) OpsErrorClassification 
 		return result
 	}
 
+	// This exact diagnostic is produced locally after inspecting the configured
+	// account pool. Stale metadata from an earlier upstream attempt must not turn
+	// it into a provider SLA failure.
+	if isOpsLocalGroupModelUnavailable(message) {
+		result.FinalOutcome = OpsFinalOutcomeClientRejected
+		result.Responsibility = OpsResponsibilityClient
+		result.ErrorCategory = OpsErrorCategoryUnsupportedModel
+		result.AlertFamily = OpsAlertFamilyCompatibility
+		result.ClassificationReason = "unsupported_or_unconfigured_model"
+		return result
+	}
+
 	// Explicit gateway ownership must win over stale upstream-attempt metadata.
 	if status >= 500 && (phase == "routing" || phase == "internal" ||
 		(owner == OpsResponsibilityPlatform && source == "gateway")) {
@@ -395,6 +407,9 @@ func recoveredOpsResponsibility(upstreamStatus int, phase, errType, message stri
 	if strings.Contains(message, "context canceled") || strings.Contains(message, "client disconnected") {
 		return OpsResponsibilityClient
 	}
+	if isOpsLocalGroupModelUnavailable(message) {
+		return OpsResponsibilityClient
+	}
 	if isOpsPlatformCapacityFailure(message) || isOpsManagedCapacityMessage(message) ||
 		isOpsCapabilityConfigurationMessage(message) {
 		return OpsResponsibilityPlatform
@@ -431,7 +446,16 @@ func isOpsExplicitUpstreamRequestRejection(upstreamStatus int, errType, message 
 		strings.Contains(message, "invalid parameter") ||
 		strings.Contains(message, "unknown parameter") ||
 		strings.Contains(message, "unsupported parameter") ||
-		strings.Contains(message, "malformed request")
+		strings.Contains(message, "malformed request") ||
+		strings.Contains(message, "empty input messages") ||
+		strings.Contains(message, "user messages must have non-empty content") ||
+		(strings.Contains(message, "invalid `signature`") && strings.Contains(message, "`thinking` block")) ||
+		strings.Contains(message, "invalid schema for response_format") ||
+		strings.Contains(message, "'required' must include every key in properties") ||
+		strings.Contains(message, "`temperature` is deprecated for this model") ||
+		strings.Contains(message, "`temperature` and `top_p` cannot both be specified") ||
+		(strings.Contains(message, "cache_control.ttl") && strings.Contains(message, "must not come after")) ||
+		strings.Contains(message, "does not support the effort parameter")
 }
 
 func isOpsClientCancellation(status int, message string) bool {
@@ -493,6 +517,10 @@ func isOpsCapabilityConfigurationMessage(message string) bool {
 func isOpsUnsupportedModel(message string) bool {
 	return strings.Contains(message, "model") && (strings.Contains(message, "not supported") ||
 		strings.Contains(message, "not in whitelist") || strings.Contains(message, "not configured"))
+}
+
+func isOpsLocalGroupModelUnavailable(message string) bool {
+	return strings.Contains(message, "not supported by any configured account in this group")
 }
 
 func isOpsLocalClientAuth(phase, errType string, status int, message string) bool {

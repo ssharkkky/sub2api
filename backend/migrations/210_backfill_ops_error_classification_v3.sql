@@ -269,49 +269,103 @@ WHERE COALESCE(classification_version, 0) < 3
       )
   );
 
--- Semantic request failures must be handled before the broad provider update;
--- otherwise the broad rule would permanently turn context/schema errors into
--- provider SLA failures and the later compatibility correction could not match.
+-- Local model diagnostics and semantic request failures must be handled before
+-- the broad provider update. Stale upstream metadata must not turn either into
+-- a provider SLA failure.
 -- sub2api-managed-update: reviewed-compatible
 UPDATE ops_error_logs
 SET
-    final_outcome = 'platform_failed',
-    responsibility = 'platform',
-    error_category = 'product_compatibility',
+    final_outcome = CASE
+        WHEN COALESCE(error_message, '') ILIKE '%not supported by any configured account in this group%'
+          OR COALESCE(upstream_error_message, '') ILIKE '%not supported by any configured account in this group%'
+          OR COALESCE(status_code, 0) < 500
+            THEN 'client_rejected'
+        ELSE 'platform_failed'
+    END,
+    responsibility = CASE
+        WHEN COALESCE(error_message, '') ILIKE '%not supported by any configured account in this group%'
+          OR COALESCE(upstream_error_message, '') ILIKE '%not supported by any configured account in this group%'
+          OR COALESCE(status_code, 0) < 500
+            THEN 'client'
+        ELSE 'platform'
+    END,
+    error_category = CASE
+        WHEN COALESCE(error_message, '') ILIKE '%not supported by any configured account in this group%'
+          OR COALESCE(upstream_error_message, '') ILIKE '%not supported by any configured account in this group%'
+            THEN 'unsupported_model'
+        WHEN COALESCE(status_code, 0) < 500
+            THEN 'invalid_request'
+        ELSE 'product_compatibility'
+    END,
     counts_toward_sla = FALSE,
-    alert_family = 'compatibility',
-    classification_reason = 'upstream_request_incompatibility_exposed_as_gateway_failure',
+    alert_family = CASE
+        WHEN COALESCE(error_message, '') ILIKE '%not supported by any configured account in this group%'
+          OR COALESCE(upstream_error_message, '') ILIKE '%not supported by any configured account in this group%'
+            THEN 'compatibility'
+        WHEN COALESCE(status_code, 0) < 500
+            THEN 'client_quality'
+        ELSE 'compatibility'
+    END,
+    classification_reason = CASE
+        WHEN COALESCE(error_message, '') ILIKE '%not supported by any configured account in this group%'
+          OR COALESCE(upstream_error_message, '') ILIKE '%not supported by any configured account in this group%'
+            THEN 'unsupported_or_unconfigured_model'
+        WHEN COALESCE(status_code, 0) < 500
+            THEN 'upstream_rejected_request_semantics'
+        ELSE 'upstream_request_incompatibility_exposed_as_gateway_failure'
+    END,
     classification_version = 3
 WHERE COALESCE(classification_version, 0) < 3
-  AND error_phase = 'upstream'
   AND COALESCE(final_outcome, '') <> 'recovered'
-  AND COALESCE(responsibility, '') IN ('', 'client', 'provider')
-  AND COALESCE(status_code, 0) >= 500
   AND (
-      (
-          error_type = 'invalid_request_error'
-          AND upstream_status_code IN (400, 422)
+      COALESCE(error_message, '') ILIKE '%not supported by any configured account in this group%'
+      OR COALESCE(upstream_error_message, '') ILIKE '%not supported by any configured account in this group%'
+      OR (
+          error_phase = 'upstream'
+          AND COALESCE(responsibility, '') IN ('', 'client', 'provider')
+          AND COALESCE(status_code, 0) >= 400
+          AND (
+              (error_type = 'invalid_request_error' AND upstream_status_code IN (400, 422))
+              OR COALESCE(error_message, '') ILIKE '%context_length_exceeded%'
+              OR COALESCE(upstream_error_message, '') ILIKE '%context_length_exceeded%'
+              OR COALESCE(error_message, '') ILIKE '%exceeds the context window%'
+              OR COALESCE(upstream_error_message, '') ILIKE '%exceeds the context window%'
+              OR COALESCE(error_message, '') ILIKE '%maximum context length%'
+              OR COALESCE(upstream_error_message, '') ILIKE '%maximum context length%'
+              OR COALESCE(error_message, '') ILIKE '%invalid ''%'
+              OR COALESCE(upstream_error_message, '') ILIKE '%invalid ''%'
+              OR COALESCE(error_message, '') ILIKE '%invalid request%'
+              OR COALESCE(upstream_error_message, '') ILIKE '%invalid request%'
+              OR COALESCE(error_message, '') ILIKE '%invalid_request_error%'
+              OR COALESCE(upstream_error_message, '') ILIKE '%invalid_request_error%'
+              OR COALESCE(error_message, '') ILIKE '%invalid parameter%'
+              OR COALESCE(upstream_error_message, '') ILIKE '%invalid parameter%'
+              OR COALESCE(error_message, '') ILIKE '%unknown parameter%'
+              OR COALESCE(upstream_error_message, '') ILIKE '%unknown parameter%'
+              OR COALESCE(error_message, '') ILIKE '%unsupported parameter%'
+              OR COALESCE(upstream_error_message, '') ILIKE '%unsupported parameter%'
+              OR COALESCE(error_message, '') ILIKE '%malformed request%'
+              OR COALESCE(upstream_error_message, '') ILIKE '%malformed request%'
+              OR COALESCE(error_message, '') ILIKE '%empty input messages%'
+              OR COALESCE(upstream_error_message, '') ILIKE '%empty input messages%'
+              OR COALESCE(error_message, '') ILIKE '%user messages must have non-empty content%'
+              OR COALESCE(upstream_error_message, '') ILIKE '%user messages must have non-empty content%'
+              OR (COALESCE(error_message, '') ILIKE '%invalid `signature`%' AND COALESCE(error_message, '') ILIKE '%`thinking` block%')
+              OR (COALESCE(upstream_error_message, '') ILIKE '%invalid `signature`%' AND COALESCE(upstream_error_message, '') ILIKE '%`thinking` block%')
+              OR COALESCE(error_message, '') ILIKE '%invalid schema for response_format%'
+              OR COALESCE(upstream_error_message, '') ILIKE '%invalid schema for response_format%'
+              OR COALESCE(error_message, '') ILIKE '%''required'' must include every key in properties%'
+              OR COALESCE(upstream_error_message, '') ILIKE '%''required'' must include every key in properties%'
+              OR COALESCE(error_message, '') ILIKE '%`temperature` is deprecated for this model%'
+              OR COALESCE(upstream_error_message, '') ILIKE '%`temperature` is deprecated for this model%'
+              OR COALESCE(error_message, '') ILIKE '%`temperature` and `top_p` cannot both be specified%'
+              OR COALESCE(upstream_error_message, '') ILIKE '%`temperature` and `top_p` cannot both be specified%'
+              OR (COALESCE(error_message, '') ILIKE '%cache_control.ttl%' AND COALESCE(error_message, '') ILIKE '%must not come after%')
+              OR (COALESCE(upstream_error_message, '') ILIKE '%cache_control.ttl%' AND COALESCE(upstream_error_message, '') ILIKE '%must not come after%')
+              OR COALESCE(error_message, '') ILIKE '%does not support the effort parameter%'
+              OR COALESCE(upstream_error_message, '') ILIKE '%does not support the effort parameter%'
+          )
       )
-      OR COALESCE(error_message, '') ILIKE '%context_length_exceeded%'
-      OR COALESCE(upstream_error_message, '') ILIKE '%context_length_exceeded%'
-      OR COALESCE(error_message, '') ILIKE '%exceeds the context window%'
-      OR COALESCE(upstream_error_message, '') ILIKE '%exceeds the context window%'
-      OR COALESCE(error_message, '') ILIKE '%maximum context length%'
-      OR COALESCE(upstream_error_message, '') ILIKE '%maximum context length%'
-      OR COALESCE(error_message, '') ILIKE '%invalid ''%'
-      OR COALESCE(upstream_error_message, '') ILIKE '%invalid ''%'
-      OR COALESCE(error_message, '') ILIKE '%invalid request%'
-      OR COALESCE(upstream_error_message, '') ILIKE '%invalid request%'
-      OR COALESCE(error_message, '') ILIKE '%invalid_request_error%'
-      OR COALESCE(upstream_error_message, '') ILIKE '%invalid_request_error%'
-      OR COALESCE(error_message, '') ILIKE '%invalid parameter%'
-      OR COALESCE(upstream_error_message, '') ILIKE '%invalid parameter%'
-      OR COALESCE(error_message, '') ILIKE '%unknown parameter%'
-      OR COALESCE(upstream_error_message, '') ILIKE '%unknown parameter%'
-      OR COALESCE(error_message, '') ILIKE '%unsupported parameter%'
-      OR COALESCE(upstream_error_message, '') ILIKE '%unsupported parameter%'
-      OR COALESCE(error_message, '') ILIKE '%malformed request%'
-      OR COALESCE(upstream_error_message, '') ILIKE '%malformed request%'
   );
 
 -- Classification v2 treated HTTP 2xx in-band business errors as recovered.
@@ -428,7 +482,8 @@ WHERE classification_version = 2
       OR upstream_status_code >= 500
   )
   AND NOT (
-      COALESCE(error_message, '') ILIKE '%context_length_exceeded%'
+      (error_type = 'invalid_request_error' AND upstream_status_code IN (400, 422))
+      OR COALESCE(error_message, '') ILIKE '%context_length_exceeded%'
       OR COALESCE(upstream_error_message, '') ILIKE '%context_length_exceeded%'
       OR COALESCE(error_message, '') ILIKE '%exceeds the context window%'
       OR COALESCE(upstream_error_message, '') ILIKE '%exceeds the context window%'
@@ -448,16 +503,34 @@ WHERE classification_version = 2
       OR COALESCE(upstream_error_message, '') ILIKE '%unsupported parameter%'
       OR COALESCE(error_message, '') ILIKE '%malformed request%'
       OR COALESCE(upstream_error_message, '') ILIKE '%malformed request%'
-	  OR COALESCE(error_message, '') ILIKE '%content policy%'
-	  OR COALESCE(upstream_error_message, '') ILIKE '%content policy%'
-	  OR COALESCE(error_message, '') ILIKE '%security policy%'
-	  OR COALESCE(upstream_error_message, '') ILIKE '%security policy%'
-		  OR COALESCE(error_message, '') ILIKE '%cyber policy%'
-		  OR COALESCE(upstream_error_message, '') ILIKE '%cyber policy%'
-		  OR COALESCE(error_message, '') ILIKE '%cyber-security policy%'
-		  OR COALESCE(upstream_error_message, '') ILIKE '%cyber-security policy%'
-		  OR COALESCE(error_message, '') ILIKE '%cybersecurity risk%'
-	  OR COALESCE(upstream_error_message, '') ILIKE '%cybersecurity risk%'
+      OR COALESCE(error_message, '') ILIKE '%empty input messages%'
+      OR COALESCE(upstream_error_message, '') ILIKE '%empty input messages%'
+      OR COALESCE(error_message, '') ILIKE '%user messages must have non-empty content%'
+      OR COALESCE(upstream_error_message, '') ILIKE '%user messages must have non-empty content%'
+      OR (COALESCE(error_message, '') ILIKE '%invalid `signature`%' AND COALESCE(error_message, '') ILIKE '%`thinking` block%')
+      OR (COALESCE(upstream_error_message, '') ILIKE '%invalid `signature`%' AND COALESCE(upstream_error_message, '') ILIKE '%`thinking` block%')
+      OR COALESCE(error_message, '') ILIKE '%invalid schema for response_format%'
+      OR COALESCE(upstream_error_message, '') ILIKE '%invalid schema for response_format%'
+      OR COALESCE(error_message, '') ILIKE '%''required'' must include every key in properties%'
+      OR COALESCE(upstream_error_message, '') ILIKE '%''required'' must include every key in properties%'
+      OR COALESCE(error_message, '') ILIKE '%`temperature` is deprecated for this model%'
+      OR COALESCE(upstream_error_message, '') ILIKE '%`temperature` is deprecated for this model%'
+      OR COALESCE(error_message, '') ILIKE '%`temperature` and `top_p` cannot both be specified%'
+      OR COALESCE(upstream_error_message, '') ILIKE '%`temperature` and `top_p` cannot both be specified%'
+      OR (COALESCE(error_message, '') ILIKE '%cache_control.ttl%' AND COALESCE(error_message, '') ILIKE '%must not come after%')
+      OR (COALESCE(upstream_error_message, '') ILIKE '%cache_control.ttl%' AND COALESCE(upstream_error_message, '') ILIKE '%must not come after%')
+      OR COALESCE(error_message, '') ILIKE '%does not support the effort parameter%'
+      OR COALESCE(upstream_error_message, '') ILIKE '%does not support the effort parameter%'
+      OR COALESCE(error_message, '') ILIKE '%content policy%'
+      OR COALESCE(upstream_error_message, '') ILIKE '%content policy%'
+      OR COALESCE(error_message, '') ILIKE '%security policy%'
+      OR COALESCE(upstream_error_message, '') ILIKE '%security policy%'
+      OR COALESCE(error_message, '') ILIKE '%cyber policy%'
+      OR COALESCE(upstream_error_message, '') ILIKE '%cyber policy%'
+      OR COALESCE(error_message, '') ILIKE '%cyber-security policy%'
+      OR COALESCE(upstream_error_message, '') ILIKE '%cyber-security policy%'
+      OR COALESCE(error_message, '') ILIKE '%cybersecurity risk%'
+      OR COALESCE(upstream_error_message, '') ILIKE '%cybersecurity risk%'
   );
 
 -- A provider 400/422 rewritten by the gateway to 5xx is a compatibility
@@ -496,6 +569,9 @@ SET
           OR COALESCE(upstream_error_message, '') ILIKE '%context canceled%'
           OR COALESCE(error_message, '') ILIKE '%client disconnected%'
           OR COALESCE(upstream_error_message, '') ILIKE '%client disconnected%'
+            THEN 'client'
+        WHEN COALESCE(error_message, '') ILIKE '%not supported by any configured account in this group%'
+          OR COALESCE(upstream_error_message, '') ILIKE '%not supported by any configured account in this group%'
             THEN 'client'
         WHEN (COALESCE(error_message, '') || ' ' || COALESCE(upstream_error_message, '')) ILIKE ANY (ARRAY[
                  '%no available account%',
@@ -549,14 +625,28 @@ SET
                  '%context_length_exceeded%', '%exceeds the context window%',
                  '%maximum context length%', '%invalid ''%', '%invalid request%',
                  '%invalid_request_error%', '%invalid parameter%', '%unknown parameter%',
-                 '%unsupported parameter%', '%malformed request%'
+                 '%unsupported parameter%', '%malformed request%', '%empty input messages%',
+                 '%user messages must have non-empty content%', '%invalid schema for response_format%',
+                 '%''required'' must include every key in properties%',
+                 '%`temperature` is deprecated for this model%',
+                 '%`temperature` and `top_p` cannot both be specified%',
+                 '%does not support the effort parameter%'
              ])
           OR COALESCE(upstream_error_message, '') ILIKE ANY (ARRAY[
                  '%context_length_exceeded%', '%exceeds the context window%',
                  '%maximum context length%', '%invalid ''%', '%invalid request%',
                  '%invalid_request_error%', '%invalid parameter%', '%unknown parameter%',
-                 '%unsupported parameter%', '%malformed request%'
+                 '%unsupported parameter%', '%malformed request%', '%empty input messages%',
+                 '%user messages must have non-empty content%', '%invalid schema for response_format%',
+                 '%''required'' must include every key in properties%',
+                 '%`temperature` is deprecated for this model%',
+                 '%`temperature` and `top_p` cannot both be specified%',
+                 '%does not support the effort parameter%'
              ])
+          OR (COALESCE(error_message, '') ILIKE '%invalid `signature`%' AND COALESCE(error_message, '') ILIKE '%`thinking` block%')
+          OR (COALESCE(upstream_error_message, '') ILIKE '%invalid `signature`%' AND COALESCE(upstream_error_message, '') ILIKE '%`thinking` block%')
+          OR (COALESCE(error_message, '') ILIKE '%cache_control.ttl%' AND COALESCE(error_message, '') ILIKE '%must not come after%')
+          OR (COALESCE(upstream_error_message, '') ILIKE '%cache_control.ttl%' AND COALESCE(upstream_error_message, '') ILIKE '%must not come after%')
             THEN 'platform'
         ELSE 'provider'
     END,
@@ -568,6 +658,9 @@ SET
           OR COALESCE(error_message, '') ILIKE '%client disconnected%'
           OR COALESCE(upstream_error_message, '') ILIKE '%client disconnected%'
             THEN 'client_quality'
+        WHEN COALESCE(error_message, '') ILIKE '%not supported by any configured account in this group%'
+          OR COALESCE(upstream_error_message, '') ILIKE '%not supported by any configured account in this group%'
+            THEN 'compatibility'
         WHEN (COALESCE(error_message, '') || ' ' || COALESCE(upstream_error_message, '')) ILIKE ANY (ARRAY[
                  '%no available account%',
                  '%concurrency limit exceeded for account%',
@@ -621,15 +714,27 @@ SET
                  '%maximum context length%', '%invalid ''%', '%invalid request%',
                  '%invalid_request_error%', '%invalid parameter%', '%unknown parameter%',
                  '%unsupported parameter%', '%malformed request%', '%model%not supported%',
-                 '%model%not in whitelist%', '%model%not configured%', '%invalid%'
+                 '%model%not in whitelist%', '%model%not configured%', '%invalid%',
+                 '%empty input messages%', '%user messages must have non-empty content%',
+                 '%''required'' must include every key in properties%',
+                 '%`temperature` is deprecated for this model%',
+                 '%`temperature` and `top_p` cannot both be specified%',
+                 '%does not support the effort parameter%'
              ])
           OR COALESCE(upstream_error_message, '') ILIKE ANY (ARRAY[
                  '%context_length_exceeded%', '%exceeds the context window%',
                  '%maximum context length%', '%invalid ''%', '%invalid request%',
                  '%invalid_request_error%', '%invalid parameter%', '%unknown parameter%',
                  '%unsupported parameter%', '%malformed request%', '%model%not supported%',
-                 '%model%not in whitelist%', '%model%not configured%', '%invalid%'
+                 '%model%not in whitelist%', '%model%not configured%', '%invalid%',
+                 '%empty input messages%', '%user messages must have non-empty content%',
+                 '%''required'' must include every key in properties%',
+                 '%`temperature` is deprecated for this model%',
+                 '%`temperature` and `top_p` cannot both be specified%',
+                 '%does not support the effort parameter%'
              ])
+          OR (COALESCE(error_message, '') ILIKE '%cache_control.ttl%' AND COALESCE(error_message, '') ILIKE '%must not come after%')
+          OR (COALESCE(upstream_error_message, '') ILIKE '%cache_control.ttl%' AND COALESCE(upstream_error_message, '') ILIKE '%must not come after%')
             THEN 'compatibility'
         ELSE 'provider_health'
     END,

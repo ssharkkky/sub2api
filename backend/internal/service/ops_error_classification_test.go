@@ -70,6 +70,18 @@ func TestClassifyOpsError(t *testing.T) {
 			category: OpsErrorCategoryInvalidRequest, family: OpsAlertFamilyClientQuality,
 		},
 		{
+			name:    "empty input exposed as gateway failure is compatibility",
+			input:   OpsErrorClassificationInput{StatusCode: 502, UpstreamStatusCode: intPtr(400), ErrorPhase: "upstream", ErrorType: "api_error", UpstreamMessage: "Empty input messages"},
+			outcome: OpsFinalOutcomePlatformFailed, responsibility: OpsResponsibilityPlatform,
+			category: OpsErrorCategoryProductCompatibility, family: OpsAlertFamilyCompatibility,
+		},
+		{
+			name:    "invalid thinking signature is request semantics",
+			input:   OpsErrorClassificationInput{StatusCode: 400, UpstreamStatusCode: intPtr(400), ErrorPhase: "upstream", ErrorType: "api_error", UpstreamMessage: "messages.1.content.0: Invalid `signature` in `thinking` block"},
+			outcome: OpsFinalOutcomeClientRejected, responsibility: OpsResponsibilityClient,
+			category: OpsErrorCategoryInvalidRequest, family: OpsAlertFamilyClientQuality,
+		},
+		{
 			name:    "upstream workspace failure is provider health not client rejection",
 			input:   OpsErrorClassificationInput{StatusCode: 502, UpstreamStatusCode: intPtr(402), ErrorPhase: "upstream", ErrorType: "upstream_error", UpstreamMessage: `{"code":"deactivated_workspace"}`},
 			outcome: OpsFinalOutcomeProviderFailed, responsibility: OpsResponsibilityProvider,
@@ -216,6 +228,12 @@ func TestClassifyOpsError(t *testing.T) {
 		{
 			name:    "unsupported model is compatibility not availability",
 			input:   OpsErrorClassificationInput{StatusCode: 404, ErrorMessage: `Model "example" is not supported by any configured account`},
+			outcome: OpsFinalOutcomeClientRejected, responsibility: OpsResponsibilityClient,
+			category: OpsErrorCategoryUnsupportedModel, family: OpsAlertFamilyCompatibility,
+		},
+		{
+			name:    "stale upstream status does not hide local group model configuration",
+			input:   OpsErrorClassificationInput{StatusCode: 404, UpstreamStatusCode: intPtr(503), ErrorPhase: "upstream", ErrorType: "model_not_found", ErrorMessage: `Model "example" is not supported by any configured account in this group`},
 			outcome: OpsFinalOutcomeClientRejected, responsibility: OpsResponsibilityClient,
 			category: OpsErrorCategoryUnsupportedModel, family: OpsAlertFamilyCompatibility,
 		},

@@ -27,6 +27,7 @@ DECLARE
     request_semantics BOOLEAN;
     recovered_compatibility BOOLEAN;
     user_business_limit BOOLEAN;
+    local_group_model_unavailable BOOLEAN;
     effective_upstream_status INTEGER := COALESCE(NEW.upstream_status_code, 0);
 BEGIN
     IF COALESCE(NEW.classification_version, 0) >= 3 THEN
@@ -80,7 +81,16 @@ BEGIN
         OR message_text LIKE '%invalid parameter%'
         OR message_text LIKE '%unknown parameter%'
         OR message_text LIKE '%unsupported parameter%'
-        OR message_text LIKE '%malformed request%';
+        OR message_text LIKE '%malformed request%'
+        OR message_text LIKE '%empty input messages%'
+        OR message_text LIKE '%user messages must have non-empty content%'
+        OR (message_text LIKE '%invalid `signature`%' AND message_text LIKE '%`thinking` block%')
+        OR message_text LIKE '%invalid schema for response_format%'
+        OR message_text LIKE '%''required'' must include every key in properties%'
+        OR message_text LIKE '%`temperature` is deprecated for this model%'
+        OR message_text LIKE '%`temperature` and `top_p` cannot both be specified%'
+        OR (message_text LIKE '%cache_control.ttl%' AND message_text LIKE '%must not come after%')
+        OR message_text LIKE '%does not support the effort parameter%';
     recovered_compatibility :=
         request_semantics
         OR message_text LIKE '%invalid%'
@@ -103,6 +113,8 @@ BEGIN
             OR message_text LIKE '%usage limit exceeded%'
             OR message_text LIKE '%concurrency limit exceeded for user%'
         );
+    local_group_model_unavailable :=
+        message_text LIKE '%not supported by any configured account in this group%';
 
     IF NOT upstream_evidence AND NEW.error_type LIKE 'cyber_policy%' THEN
         NEW.final_outcome := 'security_blocked';
@@ -148,6 +160,9 @@ BEGIN
            OR message_text LIKE '%client disconnected%' THEN
             NEW.responsibility := 'client';
             NEW.alert_family := 'client_quality';
+        ELSIF local_group_model_unavailable THEN
+            NEW.responsibility := 'client';
+            NEW.alert_family := 'compatibility';
         ELSIF security_message AND upstream_evidence THEN
             NEW.responsibility := 'provider';
             NEW.alert_family := 'security';
@@ -176,6 +191,17 @@ BEGIN
             NEW.responsibility := COALESCE(NULLIF(NEW.responsibility, ''), 'unknown');
             NEW.alert_family := 'none';
         END IF;
+        NEW.classification_version := 3;
+        RETURN NEW;
+    END IF;
+
+    IF local_group_model_unavailable THEN
+        NEW.final_outcome := 'client_rejected';
+        NEW.responsibility := 'client';
+        NEW.error_category := 'unsupported_model';
+        NEW.counts_toward_sla := FALSE;
+        NEW.alert_family := 'compatibility';
+        NEW.classification_reason := 'unsupported_or_unconfigured_model';
         NEW.classification_version := 3;
         RETURN NEW;
     END IF;

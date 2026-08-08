@@ -81,6 +81,26 @@ func TestMigration209BackfillsAndGuardsMixedVersionOpsWrites(t *testing.T) {
 			wantSLA: false, wantFamily: "compatibility",
 		},
 		{
+			name: "invalid request type preserved as upstream 400", statusCode: 400, upstreamStatus: 400,
+			errorType: "invalid_request_error", finalOutcome: "client_rejected",
+			message:     "X-OpenAI-Internal-Codex-Responses-Lite requires reasoning.context to be all_turns",
+			wantOutcome: "client_rejected", wantOwner: "client", wantCategory: "invalid_request",
+			wantSLA: false, wantFamily: "client_quality",
+		},
+		{
+			name: "empty input hidden by gateway", statusCode: 502, upstreamStatus: 400,
+			errorType: "api_error", finalOutcome: "client_rejected", message: "Empty input messages",
+			wantOutcome: "platform_failed", wantOwner: "platform", wantCategory: "product_compatibility",
+			wantSLA: false, wantFamily: "compatibility",
+		},
+		{
+			name: "local group model mismatch with stale upstream status", statusCode: 404, upstreamStatus: 503,
+			errorType: "model_not_found", finalOutcome: "client_rejected",
+			message:     `Model "example" is not supported by any configured account in this group`,
+			wantOutcome: "client_rejected", wantOwner: "client", wantCategory: "unsupported_model",
+			wantSLA: false, wantFamily: "compatibility",
+		},
+		{
 			name: "capacity rejection with upstream 402", statusCode: 502, upstreamStatus: 402,
 			finalOutcome: "client_rejected", message: "insufficient_balance",
 			wantOutcome: "platform_failed", wantOwner: "platform", wantCategory: "platform_capacity",
@@ -131,6 +151,12 @@ func TestMigration209BackfillsAndGuardsMixedVersionOpsWrites(t *testing.T) {
 		{
 			name: "recovered semantic failure with upstream 503", statusCode: 200, upstreamStatus: 503,
 			finalOutcome: "recovered", message: "maximum context length exceeded",
+			wantOutcome: "recovered", wantOwner: "platform", wantCategory: "recovered",
+			wantSLA: false, wantFamily: "compatibility",
+		},
+		{
+			name: "recovered empty input with upstream 503", statusCode: 200, upstreamStatus: 503,
+			finalOutcome: "recovered", message: "Empty input messages",
 			wantOutcome: "recovered", wantOwner: "platform", wantCategory: "recovered",
 			wantSLA: false, wantFamily: "compatibility",
 		},
@@ -241,6 +267,33 @@ func TestMigration209BackfillsAndGuardsMixedVersionOpsWrites(t *testing.T) {
 				wantSLA: true, wantFamily: "provider_health",
 			},
 			errorType: "invalid_request_error", upstreamValue: 503,
+		},
+		{
+			fixture: opsV3MigrationExpectation{
+				name: "rolling invalid request preserved as upstream 400", statusCode: 400, upstreamStatus: 400,
+				finalOutcome: "client_rejected", message: "Invalid value: ultra. Supported values are: low, medium, high",
+				wantOutcome: "client_rejected", wantOwner: "client", wantCategory: "invalid_request",
+				wantSLA: false, wantFamily: "client_quality",
+			},
+			errorType: "invalid_request_error", upstreamValue: 400,
+		},
+		{
+			fixture: opsV3MigrationExpectation{
+				name: "rolling empty input hidden by gateway", statusCode: 502, upstreamStatus: 400,
+				finalOutcome: "client_rejected", message: "Empty input messages",
+				wantOutcome: "platform_failed", wantOwner: "platform", wantCategory: "product_compatibility",
+				wantSLA: false, wantFamily: "compatibility",
+			},
+			errorType: "api_error", upstreamValue: 400,
+		},
+		{
+			fixture: opsV3MigrationExpectation{
+				name: "rolling local group model mismatch with stale upstream status", statusCode: 404, upstreamStatus: 503,
+				finalOutcome: "client_rejected", message: `Model "example" is not supported by any configured account in this group`,
+				wantOutcome: "client_rejected", wantOwner: "client", wantCategory: "unsupported_model",
+				wantSLA: false, wantFamily: "compatibility",
+			},
+			errorType: "model_not_found", upstreamValue: 503,
 		},
 		{
 			fixture: opsV3MigrationExpectation{
