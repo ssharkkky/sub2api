@@ -22,6 +22,7 @@ const (
 	OpsAlertFamilyNone           = "none"
 	OpsAlertFamilyAvailability   = "availability"
 	OpsAlertFamilyCapacity       = "capacity"
+	OpsAlertFamilyCredential     = "credential"
 	OpsAlertFamilyProviderHealth = "provider_health"
 	OpsAlertFamilyCompatibility  = "compatibility"
 	OpsAlertFamilyClientQuality  = "client_quality"
@@ -61,6 +62,7 @@ type OpsErrorClassificationInput struct {
 	ErrorMessage       string
 	UpstreamMessage    string
 	IsBusinessLimited  bool
+	Recovered          bool
 }
 
 type OpsErrorClassification struct {
@@ -93,13 +95,31 @@ func ClassifyOpsError(input OpsErrorClassificationInput) OpsErrorClassification 
 		ClassificationVersion: OpsErrorClassificationVersion,
 	}
 
-	if status > 0 && status < 400 {
+	upstreamEvidence := isOpsUpstreamEvidence(upstreamStatus, phase, source, errType)
+
+	// Local cyber/Turnstile decisions are explicit client-facing security
+	// blocks. Upstream responses can use the same error type, so require an
+	// absence of upstream evidence before assigning client responsibility.
+	if !upstreamEvidence && isOpsExplicitLocalSecurityRejection(errType, message) {
+		result.FinalOutcome = OpsFinalOutcomeSecurityBlocked
+		result.Responsibility = OpsResponsibilityClient
+		result.ErrorCategory = OpsErrorCategorySecurityPolicy
+		result.AlertFamily = OpsAlertFamilySecurity
+		result.ClassificationReason = "security_policy_rejection"
+		return result
+	}
+
+	if input.Recovered {
 		result.FinalOutcome = OpsFinalOutcomeRecovered
 		result.ErrorCategory = OpsErrorCategoryRecovered
 		result.CountsTowardSLA = false
 		result.AlertFamily = recoveredOpsAlertFamily(upstreamStatus, phase, errType, message)
 		result.Responsibility = recoveredOpsResponsibility(upstreamStatus, phase, errType, message)
 		result.ClassificationReason = "final_request_recovered"
+		if isOpsSecurityPolicyMessage(message) && upstreamEvidence {
+			result.AlertFamily = OpsAlertFamilySecurity
+			result.Responsibility = OpsResponsibilityProvider
+		}
 		return result
 	}
 
@@ -114,7 +134,26 @@ func ClassifyOpsError(input OpsErrorClassificationInput) OpsErrorClassification 
 		return result
 	}
 
-	if isOpsSecurityRejection(errType, message) {
+	if upstreamEvidence {
+		if isOpsSecurityPolicyMessage(message) {
+			result.FinalOutcome = OpsFinalOutcomeSecurityBlocked
+			result.Responsibility = OpsResponsibilityProvider
+			result.ErrorCategory = OpsErrorCategorySecurityPolicy
+			result.AlertFamily = OpsAlertFamilySecurity
+			result.ClassificationReason = "upstream_security_policy_rejection"
+			return result
+		}
+		effectiveUpstreamStatus := upstreamStatus
+		// Older and compatibility paths did not always persist a separate upstream
+		// status. A preserved upstream 4xx still carries reliable request semantics;
+		// synthetic 5xx values remain transport/platform failures without evidence.
+		if effectiveUpstreamStatus == 0 && ((status >= 400 && status < 500) || status == 529) {
+			effectiveUpstreamStatus = status
+		}
+		return classifyOpsUpstreamFailure(result, status, effectiveUpstreamStatus, phase, errType, message)
+	}
+
+	if isOpsSecurityPolicyMessage(message) {
 		result.FinalOutcome = OpsFinalOutcomeSecurityBlocked
 		result.Responsibility = OpsResponsibilityClient
 		result.ErrorCategory = OpsErrorCategorySecurityPolicy
@@ -133,15 +172,17 @@ func ClassifyOpsError(input OpsErrorClassificationInput) OpsErrorClassification 
 		return result
 	}
 
-	if upstreamStatus > 0 || phase == "upstream" || phase == "account_auth" || source == "upstream_http" {
-		effectiveUpstreamStatus := upstreamStatus
-		// Older and compatibility paths did not always persist a separate upstream
-		// status. A preserved upstream 4xx still carries reliable request semantics;
-		// synthetic 5xx values remain transport/platform failures without evidence.
-		if effectiveUpstreamStatus == 0 && ((status >= 400 && status < 500) || status == 529) {
-			effectiveUpstreamStatus = status
-		}
-		return classifyOpsUpstreamFailure(result, status, effectiveUpstreamStatus, phase, errType, message)
+	// Routing/internal 5xx failures are owned by the gateway even when legacy
+	// callers also set the broad business-limited marker. Keep lower status
+	// codes on their more specific client/model/security paths below.
+	if status >= 500 && (phase == "routing" || phase == "internal") {
+		result.FinalOutcome = OpsFinalOutcomePlatformFailed
+		result.Responsibility = OpsResponsibilityPlatform
+		result.ErrorCategory = OpsErrorCategoryPlatformInternal
+		result.CountsTowardSLA = true
+		result.AlertFamily = OpsAlertFamilyAvailability
+		result.ClassificationReason = "platform_internal_or_routing_failure"
+		return result
 	}
 
 	if isOpsUnsupportedModel(message) {
@@ -220,12 +261,30 @@ func ClassifyOpsError(input OpsErrorClassificationInput) OpsErrorClassification 
 }
 
 func classifyOpsUpstreamFailure(result OpsErrorClassification, status, upstreamStatus int, phase, errType, message string) OpsErrorClassification {
-	if phase == "account_auth" || upstreamStatus == 401 || upstreamStatus == 403 {
+	if isOpsManagedCapacityMessage(message) {
+		result.FinalOutcome = OpsFinalOutcomePlatformFailed
+		result.Responsibility = OpsResponsibilityPlatform
+		result.ErrorCategory = OpsErrorCategoryPlatformCapacity
+		result.CountsTowardSLA = true
+		result.AlertFamily = OpsAlertFamilyCapacity
+		result.ClassificationReason = "managed_upstream_capacity_rejected"
+		return result
+	}
+	if isOpsCapabilityConfigurationMessage(message) {
+		result.FinalOutcome = OpsFinalOutcomePlatformFailed
+		result.Responsibility = OpsResponsibilityPlatform
+		result.ErrorCategory = OpsErrorCategoryProductCompatibility
+		result.AlertFamily = OpsAlertFamilyCompatibility
+		result.ClassificationReason = "managed_upstream_capability_not_enabled"
+		return result
+	}
+	if phase == "account_auth" || upstreamStatus == 401 ||
+		(upstreamStatus == 403 && isOpsManagedCredentialMessage(message)) {
 		result.FinalOutcome = OpsFinalOutcomePlatformFailed
 		result.Responsibility = OpsResponsibilityPlatform
 		result.ErrorCategory = OpsErrorCategoryPlatformCredential
 		result.CountsTowardSLA = true
-		result.AlertFamily = OpsAlertFamilyCapacity
+		result.AlertFamily = OpsAlertFamilyCredential
 		result.ClassificationReason = "managed_upstream_credential_rejected"
 		return result
 	}
@@ -305,6 +364,16 @@ func recoveredOpsAlertFamily(upstreamStatus int, phase, errType, message string)
 	if strings.Contains(message, "context canceled") || strings.Contains(message, "client disconnected") {
 		return OpsAlertFamilyClientQuality
 	}
+	if isOpsManagedCapacityMessage(message) {
+		return OpsAlertFamilyCapacity
+	}
+	if isOpsCapabilityConfigurationMessage(message) {
+		return OpsAlertFamilyCompatibility
+	}
+	if phase == "account_auth" || upstreamStatus == 401 ||
+		(upstreamStatus == 403 && isOpsManagedCredentialMessage(message)) {
+		return OpsAlertFamilyCredential
+	}
 	if isOpsExplicitUpstreamRequestRejection(upstreamStatus, errType, message) ||
 		isOpsUnsupportedModel(message) || strings.Contains(message, "invalid") {
 		return OpsAlertFamilyCompatibility
@@ -319,7 +388,11 @@ func recoveredOpsResponsibility(upstreamStatus int, phase, errType, message stri
 	if strings.Contains(message, "context canceled") || strings.Contains(message, "client disconnected") {
 		return OpsResponsibilityClient
 	}
-	if phase == "account_auth" || upstreamStatus == 401 || upstreamStatus == 403 {
+	if isOpsManagedCapacityMessage(message) || isOpsCapabilityConfigurationMessage(message) {
+		return OpsResponsibilityPlatform
+	}
+	if phase == "account_auth" || upstreamStatus == 401 ||
+		(upstreamStatus == 403 && isOpsManagedCredentialMessage(message)) {
 		return OpsResponsibilityPlatform
 	}
 	if upstreamStatus == 429 || upstreamStatus >= 500 || strings.Contains(message, "overloaded") {
@@ -335,13 +408,14 @@ func recoveredOpsResponsibility(upstreamStatus int, phase, errType, message stri
 }
 
 func isOpsExplicitUpstreamRequestRejection(upstreamStatus int, errType, message string) bool {
-	if upstreamStatus != 400 && upstreamStatus != 422 {
-		return false
-	}
-	if errType == "invalid_request_error" {
+	if errType == "invalid_request_error" && (upstreamStatus == 400 || upstreamStatus == 422) {
 		return true
 	}
-	return strings.Contains(message, "invalid request") ||
+	return strings.Contains(message, "context_length_exceeded") ||
+		strings.Contains(message, "exceeds the context window") ||
+		strings.Contains(message, "maximum context length") ||
+		strings.Contains(message, "invalid '") ||
+		strings.Contains(message, "invalid request") ||
 		strings.Contains(message, "invalid_request_error") ||
 		strings.Contains(message, "invalid parameter") ||
 		strings.Contains(message, "unknown parameter") ||
@@ -355,10 +429,19 @@ func isOpsClientCancellation(status int, message string) bool {
 		strings.Contains(message, "request canceled") || strings.Contains(message, "broken pipe")
 }
 
-func isOpsSecurityRejection(errType, message string) bool {
-	return errType == "cyber_policy" || strings.Contains(message, "cyber policy") ||
-		strings.Contains(message, "content policy") || strings.Contains(message, "security policy") ||
-		strings.Contains(message, "turnstile verification")
+func isOpsExplicitLocalSecurityRejection(errType, message string) bool {
+	return strings.HasPrefix(errType, "cyber_policy") || strings.Contains(message, "turnstile verification")
+}
+
+func isOpsSecurityPolicyMessage(message string) bool {
+	return strings.Contains(message, "content policy") || strings.Contains(message, "security policy") ||
+		strings.Contains(message, "cyber policy") || strings.Contains(message, "cyber-security policy") ||
+		strings.Contains(message, "cybersecurity risk")
+}
+
+func isOpsUpstreamEvidence(upstreamStatus int, phase, source, errType string) bool {
+	return upstreamStatus > 0 || phase == "upstream" || phase == "account_auth" ||
+		source == "upstream_http" || errType == "upstream_error"
 }
 
 func isOpsPlatformCapacityFailure(message string) bool {
@@ -366,6 +449,29 @@ func isOpsPlatformCapacityFailure(message string) bool {
 		strings.Contains(message, "concurrency limit exceeded for account") ||
 		strings.Contains(message, "too many pending requests") ||
 		strings.Contains(message, "account pool") && strings.Contains(message, "unavailable")
+}
+
+func isOpsManagedCredentialMessage(message string) bool {
+	return strings.Contains(message, "access token") || strings.Contains(message, "oauth token") ||
+		strings.Contains(message, "credentials") || strings.Contains(message, "credential") ||
+		strings.Contains(message, "token has been revoked") || strings.Contains(message, "token expired") ||
+		strings.Contains(message, "invalid token") || strings.Contains(message, "authentication failed") ||
+		strings.Contains(message, "认证失败") || strings.Contains(message, "请重新登录") ||
+		strings.Contains(message, "检查 api key")
+}
+
+func isOpsManagedCapacityMessage(message string) bool {
+	return strings.Contains(message, "insufficient balance") ||
+		strings.Contains(message, "insufficient_account_balance") ||
+		strings.Contains(message, "insufficient_balance") ||
+		strings.Contains(message, "预扣费额度失败") || strings.Contains(message, "用户剩余额度")
+}
+
+func isOpsCapabilityConfigurationMessage(message string) bool {
+	return strings.Contains(message, "not enabled for this group") ||
+		strings.Contains(message, "disabled for this group") ||
+		strings.Contains(message, "capability is not enabled") ||
+		strings.Contains(message, "permission is not enabled")
 }
 
 func isOpsUnsupportedModel(message string) bool {
