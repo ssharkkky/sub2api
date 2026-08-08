@@ -1,0 +1,209 @@
+//go:build integration
+
+package repository
+
+import (
+	"context"
+	"database/sql"
+	"testing"
+	"time"
+
+	"github.com/Wei-Shaw/sub2api/internal/service"
+	dbmigrations "github.com/Wei-Shaw/sub2api/migrations"
+	"github.com/stretchr/testify/require"
+)
+
+type opsV3MigrationExpectation struct {
+	name           string
+	statusCode     int
+	upstreamStatus int
+	finalOutcome   string
+	message        string
+	wantOutcome    string
+	wantOwner      string
+	wantCategory   string
+	wantSLA        bool
+	wantFamily     string
+}
+
+func TestMigration209BackfillsAndGuardsMixedVersionOpsWrites(t *testing.T) {
+	tx := testTx(t)
+	ctx := context.Background()
+	migrationSQL, err := dbmigrations.FS.ReadFile("209_reclassify_confirmed_upstream_failures.sql")
+	require.NoError(t, err)
+
+	_, err = tx.ExecContext(ctx, "DROP TRIGGER ops_error_logs_normalize_v3_mixed_writer ON ops_error_logs")
+	require.NoError(t, err)
+
+	fixtures := []opsV3MigrationExpectation{
+		{
+			name: "unknown upstream 403", statusCode: 502, upstreamStatus: 403,
+			finalOutcome: "client_rejected", message: "provider rejected request",
+			wantOutcome: "provider_failed", wantOwner: "provider", wantCategory: "provider_server",
+			wantSLA: true, wantFamily: "provider_health",
+		},
+		{
+			name: "revoked OAuth token", statusCode: 502, upstreamStatus: 403,
+			finalOutcome: "client_rejected", message: "OAuth token has been revoked",
+			wantOutcome: "platform_failed", wantOwner: "platform", wantCategory: "platform_credential",
+			wantSLA: true, wantFamily: "credential",
+		},
+		{
+			name: "disabled capability", statusCode: 502, upstreamStatus: 403,
+			finalOutcome: "client_rejected", message: "permission is not enabled for this workspace",
+			wantOutcome: "platform_failed", wantOwner: "platform", wantCategory: "product_compatibility",
+			wantSLA: false, wantFamily: "compatibility",
+		},
+		{
+			name: "context limit hidden by gateway", statusCode: 502, upstreamStatus: 400,
+			finalOutcome: "client_rejected", message: "maximum context length exceeded",
+			wantOutcome: "platform_failed", wantOwner: "platform", wantCategory: "product_compatibility",
+			wantSLA: false, wantFamily: "compatibility",
+		},
+		{
+			name: "unsupported parameter hidden by gateway", statusCode: 502, upstreamStatus: 400,
+			finalOutcome: "client_rejected", message: "unsupported parameter: reasoning_mode",
+			wantOutcome: "platform_failed", wantOwner: "platform", wantCategory: "product_compatibility",
+			wantSLA: false, wantFamily: "compatibility",
+		},
+		{
+			name: "recovered expired token", statusCode: 200, upstreamStatus: 403,
+			finalOutcome: "recovered", message: "OAuth access token expired",
+			wantOutcome: "recovered", wantOwner: "platform", wantCategory: "recovered",
+			wantSLA: false, wantFamily: "credential",
+		},
+	}
+
+	ids := make(map[string]int64, len(fixtures))
+	for _, fixture := range fixtures {
+		var id int64
+		err := tx.QueryRowContext(ctx, `
+			INSERT INTO ops_error_logs (
+				platform, error_phase, error_type, status_code, upstream_status_code,
+				error_message, final_outcome, responsibility, error_category,
+				counts_toward_sla, alert_family, classification_reason,
+				classification_version, is_count_tokens, created_at
+			) VALUES (
+				'ops-migration-209', 'upstream', 'upstream_error', $1, $2,
+				$3, $4, 'client', 'invalid_request',
+				FALSE, 'client_quality', 'legacy_v2_fixture',
+				2, FALSE, NOW()
+			) RETURNING id
+		`, fixture.statusCode, fixture.upstreamStatus, fixture.message, fixture.finalOutcome).Scan(&id)
+		require.NoError(t, err, fixture.name)
+		ids[fixture.name] = id
+	}
+
+	_, err = tx.ExecContext(ctx, string(migrationSQL))
+	require.NoError(t, err)
+
+	for _, fixture := range fixtures {
+		assertOpsV3MigrationRow(t, tx, ids[fixture.name], fixture)
+	}
+
+	rollingWriter := opsV3MigrationExpectation{
+		name: "rolling v2 writer unknown 403", statusCode: 502, upstreamStatus: 403,
+		finalOutcome: "client_rejected", message: "provider rejected request after backfill",
+		wantOutcome: "provider_failed", wantOwner: "provider", wantCategory: "provider_server",
+		wantSLA: true, wantFamily: "provider_health",
+	}
+	var rollingID int64
+	err = tx.QueryRowContext(ctx, `
+		INSERT INTO ops_error_logs (
+			platform, error_phase, error_type, status_code, upstream_status_code,
+			error_message, final_outcome, responsibility, error_category,
+			counts_toward_sla, alert_family, classification_reason,
+			classification_version, is_count_tokens, created_at
+		) VALUES (
+			'ops-migration-209', 'upstream', 'upstream_error', $1, $2,
+			$3, $4, 'client', 'invalid_request',
+			FALSE, 'client_quality', 'rolling_v2_fixture',
+			2, FALSE, NOW()
+		) RETURNING id
+	`, rollingWriter.statusCode, rollingWriter.upstreamStatus, rollingWriter.message, rollingWriter.finalOutcome).Scan(&rollingID)
+	require.NoError(t, err)
+	assertOpsV3MigrationRow(t, tx, rollingID, rollingWriter)
+
+	var preservedVersion int
+	err = tx.QueryRowContext(ctx, `
+		INSERT INTO ops_error_logs (
+			platform, error_phase, error_type, status_code, upstream_status_code,
+			final_outcome, responsibility, error_category, counts_toward_sla,
+			alert_family, classification_reason, classification_version,
+			is_count_tokens, created_at
+		) VALUES (
+			'ops-migration-209', 'upstream', 'upstream_error', 502, 403,
+			'unknown_failed', 'unknown', 'unknown', FALSE,
+			'unknown_failure', 'v3_writer_controls_classification', 3,
+			FALSE, NOW()
+		) RETURNING classification_version
+	`).Scan(&preservedVersion)
+	require.NoError(t, err)
+	require.Equal(t, 3, preservedVersion)
+
+}
+
+func TestOpsCredentialStatsExcludeRecoveredSignals(t *testing.T) {
+	ctx := context.Background()
+	platform := "ops-credential-stats-v3"
+	now := time.Now().UTC()
+	t.Cleanup(func() {
+		_, _ = integrationDB.ExecContext(context.Background(), "DELETE FROM ops_error_logs WHERE platform = $1", platform)
+	})
+
+	_, err := integrationDB.ExecContext(ctx, `
+		INSERT INTO ops_error_logs (
+			platform, error_phase, error_type, status_code, upstream_status_code,
+			final_outcome, responsibility, error_category, counts_toward_sla,
+			alert_family, classification_reason, classification_version,
+			is_count_tokens, created_at
+		) VALUES
+			($1, 'upstream', 'upstream_error', 502, 403,
+			 'platform_failed', 'platform', 'platform_credential', TRUE,
+			 'credential', 'managed_upstream_credential_rejected', 3, FALSE, $2),
+			($1, 'upstream', 'upstream_error', 200, 403,
+			 'recovered', 'platform', 'recovered', FALSE,
+			 'credential', 'final_request_recovered', 3, FALSE, $2),
+			($1, 'upstream', 'upstream_error', 502, 403,
+			 'platform_failed', 'platform', 'platform_credential', FALSE,
+			 'credential', 'non_sla_fixture', 3, FALSE, $2)
+	`, platform, now)
+	require.NoError(t, err)
+
+	repo := &opsRepository{db: integrationDB}
+	stats, err := repo.GetErrorClassificationStats(ctx, &service.OpsDashboardFilter{
+		StartTime: now.Add(-time.Minute),
+		EndTime:   now.Add(time.Minute),
+		Platform:  platform,
+	})
+	require.NoError(t, err)
+	require.EqualValues(t, 1, stats.PlatformCredentialCount,
+		"credential failures must exclude recovered and non-SLA rows")
+}
+
+func assertOpsV3MigrationRow(
+	t *testing.T,
+	tx interface {
+		QueryRowContext(context.Context, string, ...any) *sql.Row
+	},
+	id int64,
+	want opsV3MigrationExpectation,
+) {
+	t.Helper()
+	var outcome, owner, category, family string
+	var countsTowardSLA bool
+	var version int
+	err := tx.QueryRowContext(context.Background(), `
+		SELECT final_outcome, responsibility, error_category,
+		       counts_toward_sla, alert_family, classification_version
+		FROM ops_error_logs
+		WHERE id = $1
+	`, id).Scan(&outcome, &owner, &category, &countsTowardSLA, &family, &version)
+	require.NoError(t, err, want.name)
+	require.Equal(t, want.wantOutcome, outcome, want.name)
+	require.Equal(t, want.wantOwner, owner, want.name)
+	require.Equal(t, want.wantCategory, category, want.name)
+	require.Equal(t, want.wantSLA, countsTowardSLA, want.name)
+	require.Equal(t, want.wantFamily, family, want.name)
+	require.Equal(t, 3, version, want.name)
+}
