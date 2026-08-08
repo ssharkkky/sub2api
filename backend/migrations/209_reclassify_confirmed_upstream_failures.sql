@@ -32,6 +32,7 @@ WHERE COALESCE(classification_version, 0) < 3
 
 -- Preserve failed upstream security rejections before generic legacy rules see
 -- the reused cyber_policy error type as a local client block.
+-- sub2api-managed-update: reviewed-compatible
 UPDATE ops_error_logs
 SET
     final_outcome = 'security_blocked',
@@ -64,6 +65,7 @@ WHERE COALESCE(classification_version, 0) < 3
 -- Final managed upstream 401/403 responses need their own branches. The old
 -- v2 rule only covered client-attributed records, leaving already-final logs
 -- out of the capacity, credential and capability views.
+-- sub2api-managed-update: reviewed-compatible
 UPDATE ops_error_logs
 SET
     final_outcome = 'platform_failed',
@@ -156,6 +158,7 @@ WHERE COALESCE(classification_version, 0) < 3
 -- Semantic request failures must be handled before the broad provider update;
 -- otherwise the broad rule would permanently turn context/schema errors into
 -- provider SLA failures and the later compatibility correction could not match.
+-- sub2api-managed-update: reviewed-compatible
 UPDATE ops_error_logs
 SET
     final_outcome = 'platform_failed',
@@ -184,6 +187,7 @@ WHERE COALESCE(classification_version, 0) < 3
       OR COALESCE(upstream_error_message, '') ILIKE '%invalid ''%'
   );
 
+-- sub2api-managed-update: reviewed-compatible
 UPDATE ops_error_logs
 SET
     final_outcome = 'provider_failed',
