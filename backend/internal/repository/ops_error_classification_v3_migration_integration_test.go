@@ -30,7 +30,9 @@ type opsV3MigrationExpectation struct {
 func TestMigration209BackfillsAndGuardsMixedVersionOpsWrites(t *testing.T) {
 	tx := testTx(t)
 	ctx := context.Background()
-	migrationSQL, err := dbmigrations.FS.ReadFile("209_reclassify_confirmed_upstream_failures.sql")
+	triggerMigrationSQL, err := dbmigrations.FS.ReadFile("209_reclassify_confirmed_upstream_failures.sql")
+	require.NoError(t, err)
+	backfillMigrationSQL, err := dbmigrations.FS.ReadFile("210_backfill_ops_error_classification_v3.sql")
 	require.NoError(t, err)
 
 	_, err = tx.ExecContext(ctx, "DROP TRIGGER ops_error_logs_normalize_v3_mixed_writer ON ops_error_logs")
@@ -118,7 +120,9 @@ func TestMigration209BackfillsAndGuardsMixedVersionOpsWrites(t *testing.T) {
 		ids[fixture.name] = id
 	}
 
-	_, err = tx.ExecContext(ctx, string(migrationSQL))
+	_, err = tx.ExecContext(ctx, string(triggerMigrationSQL))
+	require.NoError(t, err)
+	_, err = tx.ExecContext(ctx, string(backfillMigrationSQL))
 	require.NoError(t, err)
 
 	for _, fixture := range fixtures {
@@ -227,6 +231,44 @@ func TestMigration209BackfillsAndGuardsMixedVersionOpsWrites(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, 3, preservedVersion)
 
+}
+
+func TestMigration210BackfillDoesNotBlockMixedVersionInserts(t *testing.T) {
+	ctx := context.Background()
+	platform := "ops-migration-210-concurrency"
+	t.Cleanup(func() {
+		_, _ = integrationDB.ExecContext(context.Background(), "DELETE FROM ops_error_logs WHERE platform = $1", platform)
+	})
+
+	backfillMigrationSQL, err := dbmigrations.FS.ReadFile("210_backfill_ops_error_classification_v3.sql")
+	require.NoError(t, err)
+	backfillTx, err := integrationDB.BeginTx(ctx, nil)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = backfillTx.Rollback() })
+	_, err = backfillTx.ExecContext(ctx, string(backfillMigrationSQL))
+	require.NoError(t, err)
+
+	insertCtx, cancel := context.WithTimeout(ctx, 2*time.Second)
+	defer cancel()
+	var outcome, owner, category string
+	err = integrationDB.QueryRowContext(insertCtx, `
+		INSERT INTO ops_error_logs (
+			platform, error_phase, error_type, status_code, upstream_status_code,
+			error_message, final_outcome, responsibility, error_category,
+			counts_toward_sla, alert_family, classification_reason,
+			classification_version, is_count_tokens, created_at
+		) VALUES (
+			$1, 'upstream', 'upstream_error', 502, 403,
+			'provider rejected request during backfill', 'client_rejected', 'client', 'invalid_request',
+			FALSE, 'client_quality', 'rolling_v2_during_backfill',
+			2, FALSE, NOW()
+		)
+		RETURNING final_outcome, responsibility, error_category
+	`, platform).Scan(&outcome, &owner, &category)
+	require.NoError(t, err, "backfill transaction must not block the error-log writer")
+	require.Equal(t, "provider_failed", outcome)
+	require.Equal(t, "provider", owner)
+	require.Equal(t, "provider_server", category)
 }
 
 func TestOpsCredentialStatsExcludeRecoveredSignals(t *testing.T) {
