@@ -14,18 +14,21 @@ import (
 )
 
 type opsV3MigrationExpectation struct {
-	name           string
-	statusCode     int
-	upstreamStatus int
-	upstreamNull   bool
-	errorType      string
-	finalOutcome   string
-	message        string
-	wantOutcome    string
-	wantOwner      string
-	wantCategory   string
-	wantSLA        bool
-	wantFamily     string
+	name            string
+	statusCode      int
+	upstreamStatus  int
+	upstreamNull    bool
+	errorPhase      string
+	errorSource     string
+	errorType       string
+	businessLimited bool
+	finalOutcome    string
+	message         string
+	wantOutcome     string
+	wantOwner       string
+	wantCategory    string
+	wantSLA         bool
+	wantFamily      string
 }
 
 func TestMigration209BackfillsAndGuardsMixedVersionOpsWrites(t *testing.T) {
@@ -131,6 +134,31 @@ func TestMigration209BackfillsAndGuardsMixedVersionOpsWrites(t *testing.T) {
 			wantOutcome: "recovered", wantOwner: "platform", wantCategory: "recovered",
 			wantSLA: false, wantFamily: "compatibility",
 		},
+		{
+			name: "recovered client cancellation with upstream 503", statusCode: 200, upstreamStatus: 503,
+			errorType: "api_error", finalOutcome: "recovered", message: "client disconnected after upstream attempt",
+			wantOutcome: "recovered", wantOwner: "client", wantCategory: "recovered",
+			wantSLA: false, wantFamily: "client_quality",
+		},
+		{
+			name: "recovered invalid request type with upstream 503", statusCode: 200, upstreamStatus: 503,
+			errorType: "invalid_request_error", finalOutcome: "recovered", message: "provider failed without request semantics",
+			wantOutcome: "recovered", wantOwner: "provider", wantCategory: "recovered",
+			wantSLA: false, wantFamily: "provider_health",
+		},
+		{
+			name: "recovered model not configured with upstream 503", statusCode: 200, upstreamStatus: 503,
+			finalOutcome: "recovered", message: "model is not configured for this provider",
+			wantOutcome: "recovered", wantOwner: "provider", wantCategory: "recovered",
+			wantSLA: false, wantFamily: "compatibility",
+		},
+		{
+			name: "historical local user concurrency limit", statusCode: 200, upstreamNull: true,
+			errorPhase: "request", errorType: "rate_limit_error", businessLimited: true,
+			finalOutcome: "recovered", message: "Concurrency limit exceeded for user 42",
+			wantOutcome: "business_limited", wantOwner: "client", wantCategory: "user_concurrency",
+			wantSLA: false, wantFamily: "client_quality",
+		},
 	}
 
 	ids := make(map[string]int64, len(fixtures))
@@ -139,6 +167,10 @@ func TestMigration209BackfillsAndGuardsMixedVersionOpsWrites(t *testing.T) {
 		if errorType == "" {
 			errorType = "upstream_error"
 		}
+		errorPhase := fixture.errorPhase
+		if errorPhase == "" {
+			errorPhase = "upstream"
+		}
 		var id int64
 		var upstreamValue any = fixture.upstreamStatus
 		if fixture.upstreamNull {
@@ -146,17 +178,18 @@ func TestMigration209BackfillsAndGuardsMixedVersionOpsWrites(t *testing.T) {
 		}
 		err := tx.QueryRowContext(ctx, `
 			INSERT INTO ops_error_logs (
-				platform, error_phase, error_type, status_code, upstream_status_code,
+				platform, error_phase, error_source, error_type, status_code, upstream_status_code,
 				error_message, final_outcome, responsibility, error_category,
 				counts_toward_sla, alert_family, classification_reason,
-				classification_version, is_count_tokens, created_at
+				classification_version, is_business_limited, is_count_tokens, created_at
 			) VALUES (
-				'ops-migration-209', 'upstream', $1, $2, $3,
-				$4, $5, 'client', 'invalid_request',
+				'ops-migration-209', $1, $2, $3, $4, $5,
+				$6, $7, 'client', 'invalid_request',
 				FALSE, 'client_quality', 'legacy_v2_fixture',
-				2, FALSE, NOW()
+				2, $8, FALSE, NOW()
 			) RETURNING id
-		`, errorType, fixture.statusCode, upstreamValue, fixture.message, fixture.finalOutcome).Scan(&id)
+		`, errorPhase, fixture.errorSource, errorType, fixture.statusCode, upstreamValue,
+			fixture.message, fixture.finalOutcome, fixture.businessLimited).Scan(&id)
 		require.NoError(t, err, fixture.name)
 		ids[fixture.name] = id
 	}
@@ -197,6 +230,8 @@ func TestMigration209BackfillsAndGuardsMixedVersionOpsWrites(t *testing.T) {
 		fixture       opsV3MigrationExpectation
 		errorType     string
 		upstreamValue any
+		errorPhase    string
+		businessLimit bool
 	}{
 		{
 			fixture: opsV3MigrationExpectation{
@@ -288,23 +323,57 @@ func TestMigration209BackfillsAndGuardsMixedVersionOpsWrites(t *testing.T) {
 			},
 			errorType: "api_error", upstreamValue: 503,
 		},
+		{
+			fixture: opsV3MigrationExpectation{
+				name: "rolling recovered invalid request type with upstream 503", statusCode: 200, upstreamStatus: 503,
+				finalOutcome: "recovered", message: "provider failed without request semantics",
+				wantOutcome: "recovered", wantOwner: "provider", wantCategory: "recovered",
+				wantSLA: false, wantFamily: "provider_health",
+			},
+			errorType: "invalid_request_error", upstreamValue: 503,
+		},
+		{
+			fixture: opsV3MigrationExpectation{
+				name: "rolling recovered model not configured with upstream 503", statusCode: 200, upstreamStatus: 503,
+				finalOutcome: "recovered", message: "model is not configured for this provider",
+				wantOutcome: "recovered", wantOwner: "provider", wantCategory: "recovered",
+				wantSLA: false, wantFamily: "compatibility",
+			},
+			errorType: "upstream_error", upstreamValue: 503,
+		},
+		{
+			fixture: opsV3MigrationExpectation{
+				name: "rolling local user concurrency limit", statusCode: 200,
+				finalOutcome: "recovered", message: "Concurrency limit exceeded for user 42",
+				wantOutcome: "business_limited", wantOwner: "client", wantCategory: "user_concurrency",
+				wantSLA: false, wantFamily: "client_quality",
+			},
+			errorType: "rate_limit_error", upstreamValue: nil, errorPhase: "request", businessLimit: true,
+		},
 	}
 	for _, boundary := range rollingBoundaryCases {
+		errorPhase := boundary.errorPhase
+		if errorPhase == "" {
+			errorPhase = "upstream"
+		}
 		var id int64
 		err = tx.QueryRowContext(ctx, `
 			INSERT INTO ops_error_logs (
-				platform, error_phase, error_type, status_code, upstream_status_code,
+				platform, error_phase, error_source, error_owner,
+				error_type, status_code, upstream_status_code,
 				error_message, final_outcome, responsibility, error_category,
 				counts_toward_sla, alert_family, classification_reason,
-				classification_version, is_count_tokens, created_at
+				classification_version, is_business_limited, is_count_tokens, created_at
 			) VALUES (
-				'ops-migration-209', 'upstream', $1, $2, $3,
-				$4, $5, 'client', 'invalid_request',
+				'ops-migration-209', $1::varchar,
+				CASE WHEN $1::varchar IN ('request', 'auth') THEN 'client_request' ELSE 'upstream_http' END,
+				CASE WHEN $1::varchar IN ('request', 'auth') THEN 'client' ELSE 'provider' END,
+				$2, $3, $4, $5, $6, 'client', 'invalid_request',
 				FALSE, 'client_quality', 'rolling_v2_boundary_fixture',
-				2, FALSE, NOW()
+				2, $7, FALSE, NOW()
 			) RETURNING id
-		`, boundary.errorType, boundary.fixture.statusCode, boundary.upstreamValue,
-			boundary.fixture.message, boundary.fixture.finalOutcome).Scan(&id)
+		`, errorPhase, boundary.errorType, boundary.fixture.statusCode, boundary.upstreamValue,
+			boundary.fixture.message, boundary.fixture.finalOutcome, boundary.businessLimit).Scan(&id)
 		require.NoError(t, err, boundary.fixture.name)
 		assertOpsV3MigrationRow(t, tx, id, boundary.fixture)
 	}

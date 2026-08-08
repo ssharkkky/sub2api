@@ -314,6 +314,43 @@ WHERE COALESCE(classification_version, 0) < 3
       OR COALESCE(upstream_error_message, '') ILIKE '%malformed request%'
   );
 
+-- Classification v2 treated HTTP 2xx in-band business errors as recovered.
+-- Restore local user quota, subscription and concurrency semantics before the
+-- recovered and upstream rules inspect the same rows.
+-- sub2api-managed-update: reviewed-compatible
+UPDATE ops_error_logs
+SET
+    final_outcome = 'business_limited',
+    responsibility = 'client',
+    error_category = CASE
+        WHEN error_type = 'subscription_error'
+             OR COALESCE(error_message, '') ILIKE '%subscription%'
+            THEN 'user_subscription'
+        WHEN COALESCE(error_message, '') ILIKE '%concurrency limit exceeded for user%'
+            THEN 'user_concurrency'
+        ELSE 'user_quota'
+    END,
+    counts_toward_sla = FALSE,
+    alert_family = 'client_quality',
+    classification_reason = 'user_plan_quota_or_concurrency_limit',
+    classification_version = 3
+WHERE classification_version = 2
+  AND final_outcome = 'recovered'
+  AND COALESCE(status_code, 0) > 0
+  AND COALESCE(status_code, 0) < 400
+  AND COALESCE(is_business_limited, FALSE)
+  AND error_phase IN ('request', 'auth')
+  AND COALESCE(upstream_status_code, 0) = 0
+  AND COALESCE(error_source, '') <> 'upstream_http'
+  AND COALESCE(error_type, '') <> 'upstream_error'
+  AND (
+      error_type IN ('billing_error', 'subscription_error')
+      OR COALESCE(error_message, '') ILIKE '%insufficient balance%'
+      OR COALESCE(error_message, '') ILIKE '%quota exhausted%'
+      OR COALESCE(error_message, '') ILIKE '%usage limit exceeded%'
+      OR COALESCE(error_message, '') ILIKE '%concurrency limit exceeded for user%'
+  );
+
 -- Classification v2 treated every HTTP 2xx log as recovered and could also
 -- mistake an upstream broken pipe for a client cancellation. Run this before
 -- the broad provider update so stale upstream status metadata cannot override
@@ -455,6 +492,11 @@ WHERE classification_version = 2
 UPDATE ops_error_logs
 SET
     responsibility = CASE
+        WHEN COALESCE(error_message, '') ILIKE '%context canceled%'
+          OR COALESCE(upstream_error_message, '') ILIKE '%context canceled%'
+          OR COALESCE(error_message, '') ILIKE '%client disconnected%'
+          OR COALESCE(upstream_error_message, '') ILIKE '%client disconnected%'
+            THEN 'client'
         WHEN (COALESCE(error_message, '') || ' ' || COALESCE(upstream_error_message, '')) ILIKE ANY (ARRAY[
                  '%no available account%',
                  '%concurrency limit exceeded for account%',
@@ -502,7 +544,7 @@ SET
               )
           )
             THEN 'platform'
-        WHEN error_type = 'invalid_request_error'
+        WHEN (error_type = 'invalid_request_error' AND upstream_status_code IN (400, 422))
           OR COALESCE(error_message, '') ILIKE ANY (ARRAY[
                  '%context_length_exceeded%', '%exceeds the context window%',
                  '%maximum context length%', '%invalid ''%', '%invalid request%',
@@ -521,6 +563,11 @@ SET
     error_category = 'recovered',
     counts_toward_sla = FALSE,
     alert_family = CASE
+        WHEN COALESCE(error_message, '') ILIKE '%context canceled%'
+          OR COALESCE(upstream_error_message, '') ILIKE '%context canceled%'
+          OR COALESCE(error_message, '') ILIKE '%client disconnected%'
+          OR COALESCE(upstream_error_message, '') ILIKE '%client disconnected%'
+            THEN 'client_quality'
         WHEN (COALESCE(error_message, '') || ' ' || COALESCE(upstream_error_message, '')) ILIKE ANY (ARRAY[
                  '%no available account%',
                  '%concurrency limit exceeded for account%',
@@ -568,18 +615,20 @@ SET
               )
           )
             THEN 'credential'
-        WHEN error_type = 'invalid_request_error'
+        WHEN (error_type = 'invalid_request_error' AND upstream_status_code IN (400, 422))
           OR COALESCE(error_message, '') ILIKE ANY (ARRAY[
                  '%context_length_exceeded%', '%exceeds the context window%',
                  '%maximum context length%', '%invalid ''%', '%invalid request%',
                  '%invalid_request_error%', '%invalid parameter%', '%unknown parameter%',
-                 '%unsupported parameter%', '%malformed request%', '%model%not supported%'
+                 '%unsupported parameter%', '%malformed request%', '%model%not supported%',
+                 '%model%not in whitelist%', '%model%not configured%', '%invalid%'
              ])
           OR COALESCE(upstream_error_message, '') ILIKE ANY (ARRAY[
                  '%context_length_exceeded%', '%exceeds the context window%',
                  '%maximum context length%', '%invalid ''%', '%invalid request%',
                  '%invalid_request_error%', '%invalid parameter%', '%unknown parameter%',
-                 '%unsupported parameter%', '%malformed request%', '%model%not supported%'
+                 '%unsupported parameter%', '%malformed request%', '%model%not supported%',
+                 '%model%not in whitelist%', '%model%not configured%', '%invalid%'
              ])
             THEN 'compatibility'
         ELSE 'provider_health'

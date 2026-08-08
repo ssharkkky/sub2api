@@ -96,7 +96,7 @@ func TestOpsClassificationV3TriggerAndBackfillUseSeparateTransactions(t *testing
 	require.Contains(t, triggerSQL, "before insert on ops_error_logs")
 	require.NotContains(t, triggerSQL, "update ops_error_logs",
 		"the trigger lock must commit before the historical backfill starts")
-	require.Equal(t, 14, strings.Count(backfillSQL, "update ops_error_logs"))
+	require.Equal(t, 15, strings.Count(backfillSQL, "update ops_error_logs"))
 	require.NotContains(t, backfillSQL, "create trigger")
 	require.NotContains(t, backfillSQL, "create or replace function")
 }

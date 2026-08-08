@@ -26,6 +26,7 @@ DECLARE
     credential_message BOOLEAN;
     request_semantics BOOLEAN;
     recovered_compatibility BOOLEAN;
+    user_business_limit BOOLEAN;
     effective_upstream_status INTEGER := COALESCE(NEW.upstream_status_code, 0);
 BEGIN
     IF COALESCE(NEW.classification_version, 0) >= 3 THEN
@@ -91,6 +92,17 @@ BEGIN
                 OR message_text LIKE '%not configured%'
             )
         );
+    user_business_limit :=
+        COALESCE(NEW.is_business_limited, FALSE)
+        AND NOT upstream_evidence
+        AND NEW.error_phase IN ('request', 'auth')
+        AND (
+            NEW.error_type IN ('billing_error', 'subscription_error')
+            OR message_text LIKE '%insufficient balance%'
+            OR message_text LIKE '%quota exhausted%'
+            OR message_text LIKE '%usage limit exceeded%'
+            OR message_text LIKE '%concurrency limit exceeded for user%'
+        );
 
     IF NOT upstream_evidence AND NEW.error_type LIKE 'cyber_policy%' THEN
         NEW.final_outcome := 'security_blocked';
@@ -99,6 +111,23 @@ BEGIN
         NEW.counts_toward_sla := FALSE;
         NEW.alert_family := 'security';
         NEW.classification_reason := 'security_policy_rejection';
+        NEW.classification_version := 3;
+        RETURN NEW;
+    END IF;
+
+    IF user_business_limit THEN
+        NEW.final_outcome := 'business_limited';
+        NEW.responsibility := 'client';
+        NEW.error_category := CASE
+            WHEN NEW.error_type = 'subscription_error' OR message_text LIKE '%subscription%'
+                THEN 'user_subscription'
+            WHEN message_text LIKE '%concurrency limit exceeded for user%'
+                THEN 'user_concurrency'
+            ELSE 'user_quota'
+        END;
+        NEW.counts_toward_sla := FALSE;
+        NEW.alert_family := 'client_quality';
+        NEW.classification_reason := 'user_plan_quota_or_concurrency_limit';
         NEW.classification_version := 3;
         RETURN NEW;
     END IF;
