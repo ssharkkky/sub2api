@@ -46,9 +46,11 @@ func (h *OpsHandler) GetErrorLogByID(c *gin.Context) {
 }
 
 const (
-	opsListViewErrors   = "errors"
-	opsListViewExcluded = "excluded"
-	opsListViewAll      = "all"
+	opsListViewErrors           = "errors"
+	opsListViewExcluded         = "excluded"
+	opsListViewAll              = "all"
+	opsListViewPlatformFailures = "platform_failures"
+	opsListViewProviderFailures = "provider_failures"
 )
 
 func parseOpsViewParam(c *gin.Context) string {
@@ -63,6 +65,10 @@ func parseOpsViewParam(c *gin.Context) string {
 		return opsListViewExcluded
 	case opsListViewAll:
 		return opsListViewAll
+	case opsListViewPlatformFailures:
+		return opsListViewPlatformFailures
+	case opsListViewProviderFailures:
+		return opsListViewProviderFailures
 	default:
 		return opsListViewErrors
 	}
@@ -645,6 +651,14 @@ func (h *OpsHandler) ListRequestDetails(c *gin.Context) {
 			return
 		}
 		filter.HasTTFT = &parsed
+	}
+	if v := strings.TrimSpace(c.Query("sla_only")); v != "" {
+		parsed, err := strconv.ParseBool(v)
+		if err != nil {
+			response.BadRequest(c, "Invalid sla_only")
+			return
+		}
+		filter.SLAOnly = parsed
 	}
 
 	out, err := h.opsService.ListRequestDetails(c.Request.Context(), filter)
