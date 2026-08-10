@@ -3,6 +3,7 @@ package repository
 import (
 	"context"
 	"encoding/json"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -24,6 +25,46 @@ const (
 
 type imageTaskStore struct {
 	rdb *redis.Client
+}
+
+func (s *imageTaskStore) ListAll(ctx context.Context) ([]*service.ImageTaskRecord, error) {
+	if s == nil || s.rdb == nil {
+		return []*service.ImageTaskRecord{}, nil
+	}
+	keys := make([]string, 0)
+	iterator := s.rdb.Scan(ctx, 0, imageTaskKeyPrefix+"imgtask_*", 200).Iterator()
+	for iterator.Next(ctx) {
+		keys = append(keys, iterator.Val())
+	}
+	if err := iterator.Err(); err != nil {
+		return nil, err
+	}
+	if len(keys) == 0 {
+		return []*service.ImageTaskRecord{}, nil
+	}
+	values, err := s.rdb.MGet(ctx, keys...).Result()
+	if err != nil {
+		return nil, err
+	}
+	records := make([]*service.ImageTaskRecord, 0, len(values))
+	for _, value := range values {
+		text, ok := value.(string)
+		if !ok {
+			continue
+		}
+		var task service.ImageTaskRecord
+		if json.Unmarshal([]byte(text), &task) != nil || strings.TrimSpace(task.ID) == "" {
+			continue
+		}
+		records = append(records, &task)
+	}
+	sort.Slice(records, func(i, j int) bool {
+		if records[i].CreatedAt == records[j].CreatedAt {
+			return records[i].ID > records[j].ID
+		}
+		return records[i].CreatedAt > records[j].CreatedAt
+	})
+	return records, nil
 }
 
 func NewImageTaskStore(rdb *redis.Client) service.ImageTaskStore {

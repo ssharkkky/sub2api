@@ -55,6 +55,7 @@ type ImageTaskRecord struct {
 	CompletedAt     *int64          `json:"completed_at,omitempty"`
 	ExpiresAt       int64           `json:"expires_at"`
 	StorageKeys     []string        `json:"storage_keys,omitempty"`
+	StorageSizes    []int64         `json:"storage_sizes,omitempty"`
 	StorageIdentity string          `json:"storage_identity,omitempty"`
 }
 
@@ -76,7 +77,24 @@ type ImageTask struct {
 	Error           json.RawMessage `json:"error,omitempty"`
 	CreatedAt       int64           `json:"created_at"`
 	CompletedAt     *int64          `json:"completed_at,omitempty"`
-	ExpiresAt       int64           `json:"expires_at"`
+	ExpiresAt       int64           `json:"expires_at,omitempty"`
+	ImageSizes      []int64         `json:"image_sizes,omitempty"`
+}
+
+type AdminImageTask struct {
+	Task         *ImageTask `json:"task"`
+	UserID       int64      `json:"user_id"`
+	APIKeyID     int64      `json:"api_key_id"`
+	StorageBytes int64      `json:"storage_bytes"`
+}
+
+type AdminImageTaskPage struct {
+	Tasks        []*AdminImageTask `json:"tasks"`
+	Page         int               `json:"page"`
+	PageSize     int               `json:"page_size"`
+	Total        int               `json:"total"`
+	TotalImages  int               `json:"total_images"`
+	StorageBytes int64             `json:"storage_bytes"`
 }
 
 type ImageTaskOwner struct {
@@ -109,6 +127,7 @@ type ImageTaskStore interface {
 	Save(ctx context.Context, task *ImageTaskRecord, ttl time.Duration) error
 	Get(ctx context.Context, id string) (*ImageTaskRecord, error)
 	ListByUser(ctx context.Context, userID int64, limit int) ([]*ImageTaskRecord, error)
+	ListAll(ctx context.Context) ([]*ImageTaskRecord, error)
 	Delete(ctx context.Context, id string) error
 	ScheduleCleanup(ctx context.Context, cleanup ImageTaskCleanup) error
 	ListDueCleanup(ctx context.Context, now time.Time, limit int) ([]ImageTaskCleanup, error)
@@ -233,12 +252,61 @@ func (s *ImageTaskService) CreateWithMetadata(ctx context.Context, owner ImageTa
 		InputImageCount: metadata.InputImageCount,
 		Status:          ImageTaskStatusProcessing,
 		CreatedAt:       now.Unix(),
-		ExpiresAt:       now.Add(retention).Unix(),
+		ExpiresAt:       0,
 	}
-	if err := s.store.Save(ctx, task, retention); err != nil {
+	processingTTL := retention + s.ExecutionTimeout()
+	if err := s.store.Save(ctx, task, processingTTL); err != nil {
 		return nil, ErrImageTaskUnavailable.WithCause(err)
 	}
 	return imageTaskToPublic(task), nil
+}
+
+func (s *ImageTaskService) ListForAdmin(ctx context.Context, page, pageSize int) (*AdminImageTaskPage, error) {
+	if s == nil || s.store == nil {
+		return nil, ErrImageTaskUnavailable
+	}
+	if page <= 0 {
+		page = 1
+	}
+	if pageSize <= 0 {
+		pageSize = 24
+	}
+	if pageSize > 100 {
+		pageSize = 100
+	}
+	records, err := s.store.ListAll(ctx)
+	if err != nil {
+		return nil, ErrImageTaskUnavailable.WithCause(err)
+	}
+	all := make([]*AdminImageTask, 0, len(records))
+	var totalBytes int64
+	totalImages := 0
+	for _, record := range records {
+		if record == nil {
+			continue
+		}
+		if err := s.ensureStorageSizes(ctx, record); err != nil {
+			logger.L().Warn("image_task.storage_size_failed", zap.String("task_id", record.ID), zap.Error(err))
+		}
+		bytes := sumImageStorageSizes(record.StorageSizes)
+		totalBytes += bytes
+		totalImages += len(record.StorageKeys)
+		all = append(all, &AdminImageTask{
+			Task: imageTaskToPublic(record), UserID: record.UserID, APIKeyID: record.APIKeyID, StorageBytes: bytes,
+		})
+	}
+	start := (page - 1) * pageSize
+	if start > len(all) {
+		start = len(all)
+	}
+	end := start + pageSize
+	if end > len(all) {
+		end = len(all)
+	}
+	return &AdminImageTaskPage{
+		Tasks: all[start:end], Page: page, PageSize: pageSize, Total: len(all),
+		TotalImages: totalImages, StorageBytes: totalBytes,
+	}, nil
 }
 
 func (s *ImageTaskService) Get(ctx context.Context, owner ImageTaskOwner, id string) (*ImageTask, error) {
@@ -313,6 +381,14 @@ func (s *ImageTaskService) DownloadForUser(ctx context.Context, userID int64, id
 	return s.downloadRecord(ctx, task, imageIndex)
 }
 
+func (s *ImageTaskService) DownloadForAdmin(ctx context.Context, id string, imageIndex int) (*ImageTaskDownload, error) {
+	task, err := s.getRecord(ctx, id)
+	if err != nil {
+		return nil, err
+	}
+	return s.downloadRecord(ctx, task, imageIndex)
+}
+
 // Download is the API-key scoped counterpart of DownloadForUser. Both the user
 // and the exact key that submitted the asynchronous request must match.
 func (s *ImageTaskService) Download(ctx context.Context, owner ImageTaskOwner, id string, imageIndex int) (*ImageTaskDownload, error) {
@@ -359,12 +435,48 @@ func (s *ImageTaskService) DeleteForUser(ctx context.Context, userID int64, id s
 	if task.Status == ImageTaskStatusProcessing {
 		return ErrImageTaskDeleteNotReady
 	}
-	uploader, err := s.uploaderForStorage(task.StorageIdentity)
+	return s.deleteRecord(ctx, task)
+}
+
+func (s *ImageTaskService) DeleteForAdmin(ctx context.Context, id string) error {
+	task, err := s.getRecord(ctx, id)
 	if err != nil {
-		return ErrImageTaskUnavailable.WithCause(err)
+		return err
 	}
-	if err := uploader.Delete(ctx, task.StorageKeys); err != nil {
-		return ErrImageTaskUnavailable.WithCause(err)
+	if task.Status == ImageTaskStatusProcessing {
+		return ErrImageTaskDeleteNotReady
+	}
+	return s.deleteRecord(ctx, task)
+}
+
+func (s *ImageTaskService) DeleteImageForUser(ctx context.Context, userID int64, id string, imageIndex int) (*ImageTask, error) {
+	task, err := s.getRecord(ctx, id)
+	if err != nil {
+		return nil, err
+	}
+	if userID <= 0 || task.UserID != userID {
+		return nil, ErrImageTaskNotFound
+	}
+	return s.deleteImageRecord(ctx, task, imageIndex)
+}
+
+func (s *ImageTaskService) DeleteImageForAdmin(ctx context.Context, id string, imageIndex int) (*ImageTask, error) {
+	task, err := s.getRecord(ctx, id)
+	if err != nil {
+		return nil, err
+	}
+	return s.deleteImageRecord(ctx, task, imageIndex)
+}
+
+func (s *ImageTaskService) deleteRecord(ctx context.Context, task *ImageTaskRecord) error {
+	if len(task.StorageKeys) > 0 {
+		uploader, err := s.uploaderForStorage(task.StorageIdentity)
+		if err != nil {
+			return ErrImageTaskUnavailable.WithCause(err)
+		}
+		if err := uploader.Delete(ctx, task.StorageKeys); err != nil {
+			return ErrImageTaskUnavailable.WithCause(err)
+		}
 	}
 	if err := s.store.Delete(ctx, task.ID); err != nil {
 		return ErrImageTaskUnavailable.WithCause(err)
@@ -373,6 +485,47 @@ func (s *ImageTaskService) DeleteForUser(ctx context.Context, userID int64, id s
 		return ErrImageTaskUnavailable.WithCause(err)
 	}
 	return nil
+}
+
+func (s *ImageTaskService) deleteImageRecord(ctx context.Context, task *ImageTaskRecord, imageIndex int) (*ImageTask, error) {
+	if task.Status == ImageTaskStatusProcessing {
+		return nil, ErrImageTaskDeleteNotReady
+	}
+	if imageIndex < 0 || imageIndex >= len(task.StorageKeys) {
+		return nil, ErrImageTaskImageNotFound
+	}
+	uploader, err := s.uploaderForStorage(task.StorageIdentity)
+	if err != nil {
+		return nil, ErrImageTaskUnavailable.WithCause(err)
+	}
+	if err := uploader.Delete(ctx, []string{task.StorageKeys[imageIndex]}); err != nil {
+		return nil, ErrImageTaskUnavailable.WithCause(err)
+	}
+	task.StorageKeys = removeStringAt(task.StorageKeys, imageIndex)
+	task.StorageSizes = removeInt64At(task.StorageSizes, imageIndex)
+	task.Result = removeImageTaskResultAt(task.Result, imageIndex)
+	if len(task.StorageKeys) == 0 {
+		if err := s.store.Delete(ctx, task.ID); err != nil {
+			return nil, ErrImageTaskUnavailable.WithCause(err)
+		}
+		if err := s.store.DeleteCleanup(ctx, task.ID); err != nil {
+			return nil, ErrImageTaskUnavailable.WithCause(err)
+		}
+		return nil, nil
+	}
+	remainingTTL := time.Until(time.Unix(task.ExpiresAt, 0))
+	if remainingTTL <= 0 {
+		remainingTTL = time.Minute
+	}
+	if err := s.store.Save(ctx, task, remainingTTL); err != nil {
+		return nil, ErrImageTaskUnavailable.WithCause(err)
+	}
+	if err := s.store.ScheduleCleanup(ctx, ImageTaskCleanup{
+		TaskID: task.ID, Keys: task.StorageKeys, ExpiresAt: task.ExpiresAt, StorageIdentity: task.StorageIdentity,
+	}); err != nil {
+		return nil, ErrImageTaskUnavailable.WithCause(err)
+	}
+	return imageTaskToPublic(task), nil
 }
 
 func (s *ImageTaskService) getRecord(ctx context.Context, id string) (*ImageTaskRecord, error) {
@@ -394,21 +547,27 @@ func (s *ImageTaskService) Complete(ctx context.Context, id string, statusCode i
 		return s.Fail(ctx, id, http.StatusBadGateway, imageTaskErrorJSON("api_error", "upstream returned a non-JSON image response"))
 	}
 	var storageKeys []string
+	var storageSizes []int64
 	uploader, _, _ := s.current()
 	storageIdentity := ""
 	if uploader != nil {
-		rewritten, keys, err := uploader.RewriteWithKeys(ctx, id, result)
+		rewritten, objects, err := uploader.RewriteWithObjects(ctx, id, result)
 		if err != nil {
 			// 转存失败不回退存 base64，避免大 blob 撑爆 Redis：直接把任务标记为失败。
 			logger.L().Error("image_task.offload_failed", zap.String("task_id", id), zap.Error(err))
 			return s.Fail(ctx, id, http.StatusBadGateway, imageTaskErrorJSON("api_error", "failed to store generated image to object storage"))
 		}
 		result = rewritten
-		storageKeys = keys
+		storageKeys = make([]string, len(objects))
+		storageSizes = make([]int64, len(objects))
+		for i, object := range objects {
+			storageKeys[i] = object.Key
+			storageSizes[i] = object.Size
+		}
 		storageIdentity = uploader.StorageIdentity()
 	}
 	result = sanitizeImageTaskResult(result)
-	err := s.finish(ctx, id, ImageTaskStatusCompleted, statusCode, result, nil, storageKeys, storageIdentity)
+	err := s.finish(ctx, id, ImageTaskStatusCompleted, statusCode, result, nil, storageKeys, storageSizes, storageIdentity)
 	if err != nil && len(storageKeys) > 0 {
 		if uploader != nil {
 			_ = uploader.Delete(context.Background(), storageKeys)
@@ -421,10 +580,10 @@ func (s *ImageTaskService) Fail(ctx context.Context, id string, statusCode int, 
 	if !json.Valid(taskErr) {
 		taskErr = imageTaskErrorJSON("api_error", "image generation failed")
 	}
-	return s.finish(ctx, id, ImageTaskStatusFailed, statusCode, nil, taskErr, nil, "")
+	return s.finish(ctx, id, ImageTaskStatusFailed, statusCode, nil, taskErr, nil, nil, "")
 }
 
-func (s *ImageTaskService) finish(ctx context.Context, id, status string, statusCode int, result, taskErr json.RawMessage, storageKeys []string, storageIdentity string) error {
+func (s *ImageTaskService) finish(ctx context.Context, id, status string, statusCode int, result, taskErr json.RawMessage, storageKeys []string, storageSizes []int64, storageIdentity string) error {
 	if s == nil || s.store == nil {
 		return ErrImageTaskUnavailable
 	}
@@ -442,6 +601,7 @@ func (s *ImageTaskService) finish(ctx context.Context, id, status string, status
 	task.Result = result
 	task.Error = taskErr
 	task.StorageKeys = append([]string(nil), storageKeys...)
+	task.StorageSizes = append([]int64(nil), storageSizes...)
 	task.StorageIdentity = storageIdentity
 	task.CompletedAt = &completedAt
 	retention := s.Retention()
@@ -566,7 +726,80 @@ func imageTaskToPublic(task *ImageTaskRecord) *ImageTask {
 		CreatedAt:       task.CreatedAt,
 		CompletedAt:     task.CompletedAt,
 		ExpiresAt:       task.ExpiresAt,
+		ImageSizes:      append([]int64(nil), task.StorageSizes...),
 	}
+}
+
+func (s *ImageTaskService) ensureStorageSizes(ctx context.Context, task *ImageTaskRecord) error {
+	if task == nil || len(task.StorageKeys) == 0 || len(task.StorageSizes) == len(task.StorageKeys) {
+		return nil
+	}
+	uploader, err := s.uploaderForStorage(task.StorageIdentity)
+	if err != nil {
+		return err
+	}
+	sizes := make([]int64, len(task.StorageKeys))
+	for i, key := range task.StorageKeys {
+		sizes[i], err = uploader.Size(ctx, key)
+		if err != nil {
+			return err
+		}
+	}
+	task.StorageSizes = sizes
+	remainingTTL := time.Until(time.Unix(task.ExpiresAt, 0))
+	if remainingTTL <= 0 {
+		remainingTTL = time.Minute
+	}
+	return s.store.Save(ctx, task, remainingTTL)
+}
+
+func sumImageStorageSizes(sizes []int64) int64 {
+	var total int64
+	for _, size := range sizes {
+		if size > 0 {
+			total += size
+		}
+	}
+	return total
+}
+
+func removeStringAt(values []string, index int) []string {
+	if index < 0 || index >= len(values) {
+		return values
+	}
+	return append(values[:index:index], values[index+1:]...)
+}
+
+func removeInt64At(values []int64, index int) []int64 {
+	if index < 0 || index >= len(values) {
+		return values
+	}
+	return append(values[:index:index], values[index+1:]...)
+}
+
+func removeImageTaskResultAt(result json.RawMessage, index int) json.RawMessage {
+	if len(result) == 0 || !json.Valid(result) {
+		return result
+	}
+	var top map[string]json.RawMessage
+	if json.Unmarshal(result, &top) != nil {
+		return result
+	}
+	var data []json.RawMessage
+	if json.Unmarshal(top["data"], &data) != nil || index < 0 || index >= len(data) {
+		return result
+	}
+	data = append(data[:index:index], data[index+1:]...)
+	encodedData, err := json.Marshal(data)
+	if err != nil {
+		return result
+	}
+	top["data"] = encodedData
+	encoded, err := json.Marshal(top)
+	if err != nil {
+		return result
+	}
+	return encoded
 }
 
 func truncateImageTaskText(value string, maxRunes int) string {

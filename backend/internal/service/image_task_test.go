@@ -63,6 +63,16 @@ func (s *imageTaskMemoryStore) ListByUser(_ context.Context, userID int64, _ int
 	return []*ImageTaskRecord{&copy}, nil
 }
 
+func (s *imageTaskMemoryStore) ListAll(_ context.Context) ([]*ImageTaskRecord, error) {
+	if len(s.listed) > 0 {
+		return append([]*ImageTaskRecord(nil), s.listed...), nil
+	}
+	if s.task == nil {
+		return []*ImageTaskRecord{}, nil
+	}
+	return []*ImageTaskRecord{s.task}, nil
+}
+
 func (s *imageTaskMemoryStore) Delete(_ context.Context, _ string) error {
 	s.task = nil
 	s.deleted = true
@@ -70,6 +80,12 @@ func (s *imageTaskMemoryStore) Delete(_ context.Context, _ string) error {
 }
 
 func (s *imageTaskMemoryStore) ScheduleCleanup(_ context.Context, cleanup ImageTaskCleanup) error {
+	for i := range s.cleanup {
+		if s.cleanup[i].TaskID == cleanup.TaskID {
+			s.cleanup[i] = cleanup
+			return nil
+		}
+	}
 	s.cleanup = append(s.cleanup, cleanup)
 	return nil
 }
@@ -99,10 +115,10 @@ func TestImageTaskServiceLifecycleAndOwnership(t *testing.T) {
 	require.Equal(t, ImageTaskStatusProcessing, created.Status)
 	require.Equal(t, created.ID, created.TaskID)
 	require.Equal(t, "image.generation.task", created.Object)
-	require.Equal(t, time.Hour, store.ttl)
 	require.Equal(t, owner.UserID, store.task.UserID)
 	require.Equal(t, owner.APIKeyID, store.task.APIKeyID)
-	require.InDelta(t, created.CreatedAt+int64(time.Hour/time.Second), created.ExpiresAt, 1)
+	require.Zero(t, created.ExpiresAt, "retention starts only after generation finishes")
+	require.Equal(t, 70*time.Minute, store.ttl, "processing TTL covers execution plus result retention")
 
 	_, err = svc.Get(context.Background(), ImageTaskOwner{UserID: 7, APIKeyID: 10}, created.ID)
 	require.ErrorIs(t, err, ErrImageTaskNotFound)
@@ -286,6 +302,56 @@ func TestImageTaskServiceDeleteForUserRemovesStoredFilesAndRecord(t *testing.T) 
 	require.True(t, store.deleted)
 	require.Empty(t, store.cleanup)
 	require.Equal(t, []string{"images/" + created.ID + "-0.png"}, storage.deleted)
+}
+
+func TestImageTaskServiceDeleteSingleImageUpdatesTaskAndCleanup(t *testing.T) {
+	store := &imageTaskMemoryStore{}
+	storage := &fakeImageStorage{}
+	svc := NewImageTaskServiceWithUploader(store, NewImageResultUploader(storage, "images/", 0, nil), time.Hour, time.Minute)
+	created, err := svc.Create(context.Background(), ImageTaskOwner{UserID: 7, APIKeyID: 9})
+	require.NoError(t, err)
+	b64 := base64.StdEncoding.EncodeToString(pngBytes)
+	result := json.RawMessage(`{"data":[{"b64_json":"` + b64 + `","revised_prompt":"first"},{"b64_json":"` + b64 + `","revised_prompt":"second"}]}`)
+	require.NoError(t, svc.Complete(context.Background(), created.ID, http.StatusOK, result))
+	require.Equal(t, []int64{int64(len(pngBytes)), int64(len(pngBytes))}, store.task.StorageSizes)
+
+	updated, err := svc.DeleteImageForUser(context.Background(), 7, created.ID, 0)
+	require.NoError(t, err)
+	require.NotNil(t, updated)
+	require.Equal(t, 1, updated.ImageCount)
+	require.Equal(t, []int64{int64(len(pngBytes))}, updated.ImageSizes)
+	require.Equal(t, []string{"images/" + created.ID + "-1.png"}, store.task.StorageKeys)
+	require.NotContains(t, string(store.task.Result), "first")
+	require.Contains(t, string(store.task.Result), "second")
+	require.Equal(t, []string{"images/" + created.ID + "-1.png"}, store.cleanup[0].Keys)
+	require.Equal(t, []string{"images/" + created.ID + "-0.png"}, storage.deleted)
+
+	updated, err = svc.DeleteImageForUser(context.Background(), 7, created.ID, 0)
+	require.NoError(t, err)
+	require.Nil(t, updated)
+	require.True(t, store.deleted)
+	require.Empty(t, store.cleanup)
+	require.Equal(t, []string{
+		"images/" + created.ID + "-0.png",
+		"images/" + created.ID + "-1.png",
+	}, storage.deleted)
+}
+
+func TestImageTaskServiceListForAdminPaginatesAndTotalsStorage(t *testing.T) {
+	store := &imageTaskMemoryStore{listed: []*ImageTaskRecord{
+		{ID: "new", UserID: 7, APIKeyID: 9, CreatedAt: 3, Status: ImageTaskStatusCompleted, StorageKeys: []string{"new-0", "new-1"}, StorageSizes: []int64{100, 200}},
+		{ID: "old", UserID: 8, APIKeyID: 10, CreatedAt: 2, Status: ImageTaskStatusCompleted, StorageKeys: []string{"old-0"}, StorageSizes: []int64{300}},
+	}}
+	svc := NewImageTaskServiceWithOptions(store, time.Hour, time.Minute)
+
+	page, err := svc.ListForAdmin(context.Background(), 2, 1)
+	require.NoError(t, err)
+	require.Equal(t, 2, page.Total)
+	require.Equal(t, 3, page.TotalImages)
+	require.Equal(t, int64(600), page.StorageBytes)
+	require.Len(t, page.Tasks, 1)
+	require.Equal(t, "old", page.Tasks[0].Task.ID)
+	require.Equal(t, int64(300), page.Tasks[0].StorageBytes)
 }
 
 func TestImageTaskServiceDeleteFailureKeepsTaskForRetry(t *testing.T) {

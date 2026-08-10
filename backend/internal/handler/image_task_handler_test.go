@@ -38,6 +38,14 @@ func (s *asyncImagePrivateStorage) Load(_ context.Context, key string, _ int64) 
 	return append([]byte(nil), data...), s.contentType[key], nil
 }
 
+func (s *asyncImagePrivateStorage) Size(_ context.Context, key string) (int64, error) {
+	data, ok := s.data[key]
+	if !ok {
+		return 0, errors.New("object not found")
+	}
+	return int64(len(data)), nil
+}
+
 func (s *asyncImagePrivateStorage) Delete(_ context.Context, key string) error {
 	delete(s.data, key)
 	delete(s.contentType, key)
@@ -85,6 +93,17 @@ func (s *asyncImageMemoryStore) ListByUser(_ context.Context, userID int64, limi
 		if len(out) == limit {
 			break
 		}
+	}
+	return out, nil
+}
+
+func (s *asyncImageMemoryStore) ListAll(_ context.Context) ([]*service.ImageTaskRecord, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	out := make([]*service.ImageTaskRecord, 0, len(s.tasks))
+	for _, task := range s.tasks {
+		copy := *task
+		out = append(out, &copy)
 	}
 	return out, nil
 }

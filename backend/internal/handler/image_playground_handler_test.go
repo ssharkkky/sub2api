@@ -382,20 +382,27 @@ func TestImagePlaygroundDownloadRejectsInvalidIndex(t *testing.T) {
 }
 
 type imagePlaygroundTasksStub struct {
-	tasks            []*service.ImageTask
-	task             *service.ImageTask
-	download         *service.ImageTaskDownload
-	err              error
-	listedUserID     int64
-	gotUserID        int64
-	downloadedUserID int64
-	deletedUserID    int64
-	deletedTaskID    string
+	tasks              []*service.ImageTask
+	task               *service.ImageTask
+	download           *service.ImageTaskDownload
+	err                error
+	listedUserID       int64
+	gotUserID          int64
+	downloadedUserID   int64
+	deletedUserID      int64
+	deletedTaskID      string
+	deletedImageUserID int64
+	deletedImageTaskID string
+	deletedImageIndex  int
 }
 
 func (s *imagePlaygroundTasksStub) ListForUser(_ context.Context, userID int64, _ int) ([]*service.ImageTask, error) {
 	s.listedUserID = userID
 	return s.tasks, s.err
+}
+
+func (s *imagePlaygroundTasksStub) ListForAdmin(context.Context, int, int) (*service.AdminImageTaskPage, error) {
+	return &service.AdminImageTaskPage{}, s.err
 }
 
 func (s *imagePlaygroundTasksStub) GetForUser(_ context.Context, userID int64, _ string) (*service.ImageTask, error) {
@@ -408,10 +415,27 @@ func (s *imagePlaygroundTasksStub) DownloadForUser(_ context.Context, userID int
 	return s.download, s.err
 }
 
+func (s *imagePlaygroundTasksStub) DownloadForAdmin(context.Context, string, int) (*service.ImageTaskDownload, error) {
+	return s.download, s.err
+}
+
 func (s *imagePlaygroundTasksStub) DeleteForUser(_ context.Context, userID int64, taskID string) error {
 	s.deletedUserID = userID
 	s.deletedTaskID = taskID
 	return s.err
+}
+
+func (s *imagePlaygroundTasksStub) DeleteForAdmin(context.Context, string) error { return s.err }
+
+func (s *imagePlaygroundTasksStub) DeleteImageForUser(_ context.Context, userID int64, taskID string, imageIndex int) (*service.ImageTask, error) {
+	s.deletedImageUserID = userID
+	s.deletedImageTaskID = taskID
+	s.deletedImageIndex = imageIndex
+	return s.task, s.err
+}
+
+func (s *imagePlaygroundTasksStub) DeleteImageForAdmin(context.Context, string, int) (*service.ImageTask, error) {
+	return s.task, s.err
 }
 
 func TestImagePlaygroundDeleteTaskUsesAuthenticatedOwner(t *testing.T) {
@@ -425,6 +449,20 @@ func TestImagePlaygroundDeleteTaskUsesAuthenticatedOwner(t *testing.T) {
 	require.Equal(t, http.StatusNoContent, c.Writer.Status())
 	require.Equal(t, int64(7), tasks.deletedUserID)
 	require.Equal(t, "imgtask_123", tasks.deletedTaskID)
+}
+
+func TestImagePlaygroundDeleteImageUsesAuthenticatedOwner(t *testing.T) {
+	tasks := &imagePlaygroundTasksStub{}
+	h := &ImagePlaygroundHandler{playground: &imagePlaygroundApplicationStub{}, tasks: tasks}
+	c, _ := imagePlaygroundTestContext(http.MethodDelete, "/api/v1/image-playground/tasks/imgtask_123/images/2", nil)
+	c.Params = gin.Params{{Key: "task_id", Value: "imgtask_123"}, {Key: "image_index", Value: "2"}}
+
+	h.DeleteImage(c)
+
+	require.Equal(t, http.StatusNoContent, c.Writer.Status())
+	require.Equal(t, int64(7), tasks.deletedImageUserID)
+	require.Equal(t, "imgtask_123", tasks.deletedImageTaskID)
+	require.Equal(t, 2, tasks.deletedImageIndex)
 }
 
 func TestImagePlaygroundListTasksUsesAuthenticatedUser(t *testing.T) {
@@ -477,6 +515,16 @@ func (s *imageTaskMemoryStoreForPlayground) ListByUser(_ context.Context, userID
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if s.task == nil || s.task.UserID != userID {
+		return []*service.ImageTaskRecord{}, nil
+	}
+	copy := *s.task
+	return []*service.ImageTaskRecord{&copy}, nil
+}
+
+func (s *imageTaskMemoryStoreForPlayground) ListAll(_ context.Context) ([]*service.ImageTaskRecord, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.task == nil {
 		return []*service.ImageTaskRecord{}, nil
 	}
 	copy := *s.task
