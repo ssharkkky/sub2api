@@ -37,13 +37,6 @@ CREATE TABLE IF NOT EXISTS channel_monitor_v2_metrics_1m (
     PRIMARY KEY (bucket_start, platform, group_id, model)
 );
 
-CREATE INDEX IF NOT EXISTS idx_channel_monitor_v2_metrics_platform_time
-    ON channel_monitor_v2_metrics_1m (platform, bucket_start DESC);
-CREATE INDEX IF NOT EXISTS idx_channel_monitor_v2_metrics_group_time
-    ON channel_monitor_v2_metrics_1m (group_id, bucket_start DESC);
-CREATE INDEX IF NOT EXISTS idx_channel_monitor_v2_metrics_model_time
-    ON channel_monitor_v2_metrics_1m (model, bucket_start DESC);
-
 CREATE TABLE IF NOT EXISTS channel_monitor_v2_user_metrics_1m (
     bucket_start TIMESTAMPTZ NOT NULL,
     platform TEXT NOT NULL,
@@ -64,11 +57,6 @@ CREATE TABLE IF NOT EXISTS channel_monitor_v2_user_metrics_1m (
     PRIMARY KEY (bucket_start, platform, group_id, model, user_id)
 );
 
-CREATE INDEX IF NOT EXISTS idx_channel_monitor_v2_user_metrics_user_time
-    ON channel_monitor_v2_user_metrics_1m (user_id, bucket_start DESC);
-CREATE INDEX IF NOT EXISTS idx_channel_monitor_v2_user_metrics_time
-    ON channel_monitor_v2_user_metrics_1m (bucket_start DESC);
-
 CREATE TABLE IF NOT EXISTS channel_monitor_v2_error_metrics_1m (
     bucket_start TIMESTAMPTZ NOT NULL,
     platform TEXT NOT NULL,
@@ -79,11 +67,6 @@ CREATE TABLE IF NOT EXISTS channel_monitor_v2_error_metrics_1m (
     error_requests BIGINT NOT NULL DEFAULT 0,
     PRIMARY KEY (bucket_start, platform, group_id, model, error_category, taxonomy_version)
 );
-
-CREATE INDEX IF NOT EXISTS idx_channel_monitor_v2_errors_time
-    ON channel_monitor_v2_error_metrics_1m (bucket_start DESC);
-CREATE INDEX IF NOT EXISTS idx_channel_monitor_v2_errors_category_time
-    ON channel_monitor_v2_error_metrics_1m (error_category, bucket_start DESC);
 
 CREATE TABLE IF NOT EXISTS channel_monitor_v2_latency_histograms_1m (
     bucket_start TIMESTAMPTZ NOT NULL,
@@ -97,9 +80,6 @@ CREATE TABLE IF NOT EXISTS channel_monitor_v2_latency_histograms_1m (
     PRIMARY KEY (bucket_start, platform, group_id, model, user_id, metric, upper_bound_ms)
 );
 
-CREATE INDEX IF NOT EXISTS idx_channel_monitor_v2_histograms_time
-    ON channel_monitor_v2_latency_histograms_1m (bucket_start DESC, metric);
-
 CREATE TABLE IF NOT EXISTS channel_monitor_v2_watermarks (
     id SMALLINT PRIMARY KEY DEFAULT 1 CHECK (id = 1),
     usage_coverage_start TIMESTAMPTZ,
@@ -112,8 +92,3 @@ CREATE TABLE IF NOT EXISTS channel_monitor_v2_watermarks (
 
 INSERT INTO channel_monitor_v2_watermarks (id) VALUES (1)
 ON CONFLICT (id) DO NOTHING;
-
-COMMENT ON TABLE channel_monitor_v2_metrics_1m IS
-    'One-minute passive channel health facts derived from real user requests; never from active probes.';
-COMMENT ON COLUMN channel_monitor_v2_error_metrics_1m.taxonomy_version IS
-    'Version of the ordered error classification rules used for this aggregate.';

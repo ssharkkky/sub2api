@@ -12,6 +12,7 @@ import (
 	"time"
 
 	sqlmock "github.com/DATA-DOG/go-sqlmock"
+	"github.com/Wei-Shaw/sub2api/migrations"
 	"github.com/stretchr/testify/require"
 )
 
@@ -110,6 +111,18 @@ func TestMigrationChecksumCompatibilityRules_CoverEditedUpgradeCompatibilityMigr
 		require.NotEmpty(t, rule.fileChecksum)
 		require.NotEmpty(t, rule.acceptedDBChecksum)
 	}
+}
+
+func TestMigration220CompatibilityRuleMatchesCurrentFile(t *testing.T) {
+	const name = "220_clear_non_grok_video_generation_config.sql"
+
+	content, err := migrations.FS.ReadFile(name)
+	require.NoError(t, err)
+	sum := sha256.Sum256([]byte(strings.TrimSpace(string(content))))
+
+	rule, ok := migrationChecksumCompatibilityRules[name]
+	require.True(t, ok)
+	require.Equal(t, hex.EncodeToString(sum[:]), rule.fileChecksum)
 }
 
 func TestEnsureAtlasBaselineAligned(t *testing.T) {

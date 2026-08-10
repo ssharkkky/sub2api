@@ -25,13 +25,6 @@ CREATE TABLE IF NOT EXISTS channel_monitor_v2_metrics_rollup (
     PRIMARY KEY (bucket_seconds, bucket_start, platform, group_id, model)
 );
 
-CREATE INDEX IF NOT EXISTS idx_channel_monitor_v2_metrics_rollup_platform_time
-    ON channel_monitor_v2_metrics_rollup (bucket_seconds, platform, bucket_start DESC);
-CREATE INDEX IF NOT EXISTS idx_channel_monitor_v2_metrics_rollup_group_time
-    ON channel_monitor_v2_metrics_rollup (bucket_seconds, group_id, bucket_start DESC);
-CREATE INDEX IF NOT EXISTS idx_channel_monitor_v2_metrics_rollup_model_time
-    ON channel_monitor_v2_metrics_rollup (bucket_seconds, model, bucket_start DESC);
-
 CREATE TABLE IF NOT EXISTS channel_monitor_v2_user_metrics_rollup (
     bucket_start TIMESTAMPTZ NOT NULL,
     bucket_seconds INTEGER NOT NULL CHECK (bucket_seconds IN (300, 3600, 43200, 86400)),
@@ -53,11 +46,6 @@ CREATE TABLE IF NOT EXISTS channel_monitor_v2_user_metrics_rollup (
     PRIMARY KEY (bucket_seconds, bucket_start, platform, group_id, model, user_id)
 );
 
-CREATE INDEX IF NOT EXISTS idx_channel_monitor_v2_user_rollup_user_time
-    ON channel_monitor_v2_user_metrics_rollup (bucket_seconds, user_id, bucket_start DESC);
-CREATE INDEX IF NOT EXISTS idx_channel_monitor_v2_user_rollup_time
-    ON channel_monitor_v2_user_metrics_rollup (bucket_seconds, bucket_start DESC);
-
 CREATE TABLE IF NOT EXISTS channel_monitor_v2_error_metrics_rollup (
     bucket_start TIMESTAMPTZ NOT NULL,
     bucket_seconds INTEGER NOT NULL CHECK (bucket_seconds IN (300, 3600, 43200, 86400)),
@@ -69,11 +57,6 @@ CREATE TABLE IF NOT EXISTS channel_monitor_v2_error_metrics_rollup (
     error_requests BIGINT NOT NULL DEFAULT 0,
     PRIMARY KEY (bucket_seconds, bucket_start, platform, group_id, model, error_category, taxonomy_version)
 );
-
-CREATE INDEX IF NOT EXISTS idx_channel_monitor_v2_errors_rollup_time
-    ON channel_monitor_v2_error_metrics_rollup (bucket_seconds, bucket_start DESC);
-CREATE INDEX IF NOT EXISTS idx_channel_monitor_v2_errors_rollup_category_time
-    ON channel_monitor_v2_error_metrics_rollup (bucket_seconds, error_category, bucket_start DESC);
 
 CREATE TABLE IF NOT EXISTS channel_monitor_v2_latency_histograms_rollup (
     bucket_start TIMESTAMPTZ NOT NULL,
@@ -87,9 +70,3 @@ CREATE TABLE IF NOT EXISTS channel_monitor_v2_latency_histograms_rollup (
     sample_count BIGINT NOT NULL DEFAULT 0,
     PRIMARY KEY (bucket_seconds, bucket_start, platform, group_id, model, user_id, metric, upper_bound_ms)
 );
-
-CREATE INDEX IF NOT EXISTS idx_channel_monitor_v2_histograms_rollup_time
-    ON channel_monitor_v2_latency_histograms_rollup (bucket_seconds, bucket_start DESC, metric);
-
-COMMENT ON TABLE channel_monitor_v2_metrics_rollup IS
-    'Precomputed fixed UI buckets derived from channel_monitor_v2_metrics_1m for 24h/7d/30d views.';
