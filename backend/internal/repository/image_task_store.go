@@ -3,11 +3,13 @@ package repository
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"strconv"
 	"strings"
 	"time"
 
 	"github.com/Wei-Shaw/sub2api/internal/service"
+	"github.com/google/uuid"
 	"github.com/redis/go-redis/v9"
 )
 
@@ -128,7 +130,7 @@ func (s *imageTaskStore) Save(ctx context.Context, task *service.ImageTaskRecord
 	if err != nil {
 		return err
 	}
-	_, err = s.rdb.TxPipelined(ctx, func(pipe redis.Pipeliner) error {
+	err = s.guardedImageTaskTx(ctx, task.ID, func(pipe redis.Pipeliner) error {
 		pipe.Set(ctx, imageTaskKey(task.ID), data, ttl)
 		pipe.ZAdd(ctx, imageTaskAdminIndex, redis.Z{Score: imageTaskAdminScore(task), Member: task.ID})
 		if cleanupExists > 0 {
@@ -267,7 +269,7 @@ func (s *imageTaskStore) Delete(ctx context.Context, id string) error {
 	if err != nil {
 		return err
 	}
-	_, err = s.rdb.TxPipelined(ctx, func(pipe redis.Pipeliner) error {
+	err = s.guardedImageTaskTx(ctx, id, func(pipe redis.Pipeliner) error {
 		pipe.Del(ctx, imageTaskKey(id))
 		if cleanupExists == 0 {
 			pipe.Del(ctx, imageTaskAdminRecordKey(id))
@@ -309,7 +311,7 @@ func (s *imageTaskStore) ScheduleCleanup(ctx context.Context, cleanup service.Im
 			return err
 		}
 	}
-	_, err = s.rdb.TxPipelined(ctx, func(pipe redis.Pipeliner) error {
+	err = s.guardedImageTaskTx(ctx, cleanup.TaskID, func(pipe redis.Pipeliner) error {
 		// Cleanup metadata remains until object deletion succeeds. This keeps failed
 		// deletions visible and manually recoverable instead of creating hidden orphans.
 		pipe.Set(ctx, imageTaskCleanupKey(cleanup.TaskID), data, 0)
@@ -383,7 +385,7 @@ func (s *imageTaskStore) DeleteCleanup(ctx context.Context, id string) error {
 	if !tracked {
 		images, bytes = 0, 0
 	}
-	_, err = s.rdb.TxPipelined(ctx, func(pipe redis.Pipeliner) error {
+	err = s.guardedImageTaskTx(ctx, id, func(pipe redis.Pipeliner) error {
 		pipe.Del(ctx, imageTaskCleanupKey(id))
 		pipe.ZRem(ctx, imageTaskCleanupSchedule, id)
 		pipe.Del(ctx, imageTaskAdminRecordKey(id))
@@ -411,17 +413,45 @@ end
 return 0
 `)
 
-var imageTaskBackfillStatsScript = redis.NewScript(`
-if redis.call("HSETNX", KEYS[1], ARGV[1], ARGV[2]) == 1 then
-  redis.call("HINCRBY", KEYS[2], "images", ARGV[3])
-  redis.call("HINCRBY", KEYS[2], "bytes", ARGV[4])
-  return 1
+var imageTaskPruneAdminScript = redis.NewScript(`
+redis.call("ZREM", KEYS[1], ARGV[1])
+if redis.call("EXISTS", KEYS[2]) == 0 then
+  redis.call("DEL", KEYS[3])
+  redis.call("ZREM", KEYS[4], ARGV[1])
 end
-return 0
+return 1
 `)
 
 func (s *imageTaskStore) Unlock(ctx context.Context, id, token string) error {
 	return imageTaskUnlockScript.Run(ctx, s.rdb, []string{imageTaskMutationLockKey(id)}, token).Err()
+}
+
+func (s *imageTaskStore) guardedImageTaskTx(ctx context.Context, id string, fn func(redis.Pipeliner) error) error {
+	guardID, token, guarded := service.ImageTaskMutationGuardFromContext(ctx)
+	if !guarded {
+		_, err := s.rdb.TxPipelined(ctx, fn)
+		return err
+	}
+	id = strings.TrimSpace(id)
+	if guardID != id {
+		return service.ErrImageTaskBusy
+	}
+	lockKey := imageTaskMutationLockKey(id)
+	err := s.rdb.Watch(ctx, func(tx *redis.Tx) error {
+		current, err := tx.Get(ctx, lockKey).Result()
+		if err == redis.Nil || current != token {
+			return service.ErrImageTaskBusy
+		}
+		if err != nil {
+			return err
+		}
+		_, err = tx.TxPipelined(ctx, fn)
+		return err
+	}, lockKey)
+	if errors.Is(err, redis.TxFailedErr) {
+		return service.ErrImageTaskBusy
+	}
+	return err
 }
 
 func (s *imageTaskStore) cleanupStats(ctx context.Context, id string) (int, int64, error) {
@@ -458,27 +488,8 @@ func (s *imageTaskStore) ensureImageTaskAdminIndex(ctx context.Context) error {
 		if json.Unmarshal(data, &task) != nil || strings.TrimSpace(task.ID) == "" {
 			continue
 		}
-		ttl, ttlErr := s.rdb.PTTL(ctx, iterator.Val()).Result()
-		if ttlErr != nil {
-			return ttlErr
-		}
-		cleanupExists, existsErr := s.rdb.Exists(ctx, imageTaskCleanupKey(task.ID)).Result()
-		if existsErr != nil {
-			return existsErr
-		}
-		_, pipeErr := s.rdb.TxPipelined(ctx, func(pipe redis.Pipeliner) error {
-			pipe.ZAdd(ctx, imageTaskAdminIndex, redis.Z{Score: imageTaskAdminScore(&task), Member: task.ID})
-			if cleanupExists > 0 {
-				pipe.Set(ctx, imageTaskAdminRecordKey(task.ID), data, 0)
-				pipe.ZRem(ctx, imageTaskAdminExpiry, task.ID)
-			} else if ttl > 0 {
-				pipe.Set(ctx, imageTaskAdminRecordKey(task.ID), data, ttl)
-				pipe.ZAdd(ctx, imageTaskAdminExpiry, redis.Z{Score: float64(time.Now().Add(ttl).Unix()), Member: task.ID})
-			}
-			return nil
-		})
-		if pipeErr != nil {
-			return pipeErr
+		if err := s.backfillImageTaskAdminRecord(ctx, task.ID); err != nil {
+			return err
 		}
 	}
 	if err := iterator.Err(); err != nil {
@@ -490,50 +501,8 @@ func (s *imageTaskStore) ensureImageTaskAdminIndex(ctx context.Context) error {
 		return err
 	}
 	for _, id := range cleanupIDs {
-		cleanup, getErr := s.GetCleanup(ctx, id)
-		if getErr != nil {
-			continue
-		}
-		if cleanup.Record == nil {
-			if taskData, taskErr := s.rdb.Get(ctx, imageTaskKey(id)).Bytes(); taskErr == nil {
-				var task service.ImageTaskRecord
-				if json.Unmarshal(taskData, &task) == nil {
-					cleanup.Record = &task
-				}
-			}
-		}
-		sizes := cleanup.Sizes
-		if len(sizes) == 0 && cleanup.Record != nil {
-			sizes = cleanup.Record.StorageSizes
-			cleanup.Sizes = append([]int64(nil), sizes...)
-		}
-		images := len(cleanup.Keys)
-		bytes := sumPositiveInt64(sizes)
-		if err := imageTaskBackfillStatsScript.Run(ctx, s.rdb,
-			[]string{imageTaskAdminObjectStats, imageTaskAdminStats},
-			id, encodeCleanupStats(images, bytes), images, bytes,
-		).Err(); err != nil {
+		if err := s.backfillImageTaskCleanup(ctx, id); err != nil {
 			return err
-		}
-		if cleanup.Record != nil {
-			data, marshalErr := json.Marshal(cleanup.Record)
-			if marshalErr != nil {
-				return marshalErr
-			}
-			cleanupData, marshalErr := json.Marshal(cleanup)
-			if marshalErr != nil {
-				return marshalErr
-			}
-			_, pipeErr := s.rdb.TxPipelined(ctx, func(pipe redis.Pipeliner) error {
-				pipe.Set(ctx, imageTaskCleanupKey(id), cleanupData, 0)
-				pipe.Set(ctx, imageTaskAdminRecordKey(id), data, 0)
-				pipe.ZAdd(ctx, imageTaskAdminIndex, redis.Z{Score: imageTaskAdminScore(cleanup.Record), Member: id})
-				pipe.ZRem(ctx, imageTaskAdminExpiry, id)
-				return nil
-			})
-			if pipeErr != nil {
-				return pipeErr
-			}
 		}
 	}
 	_, err = s.rdb.TxPipelined(ctx, func(pipe redis.Pipeliner) error {
@@ -541,6 +510,129 @@ func (s *imageTaskStore) ensureImageTaskAdminIndex(ctx context.Context) error {
 		return nil
 	})
 	return err
+}
+
+func (s *imageTaskStore) withImageTaskBackfillLock(ctx context.Context, id string, fn func(context.Context) error) error {
+	token := uuid.NewString()
+	locked, err := s.TryLock(ctx, id, token, 30*time.Second)
+	if err != nil {
+		return err
+	}
+	if !locked {
+		return service.ErrImageTaskBusy
+	}
+	defer func() { _ = s.Unlock(context.Background(), id, token) }()
+	return fn(service.WithImageTaskMutationGuard(ctx, id, token))
+}
+
+func (s *imageTaskStore) backfillImageTaskAdminRecord(ctx context.Context, id string) error {
+	return s.withImageTaskBackfillLock(ctx, id, func(guardedCtx context.Context) error {
+		data, err := s.rdb.Get(guardedCtx, imageTaskKey(id)).Bytes()
+		if err == redis.Nil {
+			return nil
+		}
+		if err != nil {
+			return err
+		}
+		var task service.ImageTaskRecord
+		if json.Unmarshal(data, &task) != nil || strings.TrimSpace(task.ID) == "" {
+			return nil
+		}
+		ttl, err := s.rdb.PTTL(guardedCtx, imageTaskKey(id)).Result()
+		if err != nil {
+			return err
+		}
+		cleanupExists, err := s.rdb.Exists(guardedCtx, imageTaskCleanupKey(id)).Result()
+		if err != nil {
+			return err
+		}
+		if cleanupExists == 0 && ttl <= 0 {
+			return nil
+		}
+		return s.guardedImageTaskTx(guardedCtx, id, func(pipe redis.Pipeliner) error {
+			pipe.ZAdd(guardedCtx, imageTaskAdminIndex, redis.Z{Score: imageTaskAdminScore(&task), Member: id})
+			if cleanupExists > 0 {
+				pipe.Set(guardedCtx, imageTaskAdminRecordKey(id), data, 0)
+				pipe.ZRem(guardedCtx, imageTaskAdminExpiry, id)
+			} else {
+				pipe.Set(guardedCtx, imageTaskAdminRecordKey(id), data, ttl)
+				pipe.ZAdd(guardedCtx, imageTaskAdminExpiry, redis.Z{Score: float64(time.Now().Add(ttl).Unix()), Member: id})
+			}
+			return nil
+		})
+	})
+}
+
+func (s *imageTaskStore) backfillImageTaskCleanup(ctx context.Context, id string) error {
+	return s.withImageTaskBackfillLock(ctx, id, func(guardedCtx context.Context) error {
+		cleanup, err := s.GetCleanup(guardedCtx, id)
+		if errors.Is(err, service.ErrImageTaskNotFound) {
+			return nil
+		}
+		if err != nil {
+			return err
+		}
+		cleanup.TaskID = id
+		if cleanup.Record == nil {
+			if taskData, taskErr := s.rdb.Get(guardedCtx, imageTaskKey(id)).Bytes(); taskErr == nil {
+				var task service.ImageTaskRecord
+				if json.Unmarshal(taskData, &task) == nil {
+					cleanup.Record = &task
+				}
+			}
+		}
+		if cleanup.Record == nil {
+			cleanup.Record = &service.ImageTaskRecord{
+				ID: id, Status: service.ImageTaskStatusCompleted,
+				CreatedAt: cleanup.ExpiresAt, ExpiresAt: cleanup.ExpiresAt,
+				StorageKeys:     append([]string(nil), cleanup.Keys...),
+				StorageSizes:    append([]int64(nil), cleanup.Sizes...),
+				StorageIdentity: cleanup.StorageIdentity,
+			}
+		}
+		cleanup.Record.ID = id
+		if len(cleanup.Keys) == 0 {
+			cleanup.Keys = append([]string(nil), cleanup.Record.StorageKeys...)
+		}
+		if len(cleanup.Sizes) == 0 {
+			cleanup.Sizes = append([]int64(nil), cleanup.Record.StorageSizes...)
+		}
+		if cleanup.ExpiresAt == 0 {
+			cleanup.ExpiresAt = cleanup.Record.ExpiresAt
+		}
+		if cleanup.StorageIdentity == "" {
+			cleanup.StorageIdentity = cleanup.Record.StorageIdentity
+		}
+		cleanup.Record.StorageKeys = append([]string(nil), cleanup.Keys...)
+		cleanup.Record.StorageSizes = append([]int64(nil), cleanup.Sizes...)
+		cleanup.Record.StorageIdentity = cleanup.StorageIdentity
+		images := len(cleanup.Keys)
+		bytes := sumPositiveInt64(cleanup.Sizes)
+		tracked, err := s.rdb.HExists(guardedCtx, imageTaskAdminObjectStats, id).Result()
+		if err != nil {
+			return err
+		}
+		cleanupData, err := json.Marshal(cleanup)
+		if err != nil {
+			return err
+		}
+		recordData, err := json.Marshal(cleanup.Record)
+		if err != nil {
+			return err
+		}
+		return s.guardedImageTaskTx(guardedCtx, id, func(pipe redis.Pipeliner) error {
+			if !tracked {
+				pipe.HIncrBy(guardedCtx, imageTaskAdminStats, "images", int64(images))
+				pipe.HIncrBy(guardedCtx, imageTaskAdminStats, "bytes", bytes)
+				pipe.HSet(guardedCtx, imageTaskAdminObjectStats, id, encodeCleanupStats(images, bytes))
+			}
+			pipe.Set(guardedCtx, imageTaskCleanupKey(id), cleanupData, 0)
+			pipe.Set(guardedCtx, imageTaskAdminRecordKey(id), recordData, 0)
+			pipe.ZAdd(guardedCtx, imageTaskAdminIndex, redis.Z{Score: imageTaskAdminScore(cleanup.Record), Member: id})
+			pipe.ZRem(guardedCtx, imageTaskAdminExpiry, id)
+			return nil
+		})
+	})
 }
 
 func (s *imageTaskStore) pruneExpiredImageTaskAdminRecords(ctx context.Context, now time.Time) error {
@@ -551,20 +643,13 @@ func (s *imageTaskStore) pruneExpiredImageTaskAdminRecords(ctx context.Context, 
 		return err
 	}
 	for _, id := range ids {
-		cleanupExists, existsErr := s.rdb.Exists(ctx, imageTaskCleanupKey(id)).Result()
-		if existsErr != nil {
-			return existsErr
-		}
-		_, pipeErr := s.rdb.TxPipelined(ctx, func(pipe redis.Pipeliner) error {
-			pipe.ZRem(ctx, imageTaskAdminExpiry, id)
-			if cleanupExists == 0 {
-				pipe.Del(ctx, imageTaskAdminRecordKey(id))
-				pipe.ZRem(ctx, imageTaskAdminIndex, id)
-			}
-			return nil
-		})
-		if pipeErr != nil {
-			return pipeErr
+		if err := imageTaskPruneAdminScript.Run(ctx, s.rdb, []string{
+			imageTaskAdminExpiry,
+			imageTaskCleanupKey(id),
+			imageTaskAdminRecordKey(id),
+			imageTaskAdminIndex,
+		}, id).Err(); err != nil {
+			return err
 		}
 	}
 	return nil

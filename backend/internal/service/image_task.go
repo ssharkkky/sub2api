@@ -30,6 +30,7 @@ const (
 	defaultImageTaskCleanupBatchSize = 100
 	defaultImageTaskMutationLockTTL  = 2 * time.Minute
 	defaultImageTaskMutationWait     = 2 * time.Second
+	defaultImageTaskMutationTimeout  = 90 * time.Second
 )
 
 var (
@@ -147,6 +148,32 @@ type ImageTaskStore interface {
 	Unlock(ctx context.Context, id, token string) error
 }
 
+type imageTaskMutationGuardContextKey struct{}
+
+type imageTaskMutationGuard struct {
+	taskID string
+	token  string
+}
+
+// WithImageTaskMutationGuard marks Redis writes that must still own a task's
+// mutation lock when they commit. The repository verifies the token atomically.
+func WithImageTaskMutationGuard(ctx context.Context, taskID, token string) context.Context {
+	return context.WithValue(ctx, imageTaskMutationGuardContextKey{}, imageTaskMutationGuard{
+		taskID: strings.TrimSpace(taskID),
+		token:  strings.TrimSpace(token),
+	})
+}
+
+// ImageTaskMutationGuardFromContext returns the lock identity for guarded
+// repository mutations. Calls outside a task mutation intentionally have none.
+func ImageTaskMutationGuardFromContext(ctx context.Context) (taskID, token string, ok bool) {
+	guard, ok := ctx.Value(imageTaskMutationGuardContextKey{}).(imageTaskMutationGuard)
+	if !ok || guard.taskID == "" || guard.token == "" {
+		return "", "", false
+	}
+	return guard.taskID, guard.token, true
+}
+
 // ImageStorageResolver reports the currently effective object-storage binding.
 // It exists so the async image feature can be switched on and off from the admin
 // UI without a restart: the wiring below is fixed at startup, but the answer to
@@ -160,6 +187,9 @@ type ImageTaskService struct {
 	resolve          ImageStorageResolver
 	ttl              time.Duration
 	executionTimeout time.Duration
+	mutationLockTTL  time.Duration
+	mutationWait     time.Duration
+	mutationTimeout  time.Duration
 
 	cleanupCancel context.CancelFunc
 	cleanupDone   chan struct{}
@@ -177,7 +207,12 @@ func NewImageTaskServiceWithOptions(store ImageTaskStore, ttl, executionTimeout 
 	if executionTimeout <= 0 {
 		executionTimeout = defaultImageTaskExecutionTimeout
 	}
-	return &ImageTaskService{store: store, ttl: ttl, executionTimeout: executionTimeout}
+	return &ImageTaskService{
+		store: store, ttl: ttl, executionTimeout: executionTimeout,
+		mutationLockTTL: defaultImageTaskMutationLockTTL,
+		mutationWait:    defaultImageTaskMutationWait,
+		mutationTimeout: defaultImageTaskMutationTimeout,
+	}
 }
 
 // NewImageTaskServiceWithUploader 构造一个已启用的图片任务服务：结果会先经 uploader
@@ -302,12 +337,12 @@ func (s *ImageTaskService) ListForAdmin(ctx context.Context, page, pageSize int)
 			continue
 		}
 		if len(record.StorageKeys) > 0 && len(record.StorageSizes) != len(record.StorageKeys) {
-			if err := s.withTaskMutation(ctx, record.ID, func() error {
-				fresh, getErr := s.getRecordForAdmin(ctx, record.ID)
+			if err := s.withTaskMutation(ctx, record.ID, func(mutationCtx context.Context) error {
+				fresh, getErr := s.getRecordForAdmin(mutationCtx, record.ID)
 				if getErr != nil {
 					return getErr
 				}
-				if sizeErr := s.ensureStorageSizes(ctx, fresh); sizeErr != nil {
+				if sizeErr := s.ensureStorageSizes(mutationCtx, fresh); sizeErr != nil {
 					return sizeErr
 				}
 				record = fresh
@@ -448,8 +483,8 @@ func (s *ImageTaskService) downloadRecord(ctx context.Context, task *ImageTaskRe
 }
 
 func (s *ImageTaskService) DeleteForUser(ctx context.Context, userID int64, id string) error {
-	return s.withTaskMutation(ctx, id, func() error {
-		task, err := s.getRecord(ctx, id)
+	return s.withTaskMutation(ctx, id, func(mutationCtx context.Context) error {
+		task, err := s.getRecord(mutationCtx, id)
 		if err != nil {
 			return err
 		}
@@ -459,45 +494,45 @@ func (s *ImageTaskService) DeleteForUser(ctx context.Context, userID int64, id s
 		if task.Status == ImageTaskStatusProcessing {
 			return ErrImageTaskDeleteNotReady
 		}
-		return s.deleteRecord(ctx, task)
+		return s.deleteRecord(mutationCtx, task)
 	})
 }
 
 func (s *ImageTaskService) DeleteForAdmin(ctx context.Context, id string) error {
-	return s.withTaskMutation(ctx, id, func() error {
-		task, err := s.getRecordForAdmin(ctx, id)
+	return s.withTaskMutation(ctx, id, func(mutationCtx context.Context) error {
+		task, err := s.getRecordForAdmin(mutationCtx, id)
 		if err != nil {
 			return err
 		}
 		if task.Status == ImageTaskStatusProcessing {
 			return ErrImageTaskDeleteNotReady
 		}
-		return s.deleteRecord(ctx, task)
+		return s.deleteRecord(mutationCtx, task)
 	})
 }
 
 func (s *ImageTaskService) DeleteImageForUser(ctx context.Context, userID int64, id, imageRef string) (updated *ImageTask, err error) {
-	err = s.withTaskMutation(ctx, id, func() error {
-		task, getErr := s.getRecord(ctx, id)
+	err = s.withTaskMutation(ctx, id, func(mutationCtx context.Context) error {
+		task, getErr := s.getRecord(mutationCtx, id)
 		if getErr != nil {
 			return getErr
 		}
 		if userID <= 0 || task.UserID != userID {
 			return ErrImageTaskNotFound
 		}
-		updated, getErr = s.deleteImageRecord(ctx, task, imageRef)
+		updated, getErr = s.deleteImageRecord(mutationCtx, task, imageRef)
 		return getErr
 	})
 	return updated, err
 }
 
 func (s *ImageTaskService) DeleteImageForAdmin(ctx context.Context, id, imageRef string) (updated *ImageTask, err error) {
-	err = s.withTaskMutation(ctx, id, func() error {
-		task, getErr := s.getRecordForAdmin(ctx, id)
+	err = s.withTaskMutation(ctx, id, func(mutationCtx context.Context) error {
+		task, getErr := s.getRecordForAdmin(mutationCtx, id)
 		if getErr != nil {
 			return getErr
 		}
-		updated, getErr = s.deleteImageRecord(ctx, task, imageRef)
+		updated, getErr = s.deleteImageRecord(mutationCtx, task, imageRef)
 		return getErr
 	})
 	return updated, err
@@ -604,15 +639,27 @@ func (s *ImageTaskService) getRecordForAdmin(ctx context.Context, id string) (*I
 	}, nil
 }
 
-func (s *ImageTaskService) withTaskMutation(ctx context.Context, id string, fn func() error) error {
+func (s *ImageTaskService) withTaskMutation(ctx context.Context, id string, fn func(context.Context) error) error {
 	id = strings.TrimSpace(id)
 	if s == nil || s.store == nil || id == "" {
 		return ErrImageTaskUnavailable
 	}
 	token := uuid.NewString()
-	deadline := time.Now().Add(defaultImageTaskMutationWait)
+	lockTTL := s.mutationLockTTL
+	if lockTTL <= 0 {
+		lockTTL = defaultImageTaskMutationLockTTL
+	}
+	wait := s.mutationWait
+	if wait <= 0 {
+		wait = defaultImageTaskMutationWait
+	}
+	operationTimeout := s.mutationTimeout
+	if operationTimeout <= 0 || operationTimeout >= lockTTL {
+		operationTimeout = lockTTL * 3 / 4
+	}
+	deadline := time.Now().Add(wait)
 	for {
-		locked, err := s.store.TryLock(ctx, id, token, defaultImageTaskMutationLockTTL)
+		locked, err := s.store.TryLock(ctx, id, token, lockTTL)
 		if err != nil {
 			return ErrImageTaskUnavailable.WithCause(err)
 		}
@@ -622,7 +669,10 @@ func (s *ImageTaskService) withTaskMutation(ctx context.Context, id string, fn f
 					logger.L().Warn("image_task.unlock_failed", zap.String("task_id", id), zap.Error(err))
 				}
 			}()
-			return fn()
+			mutationCtx, cancel := context.WithTimeout(ctx, operationTimeout)
+			defer cancel()
+			mutationCtx = WithImageTaskMutationGuard(mutationCtx, id, token)
+			return fn(mutationCtx)
 		}
 		if time.Now().After(deadline) {
 			return ErrImageTaskBusy
@@ -680,8 +730,8 @@ func (s *ImageTaskService) finish(ctx context.Context, id, status string, status
 	if s == nil || s.store == nil {
 		return ErrImageTaskUnavailable
 	}
-	return s.withTaskMutation(ctx, id, func() error {
-		task, err := s.store.Get(ctx, id)
+	return s.withTaskMutation(ctx, id, func(mutationCtx context.Context) error {
+		task, err := s.store.Get(mutationCtx, id)
 		if err != nil {
 			if errors.Is(err, ErrImageTaskNotFound) {
 				return ErrImageTaskNotFound
@@ -701,14 +751,14 @@ func (s *ImageTaskService) finish(ctx context.Context, id, status string, status
 		retention := s.Retention()
 		task.ExpiresAt = now.Add(retention).Unix()
 		if len(storageKeys) > 0 {
-			if err := s.store.ScheduleCleanup(ctx, ImageTaskCleanup{
+			if err := s.store.ScheduleCleanup(mutationCtx, ImageTaskCleanup{
 				TaskID: task.ID, Keys: task.StorageKeys, Sizes: task.StorageSizes, ExpiresAt: task.ExpiresAt,
 				StorageIdentity: task.StorageIdentity, Record: cloneImageTaskRecord(task),
 			}); err != nil {
 				return ErrImageTaskUnavailable.WithCause(err)
 			}
 		}
-		if err := s.store.Save(ctx, task, retention); err != nil {
+		if err := s.store.Save(mutationCtx, task, retention); err != nil {
 			return ErrImageTaskUnavailable.WithCause(err)
 		}
 		return nil
@@ -725,8 +775,8 @@ func (s *ImageTaskService) RunCleanupOnce(ctx context.Context, now time.Time) (i
 	}
 	cleaned := 0
 	for _, job := range jobs {
-		err := s.withTaskMutation(ctx, job.TaskID, func() error {
-			current, getErr := s.store.GetCleanup(ctx, job.TaskID)
+		err := s.withTaskMutation(ctx, job.TaskID, func(mutationCtx context.Context) error {
+			current, getErr := s.store.GetCleanup(mutationCtx, job.TaskID)
 			if errors.Is(getErr, ErrImageTaskNotFound) {
 				return nil
 			}
@@ -740,13 +790,13 @@ func (s *ImageTaskService) RunCleanupOnce(ctx context.Context, now time.Time) (i
 			if resolveErr != nil {
 				return resolveErr
 			}
-			if deleteErr := uploader.Delete(ctx, current.Keys); deleteErr != nil {
+			if deleteErr := uploader.Delete(mutationCtx, current.Keys); deleteErr != nil {
 				return deleteErr
 			}
-			if deleteErr := s.store.Delete(ctx, current.TaskID); deleteErr != nil {
+			if deleteErr := s.store.Delete(mutationCtx, current.TaskID); deleteErr != nil {
 				return deleteErr
 			}
-			if deleteErr := s.store.DeleteCleanup(ctx, current.TaskID); deleteErr != nil {
+			if deleteErr := s.store.DeleteCleanup(mutationCtx, current.TaskID); deleteErr != nil {
 				return deleteErr
 			}
 			cleaned++
