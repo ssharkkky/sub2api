@@ -772,8 +772,12 @@ function schedulePoll(taskId: string): void {
   pollTimers.set(taskId, timer)
 }
 
-function previewObjectURLKey(taskId: string, imageIndex: number): string {
-  return `${taskId}:${imageIndex}`
+function imageReference(image: ImagePlaygroundTask['images'][number]): string | number {
+  return image.id || image.index
+}
+
+function previewObjectURLKey(taskId: string, imageRef: string | number): string {
+	return `${taskId}:${imageRef}`
 }
 
 function taskWithCachedPreviews(task: ImagePlaygroundTask): ImagePlaygroundTask {
@@ -781,7 +785,7 @@ function taskWithCachedPreviews(task: ImagePlaygroundTask): ImagePlaygroundTask 
     ...task,
     images: task.images.map((image) => ({
       ...image,
-      url: previewObjectURLs.get(previewObjectURLKey(task.id, image.index)) || '',
+		url: previewObjectURLs.get(previewObjectURLKey(task.id, imageReference(image))) || '',
     })),
   }
 }
@@ -789,13 +793,13 @@ function taskWithCachedPreviews(task: ImagePlaygroundTask): ImagePlaygroundTask 
 async function loadTaskPreviews(task: ImagePlaygroundTask, includeAll = false): Promise<void> {
   try {
     const images = await Promise.all(task.images.map(async (image) => {
-      const key = previewObjectURLKey(task.id, image.index)
+		const key = previewObjectURLKey(task.id, imageReference(image))
       let previewURL = previewObjectURLs.get(key)
       if (!previewURL && !includeAll && image.index !== task.images[0]?.index) {
         return { ...image, url: '' }
       }
       if (!previewURL) {
-        const blob = await getImagePlaygroundImagePreview(task.id, image.index)
+		const blob = await getImagePlaygroundImagePreview(task.id, imageReference(image))
         if (!viewActive || !tasks.value.some((item) => item.id === task.id)) {
           return { ...image, url: '' }
         }
@@ -850,8 +854,10 @@ function openTask(task: ImagePlaygroundTask): void {
 }
 
 async function downloadImage(task: ImagePlaygroundTask, imageIndex: number): Promise<void> {
-  try {
-    const blob = await downloadImagePlaygroundImage(task.id, imageIndex)
+	try {
+		const image = task.images.find((item) => item.index === imageIndex)
+		if (!image) return
+		const blob = await downloadImagePlaygroundImage(task.id, imageReference(image))
     const extension = blob.type.includes('jpeg') ? 'jpg' : blob.type.split('/')[1] || 'png'
     const url = URL.createObjectURL(blob)
     const anchor = document.createElement('a')
@@ -929,9 +935,11 @@ function requestDeleteImage(task: ImagePlaygroundTask, imageIndex: number): void
 async function confirmDeleteImage(): Promise<void> {
   const pending = pendingDeleteImage.value
   pendingDeleteImage.value = null
-  if (!pending) return
-  try {
-    const updated = await deleteImagePlaygroundImage(pending.task.id, pending.imageIndex)
+	if (!pending) return
+	try {
+		const image = pending.task.images.find((item) => item.index === pending.imageIndex)
+		if (!image) return
+		const updated = await deleteImagePlaygroundImage(pending.task.id, imageReference(image))
     releaseTaskPreviews(pending.task.id)
     if (!updated) {
       tasks.value = tasks.value.filter((task) => task.id !== pending.task.id)

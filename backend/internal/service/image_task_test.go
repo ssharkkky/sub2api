@@ -5,8 +5,10 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"errors"
+	"math"
 	"net/http"
 	"slices"
+	"sync"
 	"testing"
 	"time"
 
@@ -14,13 +16,14 @@ import (
 )
 
 type imageTaskMemoryStore struct {
-	task    *ImageTaskRecord
-	ttl     time.Duration
-	saveErr error
-	getErr  error
-	cleanup []ImageTaskCleanup
-	deleted bool
-	listed  []*ImageTaskRecord
+	task     *ImageTaskRecord
+	ttl      time.Duration
+	saveErr  error
+	getErr   error
+	cleanup  []ImageTaskCleanup
+	deleted  bool
+	listed   []*ImageTaskRecord
+	mutation sync.Mutex
 }
 
 func (s *imageTaskMemoryStore) Save(_ context.Context, task *ImageTaskRecord, ttl time.Duration) error {
@@ -63,14 +66,33 @@ func (s *imageTaskMemoryStore) ListByUser(_ context.Context, userID int64, _ int
 	return []*ImageTaskRecord{&copy}, nil
 }
 
-func (s *imageTaskMemoryStore) ListAll(_ context.Context) ([]*ImageTaskRecord, error) {
-	if len(s.listed) > 0 {
-		return append([]*ImageTaskRecord(nil), s.listed...), nil
+func (s *imageTaskMemoryStore) ListForAdmin(_ context.Context, offset int64, limit int) ([]*ImageTaskRecord, int, error) {
+	all := s.listed
+	if len(all) == 0 && s.task != nil {
+		all = []*ImageTaskRecord{s.task}
 	}
-	if s.task == nil {
-		return []*ImageTaskRecord{}, nil
+	if offset >= int64(len(all)) {
+		return []*ImageTaskRecord{}, len(all), nil
 	}
-	return []*ImageTaskRecord{s.task}, nil
+	end := int(offset) + limit
+	if end > len(all) {
+		end = len(all)
+	}
+	return append([]*ImageTaskRecord(nil), all[int(offset):end]...), len(all), nil
+}
+
+func (s *imageTaskMemoryStore) AdminStorageStats(context.Context) (int, int64, error) {
+	all := s.listed
+	if len(all) == 0 && s.task != nil {
+		all = []*ImageTaskRecord{s.task}
+	}
+	var images int
+	var bytes int64
+	for _, task := range all {
+		images += len(task.StorageKeys)
+		bytes += sumImageStorageSizes(task.StorageSizes)
+	}
+	return images, bytes, nil
 }
 
 func (s *imageTaskMemoryStore) Delete(_ context.Context, _ string) error {
@@ -90,6 +112,16 @@ func (s *imageTaskMemoryStore) ScheduleCleanup(_ context.Context, cleanup ImageT
 	return nil
 }
 
+func (s *imageTaskMemoryStore) GetCleanup(_ context.Context, id string) (*ImageTaskCleanup, error) {
+	for i := range s.cleanup {
+		if s.cleanup[i].TaskID == id {
+			copy := s.cleanup[i]
+			return &copy, nil
+		}
+	}
+	return nil, ErrImageTaskNotFound
+}
+
 func (s *imageTaskMemoryStore) ListDueCleanup(_ context.Context, now time.Time, limit int) ([]ImageTaskCleanup, error) {
 	out := make([]ImageTaskCleanup, 0)
 	for _, cleanup := range s.cleanup {
@@ -102,6 +134,15 @@ func (s *imageTaskMemoryStore) ListDueCleanup(_ context.Context, now time.Time, 
 
 func (s *imageTaskMemoryStore) DeleteCleanup(_ context.Context, id string) error {
 	s.cleanup = slices.DeleteFunc(s.cleanup, func(cleanup ImageTaskCleanup) bool { return cleanup.TaskID == id })
+	return nil
+}
+
+func (s *imageTaskMemoryStore) TryLock(context.Context, string, string, time.Duration) (bool, error) {
+	return s.mutation.TryLock(), nil
+}
+
+func (s *imageTaskMemoryStore) Unlock(context.Context, string, string) error {
+	s.mutation.Unlock()
 	return nil
 }
 
@@ -240,18 +281,18 @@ func TestImageTaskServiceDownloadForUser(t *testing.T) {
 	created, err := svc.Create(context.Background(), ImageTaskOwner{UserID: 7, APIKeyID: 9})
 	require.NoError(t, err)
 
-	_, err = svc.DownloadForUser(context.Background(), 7, created.ID, 0)
+	_, err = svc.DownloadForUser(context.Background(), 7, created.ID, "0")
 	require.ErrorIs(t, err, ErrImageTaskNotReady)
 
 	b64 := base64.StdEncoding.EncodeToString(pngBytes)
 	require.NoError(t, svc.Complete(context.Background(), created.ID, http.StatusOK, json.RawMessage(`{"data":[{"b64_json":"`+b64+`"}]}`)))
 
-	_, err = svc.DownloadForUser(context.Background(), 8, created.ID, 0)
+	_, err = svc.DownloadForUser(context.Background(), 8, created.ID, "0")
 	require.ErrorIs(t, err, ErrImageTaskNotFound)
-	_, err = svc.DownloadForUser(context.Background(), 7, created.ID, 1)
+	_, err = svc.DownloadForUser(context.Background(), 7, created.ID, "1")
 	require.ErrorIs(t, err, ErrImageTaskImageNotFound)
 
-	download, err := svc.DownloadForUser(context.Background(), 7, created.ID, 0)
+	download, err := svc.DownloadForUser(context.Background(), 7, created.ID, "0")
 	require.NoError(t, err)
 	require.Equal(t, pngBytes, download.Data)
 	require.Equal(t, "image/png", download.ContentType)
@@ -268,11 +309,11 @@ func TestImageTaskServiceDownloadRequiresSubmittingAPIKey(t *testing.T) {
 	b64 := base64.StdEncoding.EncodeToString(pngBytes)
 	require.NoError(t, svc.Complete(context.Background(), created.ID, http.StatusOK, json.RawMessage(`{"data":[{"b64_json":"`+b64+`"}]}`)))
 
-	_, err = svc.Download(context.Background(), ImageTaskOwner{UserID: 7, APIKeyID: 10}, created.ID, 0)
+	_, err = svc.Download(context.Background(), ImageTaskOwner{UserID: 7, APIKeyID: 10}, created.ID, "0")
 	require.ErrorIs(t, err, ErrImageTaskNotFound)
-	_, err = svc.Download(context.Background(), ImageTaskOwner{UserID: 8, APIKeyID: 9}, created.ID, 0)
+	_, err = svc.Download(context.Background(), ImageTaskOwner{UserID: 8, APIKeyID: 9}, created.ID, "0")
 	require.ErrorIs(t, err, ErrImageTaskNotFound)
-	download, err := svc.Download(context.Background(), owner, created.ID, 0)
+	download, err := svc.Download(context.Background(), owner, created.ID, "0")
 	require.NoError(t, err)
 	require.Equal(t, pngBytes, download.Data)
 }
@@ -315,7 +356,8 @@ func TestImageTaskServiceDeleteSingleImageUpdatesTaskAndCleanup(t *testing.T) {
 	require.NoError(t, svc.Complete(context.Background(), created.ID, http.StatusOK, result))
 	require.Equal(t, []int64{int64(len(pngBytes)), int64(len(pngBytes))}, store.task.StorageSizes)
 
-	updated, err := svc.DeleteImageForUser(context.Background(), 7, created.ID, 0)
+	firstImageID := imageTaskImageID(created.ID, "images/"+created.ID+"-0.png")
+	updated, err := svc.DeleteImageForUser(context.Background(), 7, created.ID, firstImageID)
 	require.NoError(t, err)
 	require.NotNil(t, updated)
 	require.Equal(t, 1, updated.ImageCount)
@@ -326,12 +368,53 @@ func TestImageTaskServiceDeleteSingleImageUpdatesTaskAndCleanup(t *testing.T) {
 	require.Equal(t, []string{"images/" + created.ID + "-1.png"}, store.cleanup[0].Keys)
 	require.Equal(t, []string{"images/" + created.ID + "-0.png"}, storage.deleted)
 
-	updated, err = svc.DeleteImageForUser(context.Background(), 7, created.ID, 0)
+	updated, err = svc.DeleteImageForUser(context.Background(), 7, created.ID, firstImageID)
+	require.ErrorIs(t, err, ErrImageTaskImageNotFound)
+	require.Nil(t, updated)
+	require.Equal(t, []string{"images/" + created.ID + "-1.png"}, store.task.StorageKeys,
+		"a stale stable image ID must not drift to the remaining array index")
+
+	updated, err = svc.DeleteImageForUser(context.Background(), 7, created.ID, "0")
 	require.NoError(t, err)
 	require.Nil(t, updated)
 	require.True(t, store.deleted)
 	require.Empty(t, store.cleanup)
 	require.Equal(t, []string{
+		"images/" + created.ID + "-0.png",
+		"images/" + created.ID + "-1.png",
+	}, storage.deleted)
+}
+
+func TestImageTaskServiceSerializesConcurrentStableImageDeletes(t *testing.T) {
+	store := &imageTaskMemoryStore{}
+	storage := &fakeImageStorage{}
+	svc := NewImageTaskServiceWithUploader(store, NewImageResultUploader(storage, "images/", 0, nil), time.Hour, time.Minute)
+	created, err := svc.Create(context.Background(), ImageTaskOwner{UserID: 7, APIKeyID: 9})
+	require.NoError(t, err)
+	b64 := base64.StdEncoding.EncodeToString(pngBytes)
+	require.NoError(t, svc.Complete(context.Background(), created.ID, http.StatusOK, json.RawMessage(
+		`{"data":[{"b64_json":"`+b64+`"},{"b64_json":"`+b64+`"}]}`,
+	)))
+	imageIDs := imageTaskToPublic(store.task).ImageIDs
+	require.Len(t, imageIDs, 2)
+
+	errors := make(chan error, 2)
+	var wait sync.WaitGroup
+	for _, imageID := range imageIDs {
+		wait.Add(1)
+		go func(ref string) {
+			defer wait.Done()
+			_, deleteErr := svc.DeleteImageForUser(context.Background(), 7, created.ID, ref)
+			errors <- deleteErr
+		}(imageID)
+	}
+	wait.Wait()
+	close(errors)
+	for deleteErr := range errors {
+		require.NoError(t, deleteErr)
+	}
+	require.True(t, store.deleted)
+	require.ElementsMatch(t, []string{
 		"images/" + created.ID + "-0.png",
 		"images/" + created.ID + "-1.png",
 	}, storage.deleted)
@@ -352,6 +435,19 @@ func TestImageTaskServiceListForAdminPaginatesAndTotalsStorage(t *testing.T) {
 	require.Len(t, page.Tasks, 1)
 	require.Equal(t, "old", page.Tasks[0].Task.ID)
 	require.Equal(t, int64(300), page.Tasks[0].StorageBytes)
+}
+
+func TestImageTaskServiceListForAdminHandlesExtremePageWithoutOverflow(t *testing.T) {
+	store := &imageTaskMemoryStore{listed: []*ImageTaskRecord{{
+		ID: "only", CreatedAt: 1, Status: ImageTaskStatusCompleted,
+	}}}
+	svc := NewImageTaskServiceWithOptions(store, time.Hour, time.Minute)
+
+	page, err := svc.ListForAdmin(context.Background(), math.MaxInt, 100)
+	require.NoError(t, err)
+	require.Equal(t, math.MaxInt, page.Page)
+	require.Equal(t, 1, page.Total)
+	require.Empty(t, page.Tasks)
 }
 
 func TestImageTaskServiceDeleteFailureKeepsTaskForRetry(t *testing.T) {

@@ -34,12 +34,36 @@ vi.mock('vue-i18n', async (importOriginal) => {
 
 import ImagePlaygroundAdminView from '@/views/admin/ImagePlaygroundAdminView.vue'
 
+let observedElements: Element[] = []
+let intersectionCallback: IntersectionObserverCallback
+
+function revealObservedPreviews(): void {
+  intersectionCallback(observedElements.map((target) => ({
+    target,
+    isIntersecting: true,
+  } as IntersectionObserverEntry)), {} as IntersectionObserver)
+}
+
 describe('ImagePlaygroundAdminView', () => {
   beforeEach(() => {
     vi.clearAllMocks()
     Object.defineProperty(URL, 'createObjectURL', { configurable: true, value: vi.fn(() => 'blob:admin-preview') })
     Object.defineProperty(URL, 'revokeObjectURL', { configurable: true, value: vi.fn() })
     getPreview.mockResolvedValue(new Blob(['image'], { type: 'image/png' }))
+    observedElements = []
+    vi.stubGlobal('IntersectionObserver', class {
+      constructor(callback: IntersectionObserverCallback) {
+        intersectionCallback = callback
+      }
+
+      observe(target: Element): void { observedElements.push(target) }
+      unobserve(): void {}
+      disconnect(): void { observedElements = [] }
+      takeRecords(): IntersectionObserverEntry[] { return [] }
+      readonly root = null
+      readonly rootMargin = ''
+      readonly thresholds = []
+    })
     listTasks.mockResolvedValue({
       tasks: [{
         task: {
@@ -84,6 +108,9 @@ describe('ImagePlaygroundAdminView', () => {
     await flushPromises()
 
     expect(listTasks).toHaveBeenCalledWith(1, 24)
+		expect(getPreview).not.toHaveBeenCalled()
+		revealObservedPreviews()
+		await flushPromises()
     expect(getPreview).toHaveBeenCalledTimes(2)
     expect(getPreview).toHaveBeenCalledWith('imgtask_1', 0)
     expect(getPreview).toHaveBeenCalledWith('imgtask_1', 1)
@@ -96,4 +123,33 @@ describe('ImagePlaygroundAdminView', () => {
     wrapper.unmount()
     expect(URL.revokeObjectURL).toHaveBeenCalledTimes(2)
   })
+
+	it('limits preview downloads when many images enter the viewport together', async () => {
+		listTasks.mockResolvedValue({
+			tasks: [{
+				task: {
+					id: 'imgtask_many', status: 'completed', platform: 'openai', model: 'gpt-image-2',
+					images: Array.from({ length: 12 }, (_, index) => ({ id: `img_${index}`, index, url: '', download_url: '' })),
+					created_at: 1_700_000_000,
+				},
+				user_id: 42, api_key_id: 9, storage_bytes: 12, image_sizes: Array(12).fill(1),
+			}],
+			page: 1, page_size: 24, total: 1, total_images: 12, storage_bytes: 12,
+		})
+		getPreview.mockImplementation(() => new Promise(() => {}))
+
+		const wrapper = mount(ImagePlaygroundAdminView, {
+			global: {
+				stubs: {
+					AppLayout: { template: '<main><slot /></main>' }, Icon: true, Pagination: true, ConfirmDialog: true,
+				},
+			},
+		})
+		await flushPromises()
+		revealObservedPreviews()
+		await flushPromises()
+
+		expect(getPreview).toHaveBeenCalledTimes(4)
+		wrapper.unmount()
+	})
 })

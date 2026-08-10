@@ -3,6 +3,7 @@ package handler
 import (
 	"bytes"
 	"context"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -66,12 +67,12 @@ type imagePlaygroundTasks interface {
 	ListForUser(ctx context.Context, userID int64, limit int) ([]*service.ImageTask, error)
 	ListForAdmin(ctx context.Context, page, pageSize int) (*service.AdminImageTaskPage, error)
 	GetForUser(ctx context.Context, userID int64, id string) (*service.ImageTask, error)
-	DownloadForUser(ctx context.Context, userID int64, id string, imageIndex int) (*service.ImageTaskDownload, error)
-	DownloadForAdmin(ctx context.Context, id string, imageIndex int) (*service.ImageTaskDownload, error)
+	DownloadForUser(ctx context.Context, userID int64, id, imageRef string) (*service.ImageTaskDownload, error)
+	DownloadForAdmin(ctx context.Context, id, imageRef string) (*service.ImageTaskDownload, error)
 	DeleteForUser(ctx context.Context, userID int64, id string) error
 	DeleteForAdmin(ctx context.Context, id string) error
-	DeleteImageForUser(ctx context.Context, userID int64, id string, imageIndex int) (*service.ImageTask, error)
-	DeleteImageForAdmin(ctx context.Context, id string, imageIndex int) (*service.ImageTask, error)
+	DeleteImageForUser(ctx context.Context, userID int64, id, imageRef string) (*service.ImageTask, error)
+	DeleteImageForAdmin(ctx context.Context, id, imageRef string) (*service.ImageTask, error)
 }
 
 const imagePlaygroundHistoryLimit = 24
@@ -88,6 +89,7 @@ func NewImagePlaygroundHandler(playground *service.ImagePlaygroundService, tasks
 }
 
 type imagePlaygroundImage struct {
+	ID          string `json:"id"`
 	Index       int    `json:"index"`
 	URL         string `json:"url"`
 	DownloadURL string `json:"download_url"`
@@ -329,12 +331,11 @@ func (h *ImagePlaygroundHandler) Download(c *gin.Context) {
 		response.Unauthorized(c, "User not authenticated")
 		return
 	}
-	imageIndex, err := strconv.Atoi(c.Param("image_index"))
-	if err != nil || imageIndex < 0 {
-		response.BadRequest(c, "invalid image index")
+	imageRef, valid := parseImagePlaygroundImageRef(c)
+	if !valid {
 		return
 	}
-	download, err := h.tasks.DownloadForUser(c.Request.Context(), subject.UserID, c.Param("task_id"), imageIndex)
+	download, err := h.tasks.DownloadForUser(c.Request.Context(), subject.UserID, c.Param("task_id"), imageRef)
 	if err != nil {
 		response.ErrorFrom(c, err)
 		return
@@ -354,12 +355,11 @@ func (h *ImagePlaygroundHandler) Preview(c *gin.Context) {
 		response.Unauthorized(c, "User not authenticated")
 		return
 	}
-	imageIndex, err := strconv.Atoi(c.Param("image_index"))
-	if err != nil || imageIndex < 0 {
-		response.BadRequest(c, "invalid image index")
+	imageRef, valid := parseImagePlaygroundImageRef(c)
+	if !valid {
 		return
 	}
-	preview, err := h.tasks.DownloadForUser(c.Request.Context(), subject.UserID, c.Param("task_id"), imageIndex)
+	preview, err := h.tasks.DownloadForUser(c.Request.Context(), subject.UserID, c.Param("task_id"), imageRef)
 	if err != nil {
 		response.ErrorFrom(c, err)
 		return
@@ -395,11 +395,11 @@ func (h *ImagePlaygroundHandler) DeleteImage(c *gin.Context) {
 		response.Unauthorized(c, "User not authenticated")
 		return
 	}
-	imageIndex, ok := parseImagePlaygroundImageIndex(c)
+	imageRef, ok := parseImagePlaygroundImageRef(c)
 	if !ok {
 		return
 	}
-	task, err := h.tasks.DeleteImageForUser(c.Request.Context(), subject.UserID, c.Param("task_id"), imageIndex)
+	task, err := h.tasks.DeleteImageForUser(c.Request.Context(), subject.UserID, c.Param("task_id"), imageRef)
 	if err != nil {
 		response.ErrorFrom(c, err)
 		return
@@ -451,11 +451,11 @@ func (h *ImagePlaygroundHandler) AdminListTasks(c *gin.Context) {
 }
 
 func (h *ImagePlaygroundHandler) AdminPreview(c *gin.Context) {
-	imageIndex, ok := parseImagePlaygroundImageIndex(c)
+	imageRef, ok := parseImagePlaygroundImageRef(c)
 	if !ok {
 		return
 	}
-	preview, err := h.tasks.DownloadForAdmin(c.Request.Context(), c.Param("task_id"), imageIndex)
+	preview, err := h.tasks.DownloadForAdmin(c.Request.Context(), c.Param("task_id"), imageRef)
 	if err != nil {
 		response.ErrorFrom(c, err)
 		return
@@ -473,11 +473,11 @@ func (h *ImagePlaygroundHandler) AdminDeleteTask(c *gin.Context) {
 }
 
 func (h *ImagePlaygroundHandler) AdminDeleteImage(c *gin.Context) {
-	imageIndex, ok := parseImagePlaygroundImageIndex(c)
+	imageRef, ok := parseImagePlaygroundImageRef(c)
 	if !ok {
 		return
 	}
-	task, err := h.tasks.DeleteImageForAdmin(c.Request.Context(), c.Param("task_id"), imageIndex)
+	task, err := h.tasks.DeleteImageForAdmin(c.Request.Context(), c.Param("task_id"), imageRef)
 	if err != nil {
 		response.ErrorFrom(c, err)
 		return
@@ -489,13 +489,19 @@ func (h *ImagePlaygroundHandler) AdminDeleteImage(c *gin.Context) {
 	response.Success(c, imagePlaygroundTaskToResponse(task))
 }
 
-func parseImagePlaygroundImageIndex(c *gin.Context) (int, bool) {
-	imageIndex, err := strconv.Atoi(c.Param("image_index"))
-	if err != nil || imageIndex < 0 {
-		response.BadRequest(c, "invalid image index")
-		return 0, false
+func parseImagePlaygroundImageRef(c *gin.Context) (string, bool) {
+	imageRef := strings.TrimSpace(c.Param("image_index"))
+	if index, err := strconv.Atoi(imageRef); err == nil {
+		if index >= 0 {
+			return imageRef, true
+		}
+	} else if strings.HasPrefix(imageRef, "img_") && len(imageRef) == 28 {
+		if _, decodeErr := hex.DecodeString(strings.TrimPrefix(imageRef, "img_")); decodeErr == nil {
+			return imageRef, true
+		}
 	}
-	return imageIndex, true
+	response.BadRequest(c, "invalid image index")
+	return "", false
 }
 
 func parsePositiveQueryInt(raw string, fallback int) int {
@@ -737,11 +743,16 @@ func imagePlaygroundTaskToResponse(task *service.ImageTask) imagePlaygroundTaskR
 	result.ExpiresAt = task.ExpiresAt
 	result.PollURL = imagePlaygroundPollURL(task.ID)
 	for index := 0; index < task.ImageCount; index++ {
-		previewURL := fmt.Sprintf("%s/images/%d", result.PollURL, index)
+		imageID := strconv.Itoa(index)
+		if index < len(task.ImageIDs) && strings.TrimSpace(task.ImageIDs[index]) != "" {
+			imageID = task.ImageIDs[index]
+		}
+		previewURL := fmt.Sprintf("%s/images/%s", result.PollURL, imageID)
 		result.Images = append(result.Images, imagePlaygroundImage{
+			ID:          imageID,
 			Index:       index,
 			URL:         previewURL,
-			DownloadURL: fmt.Sprintf("%s/images/%d/download", result.PollURL, index),
+			DownloadURL: fmt.Sprintf("%s/images/%s/download", result.PollURL, imageID),
 		})
 	}
 	return result

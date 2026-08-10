@@ -97,7 +97,7 @@ func (s *asyncImageMemoryStore) ListByUser(_ context.Context, userID int64, limi
 	return out, nil
 }
 
-func (s *asyncImageMemoryStore) ListAll(_ context.Context) ([]*service.ImageTaskRecord, error) {
+func (s *asyncImageMemoryStore) ListForAdmin(_ context.Context, _ int64, _ int) ([]*service.ImageTaskRecord, int, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	out := make([]*service.ImageTaskRecord, 0, len(s.tasks))
@@ -105,7 +105,11 @@ func (s *asyncImageMemoryStore) ListAll(_ context.Context) ([]*service.ImageTask
 		copy := *task
 		out = append(out, &copy)
 	}
-	return out, nil
+	return out, len(out), nil
+}
+
+func (s *asyncImageMemoryStore) AdminStorageStats(context.Context) (int, int64, error) {
+	return 0, 0, nil
 }
 
 func (s *asyncImageMemoryStore) Delete(_ context.Context, id string) error {
@@ -119,11 +123,21 @@ func (s *asyncImageMemoryStore) ScheduleCleanup(context.Context, service.ImageTa
 	return nil
 }
 
+func (s *asyncImageMemoryStore) GetCleanup(context.Context, string) (*service.ImageTaskCleanup, error) {
+	return nil, service.ErrImageTaskNotFound
+}
+
 func (s *asyncImageMemoryStore) ListDueCleanup(context.Context, time.Time, int) ([]service.ImageTaskCleanup, error) {
 	return nil, nil
 }
 
 func (s *asyncImageMemoryStore) DeleteCleanup(context.Context, string) error { return nil }
+
+func (s *asyncImageMemoryStore) TryLock(context.Context, string, string, time.Duration) (bool, error) {
+	return true, nil
+}
+
+func (s *asyncImageMemoryStore) Unlock(context.Context, string, string) error { return nil }
 
 func TestAsyncImageHandlerSubmitAndPoll(t *testing.T) {
 	gin.SetMode(gin.TestMode)

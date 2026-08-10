@@ -90,11 +90,14 @@
           </div>
 
           <div v-if="entry.task.images.length > 0" class="grid min-w-0 grid-cols-2 gap-3 sm:grid-cols-3 xl:grid-cols-4 2xl:grid-cols-5">
-            <figure v-for="image in entry.task.images" :key="image.index" class="min-w-0">
-              <div class="group relative aspect-square overflow-hidden rounded-md border border-gray-200 bg-gray-100 dark:border-dark-700 dark:bg-dark-900">
+            <figure v-for="image in entry.task.images" :key="image.id || image.index" class="min-w-0">
+              <div
+                :ref="(element) => setPreviewTarget(element, entry.task.id, image.id || image.index)"
+                class="group relative aspect-square overflow-hidden rounded-md border border-gray-200 bg-gray-100 dark:border-dark-700 dark:bg-dark-900"
+              >
                 <img
-                  v-if="previewURLs[previewKey(entry.task.id, image.index)]"
-                  :src="previewURLs[previewKey(entry.task.id, image.index)]"
+                  v-if="previewURLs[previewKey(entry.task.id, image.id || image.index)]"
+                  :src="previewURLs[previewKey(entry.task.id, image.id || image.index)]"
                   :alt="t('imagePlayground.generatedImage')"
                   class="h-full w-full object-cover"
                   loading="lazy"
@@ -104,7 +107,7 @@
                   type="button"
                   class="absolute right-2 top-2 flex h-8 w-8 items-center justify-center rounded-md bg-white/95 text-gray-700 opacity-0 shadow transition hover:text-red-600 group-hover:opacity-100 group-focus-within:opacity-100"
                   :title="t('imagePlayground.actions.deleteImage')"
-                  @click="pendingDelete = { kind: 'image', entry, imageIndex: image.index }"
+                  @click="pendingDelete = { kind: 'image', entry, imageRef: image.id || image.index }"
                 >
                   <Icon name="trash" size="sm" />
                 </button>
@@ -145,7 +148,7 @@
 </template>
 
 <script setup lang="ts">
-import { onBeforeUnmount, onMounted, reactive, ref } from 'vue'
+import { onBeforeUnmount, onMounted, reactive, ref, type ComponentPublicInstance } from 'vue'
 import { useI18n } from 'vue-i18n'
 import AppLayout from '@/components/layout/AppLayout.vue'
 import ConfirmDialog from '@/components/common/ConfirmDialog.vue'
@@ -164,41 +167,98 @@ import {
 
 type PendingDelete =
   | { kind: 'task'; entry: AdminImagePlaygroundTask }
-  | { kind: 'image'; entry: AdminImagePlaygroundTask; imageIndex: number }
+  | { kind: 'image'; entry: AdminImagePlaygroundTask; imageRef: string | number }
+
+interface PreviewRequest {
+  taskId: string
+  imageRef: string | number
+  generation: number
+}
 
 const { t, locale } = useI18n()
 const appStore = useAppStore()
 const loading = ref(false)
 const pendingDelete = ref<PendingDelete | null>(null)
 const previewURLs = reactive<Record<string, string>>({})
+const previewQueue: PreviewRequest[] = []
+const queuedPreviews = new Set<string>()
+const previewTargets = new Map<Element, Omit<PreviewRequest, 'generation'>>()
+const previewConcurrency = 4
+let activePreviews = 0
+let previewGeneration = 0
+let previewObserver: IntersectionObserver | null = null
 const pageData = reactive<AdminImagePlaygroundPage>({
   tasks: [], page: 1, page_size: 24, total: 0, total_images: 0, storage_bytes: 0,
 })
 
-function previewKey(taskId: string, imageIndex: number): string {
-  return `${taskId}:${imageIndex}`
+function previewKey(taskId: string, imageRef: string | number): string {
+	return `${taskId}:${imageRef}`
 }
 
 function clearPreviews(): void {
-  Object.values(previewURLs).forEach((url) => URL.revokeObjectURL(url))
-  Object.keys(previewURLs).forEach((key) => delete previewURLs[key])
+	previewGeneration += 1
+	previewQueue.splice(0)
+	queuedPreviews.clear()
+	previewTargets.clear()
+	previewObserver?.disconnect()
+	Object.values(previewURLs).forEach((url) => URL.revokeObjectURL(url))
+	Object.keys(previewURLs).forEach((key) => delete previewURLs[key])
+}
+
+function setPreviewTarget(
+  element: Element | ComponentPublicInstance | null,
+  taskId: string,
+  imageRef: string | number,
+): void {
+  if (!(element instanceof Element)) return
+  previewTargets.set(element, { taskId, imageRef })
+  if (previewObserver) {
+    previewObserver.observe(element)
+  } else {
+    enqueuePreview(taskId, imageRef)
+  }
+}
+
+function enqueuePreview(taskId: string, imageRef: string | number): void {
+  const key = previewKey(taskId, imageRef)
+  if (previewURLs[key] || queuedPreviews.has(key)) return
+  queuedPreviews.add(key)
+  previewQueue.push({ taskId, imageRef, generation: previewGeneration })
+  pumpPreviewQueue()
+}
+
+function pumpPreviewQueue(): void {
+  while (activePreviews < previewConcurrency && previewQueue.length > 0) {
+    const request = previewQueue.shift()
+    if (!request) return
+    activePreviews += 1
+    void loadPreview(request).finally(() => {
+      activePreviews -= 1
+      pumpPreviewQueue()
+    })
+  }
+}
+
+async function loadPreview(request: PreviewRequest): Promise<void> {
+  const key = previewKey(request.taskId, request.imageRef)
+  try {
+    const blob = await getAdminImagePlaygroundPreview(request.taskId, request.imageRef)
+    if (request.generation !== previewGeneration) return
+    previewURLs[key] = URL.createObjectURL(blob)
+  } catch {
+    // A task may expire while its preview is entering the viewport.
+  } finally {
+		if (request.generation === previewGeneration) queuedPreviews.delete(key)
+  }
 }
 
 async function load(): Promise<void> {
   if (loading.value) return
   loading.value = true
   try {
-    const result = await listAdminImagePlaygroundTasks(pageData.page, pageData.page_size)
-    clearPreviews()
-    Object.assign(pageData, result)
-    await Promise.all(result.tasks.flatMap((entry) => entry.task.images.map(async (image) => {
-      try {
-        const blob = await getAdminImagePlaygroundPreview(entry.task.id, image.index)
-        previewURLs[previewKey(entry.task.id, image.index)] = URL.createObjectURL(blob)
-      } catch {
-        // A task may expire while the page is loading; the next refresh removes it.
-      }
-    })))
+		const result = await listAdminImagePlaygroundTasks(pageData.page, pageData.page_size)
+		clearPreviews()
+		Object.assign(pageData, result)
   } catch (error) {
     appStore.showError(error instanceof Error ? error.message : t('common.unknownError'))
   } finally {
@@ -214,7 +274,7 @@ async function confirmDelete(): Promise<void> {
     if (target.kind === 'task') {
       await deleteAdminImagePlaygroundTask(target.entry.task.id)
     } else {
-      await deleteAdminImagePlaygroundImage(target.entry.task.id, target.imageIndex)
+		await deleteAdminImagePlaygroundImage(target.entry.task.id, target.imageRef)
     }
     appStore.showSuccess(t('imagePlayground.admin.deleted'))
     await load()
@@ -255,6 +315,19 @@ function statusClass(status: ImagePlaygroundTaskStatus): string {
   return 'bg-amber-50 text-amber-700 dark:bg-amber-950/40 dark:text-amber-300'
 }
 
-onMounted(() => void load())
+onMounted(() => {
+  if (typeof IntersectionObserver !== 'undefined') {
+    previewObserver = new IntersectionObserver((entries) => {
+      entries.forEach((entry) => {
+        if (!entry.isIntersecting) return
+        const target = previewTargets.get(entry.target)
+        if (!target) return
+        previewObserver?.unobserve(entry.target)
+        enqueuePreview(target.taskId, target.imageRef)
+      })
+    }, { rootMargin: '240px 0px' })
+  }
+  void load()
+})
 onBeforeUnmount(clearPreviews)
 </script>

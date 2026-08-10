@@ -138,3 +138,81 @@ func TestImageTaskStoreListByUserBackfillsExistingTasksAndRejectsForeignIndexEnt
 	_, err = rdb.ZScore(ctx, imageTaskUserIndexKey(7), "corrupt").Result()
 	require.ErrorIs(t, err, redis.Nil)
 }
+
+func TestImageTaskStoreAdminPaginationRetainsFailedCleanupInventory(t *testing.T) {
+	mr := miniredis.RunT(t)
+	rdb := redis.NewClient(&redis.Options{Addr: mr.Addr()})
+	t.Cleanup(func() { _ = rdb.Close() })
+	store := NewImageTaskStore(rdb)
+	ctx := context.Background()
+
+	for index, task := range []*service.ImageTaskRecord{
+		{ID: "old", UserID: 1, CreatedAt: 100, Status: service.ImageTaskStatusCompleted, StorageKeys: []string{"old-0"}, StorageSizes: []int64{100}},
+		{ID: "middle", UserID: 2, CreatedAt: 200, Status: service.ImageTaskStatusCompleted, StorageKeys: []string{"middle-0", "middle-1"}, StorageSizes: []int64{200, 300}},
+		{ID: "new", UserID: 3, CreatedAt: 300, Status: service.ImageTaskStatusCompleted, StorageKeys: []string{"new-0"}, StorageSizes: []int64{400}},
+	} {
+		task.ExpiresAt = time.Now().Add(time.Hour).Unix()
+		require.NoError(t, store.Save(ctx, task, time.Hour))
+		require.NoError(t, store.ScheduleCleanup(ctx, service.ImageTaskCleanup{
+			TaskID: task.ID, Keys: task.StorageKeys, Sizes: task.StorageSizes,
+			ExpiresAt: task.ExpiresAt, Record: task,
+		}))
+		cleanupCount, err := rdb.ZCard(ctx, imageTaskCleanupSchedule).Result()
+		require.NoError(t, err)
+		require.Equal(t, index+1, int(cleanupCount))
+	}
+
+	page, total, err := store.ListForAdmin(ctx, 1, 1)
+	require.NoError(t, err)
+	require.Equal(t, 3, total)
+	require.Len(t, page, 1)
+	require.Equal(t, "middle", page[0].ID)
+	images, bytes, err := store.AdminStorageStats(ctx)
+	require.NoError(t, err)
+	require.Equal(t, 4, images)
+	require.Equal(t, int64(1000), bytes)
+
+	// Active task keys expire, but failed object cleanup remains visible and
+	// manually manageable until deletion actually succeeds.
+	mr.FastForward(2 * time.Hour)
+	page, total, err = store.ListForAdmin(ctx, 0, 10)
+	require.NoError(t, err)
+	require.Equal(t, 3, total)
+	require.Len(t, page, 3)
+	cleanup, err := store.GetCleanup(ctx, "middle")
+	require.NoError(t, err)
+	require.Equal(t, []string{"middle-0", "middle-1"}, cleanup.Keys)
+
+	require.NoError(t, store.DeleteCleanup(ctx, "middle"))
+	page, total, err = store.ListForAdmin(ctx, 0, 10)
+	require.NoError(t, err)
+	require.Equal(t, 2, total)
+	require.Len(t, page, 2)
+	images, bytes, err = store.AdminStorageStats(ctx)
+	require.NoError(t, err)
+	require.Equal(t, 2, images)
+	require.Equal(t, int64(500), bytes)
+}
+
+func TestImageTaskStoreMutationLockUsesOwnerToken(t *testing.T) {
+	mr := miniredis.RunT(t)
+	rdb := redis.NewClient(&redis.Options{Addr: mr.Addr()})
+	t.Cleanup(func() { _ = rdb.Close() })
+	store := NewImageTaskStore(rdb)
+	ctx := context.Background()
+
+	locked, err := store.TryLock(ctx, "task", "owner-a", time.Minute)
+	require.NoError(t, err)
+	require.True(t, locked)
+	locked, err = store.TryLock(ctx, "task", "owner-b", time.Minute)
+	require.NoError(t, err)
+	require.False(t, locked)
+	require.NoError(t, store.Unlock(ctx, "task", "owner-b"))
+	locked, err = store.TryLock(ctx, "task", "owner-b", time.Minute)
+	require.NoError(t, err)
+	require.False(t, locked)
+	require.NoError(t, store.Unlock(ctx, "task", "owner-a"))
+	locked, err = store.TryLock(ctx, "task", "owner-b", time.Minute)
+	require.NoError(t, err)
+	require.True(t, locked)
+}
