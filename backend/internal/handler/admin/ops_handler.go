@@ -74,6 +74,15 @@ func parseOpsViewParam(c *gin.Context) string {
 	}
 }
 
+func applyOpsUpstreamListScope(filter *service.OpsErrorLogFilter) {
+	if filter == nil || filter.View == opsListViewProviderFailures {
+		return
+	}
+	filter.ErrorPhasesAny = []string{"upstream", "account_auth"}
+	filter.IncludeRecoveredUpstream = true
+	filter.Owner = "provider"
+}
+
 func NewOpsHandler(opsService *service.OpsService) *OpsHandler {
 	return &OpsHandler{opsService: opsService}
 }
@@ -476,10 +485,9 @@ func (h *OpsHandler) ListUpstreamErrors(c *gin.Context) {
 	}
 
 	filter.View = parseOpsViewParam(c)
-	filter.ErrorPhasesAny = []string{"upstream", "account_auth"}
-	// Provider-health list includes recovered inference and credential rows.
-	filter.IncludeRecoveredUpstream = true
-	filter.Owner = "provider"
+	// The exact provider-failure card scope is already encoded by final_outcome.
+	// Generic provider-health lists retain their legacy phase and owner filters.
+	applyOpsUpstreamListScope(filter)
 	filter.Source = strings.TrimSpace(c.Query("error_source"))
 	filter.Query = strings.TrimSpace(c.Query("q"))
 

@@ -58,6 +58,20 @@ func TestParseOpsViewParam(t *testing.T) {
 	require.Equal(t, "", parseOpsViewParam(nil))
 }
 
+func TestApplyOpsUpstreamListScope(t *testing.T) {
+	providerFailures := &service.OpsErrorLogFilter{View: opsListViewProviderFailures}
+	applyOpsUpstreamListScope(providerFailures)
+	require.Empty(t, providerFailures.ErrorPhasesAny)
+	require.Empty(t, providerFailures.Owner)
+	require.False(t, providerFailures.IncludeRecoveredUpstream)
+
+	genericProviderHealth := &service.OpsErrorLogFilter{View: opsListViewErrors}
+	applyOpsUpstreamListScope(genericProviderHealth)
+	require.Equal(t, []string{"upstream", "account_auth"}, genericProviderHealth.ErrorPhasesAny)
+	require.Equal(t, "provider", genericProviderHealth.Owner)
+	require.True(t, genericProviderHealth.IncludeRecoveredUpstream)
+}
+
 func TestParseOpsDuration(t *testing.T) {
 	dur, ok := parseOpsDuration("1h")
 	require.True(t, ok)
