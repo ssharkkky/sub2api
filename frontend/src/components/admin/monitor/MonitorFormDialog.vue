@@ -78,15 +78,15 @@
 
       <div>
         <label class="input-label">
-          {{ t('admin.channelMonitor.form.apiKey') }}<span v-if="!editing" class="text-red-500"> *</span>
+          {{ t('admin.channelMonitor.form.apiKey') }}<span v-if="apiKeyRequired" class="text-red-500"> *</span>
         </label>
         <div class="flex gap-2">
           <input
             v-model="form.api_key"
             type="password"
-            :required="!editing"
+            :required="apiKeyRequired"
             class="input flex-1"
-            :placeholder="editing ? t('admin.channelMonitor.form.apiKeyEditPlaceholder') : t('admin.channelMonitor.form.apiKeyPlaceholder')"
+            :placeholder="apiKeyRequired ? t('admin.channelMonitor.form.apiKeyPlaceholder') : t('admin.channelMonitor.form.apiKeyEditPlaceholder')"
           />
           <button type="button" @click="openMyKeyPicker" class="btn btn-secondary whitespace-nowrap">
             {{ t('admin.channelMonitor.form.useMyKey') }}
@@ -311,6 +311,10 @@ const form = reactive<MonitorForm>({
   body_override_mode: 'off',
   body_override: null,
 })
+
+const apiKeyRequired = computed<boolean>(() =>
+  !editing.value || editing.value.provider !== form.provider,
+)
 
 // jitter 上限与后端校验一致：interval - jitter 不得低于最小检测间隔 15 秒。
 const maxJitterSeconds = computed<number>(() => Math.max(0, (form.interval_seconds || 0) - 15))
@@ -592,6 +596,10 @@ async function handleSubmit() {
   }
   if (!form.primary_model.trim()) {
     appStore.showError(t('admin.channelMonitor.primaryModelRequired'))
+    return
+  }
+  if (apiKeyRequired.value && !form.api_key.trim()) {
+    appStore.showError(t('admin.channelMonitor.form.apiKeyProviderChangeRequired'))
     return
   }
 

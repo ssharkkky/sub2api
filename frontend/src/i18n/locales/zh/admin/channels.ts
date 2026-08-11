@@ -538,6 +538,7 @@ export default {
         apiKey: 'API Key',
         apiKeyPlaceholder: '请输入 API Key',
         apiKeyEditPlaceholder: '留空表示不修改',
+        apiKeyProviderChangeRequired: '切换平台后必须重新选择或填写 API Key',
         useMyKey: '使用我的 Key',
         selectKeyTitle: '选择我的 API Key',
         selectKeyHint: '仅显示当前账号下处于「启用」状态且未过期的 Key。',

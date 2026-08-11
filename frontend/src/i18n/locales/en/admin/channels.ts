@@ -538,6 +538,7 @@ export default {
         apiKey: 'API Key',
         apiKeyPlaceholder: 'Enter API Key',
         apiKeyEditPlaceholder: 'Leave blank to keep current key',
+        apiKeyProviderChangeRequired: 'Select or enter an API key after changing platform.',
         useMyKey: 'Use my key',
         selectKeyTitle: 'Select my API Key',
         selectKeyHint: 'Only your active, non-expired keys are listed.',
