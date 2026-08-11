@@ -23,9 +23,13 @@ import (
 type asyncImagePrivateStorage struct {
 	data        map[string][]byte
 	contentType map[string]string
+	saveErr     error
 }
 
 func (s *asyncImagePrivateStorage) Save(_ context.Context, key, contentType string, data []byte) error {
+	if s.saveErr != nil {
+		return s.saveErr
+	}
 	s.data[key] = append([]byte(nil), data...)
 	s.contentType[key] = contentType
 	return nil
@@ -54,13 +58,19 @@ func (s *asyncImagePrivateStorage) Delete(_ context.Context, key string) error {
 }
 
 type asyncImageMemoryStore struct {
-	mu    sync.RWMutex
-	tasks map[string]*service.ImageTaskRecord
+	mu            sync.RWMutex
+	tasks         map[string]*service.ImageTaskRecord
+	saveCalls     int
+	failSaveAfter int
 }
 
 func (s *asyncImageMemoryStore) Save(_ context.Context, task *service.ImageTaskRecord, _ time.Duration) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	s.saveCalls++
+	if s.failSaveAfter > 0 && s.saveCalls > s.failSaveAfter {
+		return errors.New("injected task save failure")
+	}
 	copy := *task
 	copy.Result = append(json.RawMessage(nil), task.Result...)
 	copy.Error = append(json.RawMessage(nil), task.Error...)
@@ -285,6 +295,123 @@ func TestAsyncImageHandlerRecordsContentPolicyFailureAfterTaskState(t *testing.T
 	require.Equal(t, service.OpsFinalOutcomeSecurityBlocked, classification.FinalOutcome)
 	require.Equal(t, service.OpsResponsibilityClient, classification.Responsibility)
 	require.False(t, classification.CountsTowardSLA)
+}
+
+func TestAsyncImageHandlerRecordsObjectStorageCompletionFailure(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	store := &asyncImageMemoryStore{tasks: make(map[string]*service.ImageTaskRecord)}
+	privateStorage := &asyncImagePrivateStorage{
+		data: make(map[string][]byte), contentType: make(map[string]string),
+		saveErr: errors.New("object storage unavailable"),
+	}
+	tasks := service.NewImageTaskServiceWithUploader(store, service.NewImageResultUploader(privateStorage, "images/", 0, nil), time.Hour, time.Minute)
+	recorded := make(chan *service.OpsInsertErrorLogInput, 1)
+	h := &AsyncImageHandler{tasks: tasks, recordError: func(_ context.Context, entry *service.OpsInsertErrorLogInput) error {
+		recorded <- entry
+		return nil
+	}}
+	h.execute = func(_ string, c *gin.Context) {
+		png := []byte("\x89PNG\r\n\x1a\npayload")
+		c.JSON(http.StatusOK, gin.H{"data": []gin.H{{"b64_json": base64.StdEncoding.EncodeToString(png)}}})
+	}
+
+	router := asyncImageTestRouter(h, 701, 702, 703, service.PlatformOpenAI)
+	req := httptest.NewRequest(http.MethodPost, "/v1/images/generations/async", strings.NewReader(`{"model":"gpt-image-2","prompt":"test"}`))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	router.ServeHTTP(w, req)
+	require.Equal(t, http.StatusAccepted, w.Code)
+
+	var accepted struct {
+		TaskID string `json:"task_id"`
+	}
+	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &accepted))
+	var entry *service.OpsInsertErrorLogInput
+	select {
+	case entry = <-recorded:
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for object storage failure record")
+	}
+	require.Eventually(t, func() bool {
+		task, err := tasks.Get(context.Background(), service.ImageTaskOwner{UserID: 701, APIKeyID: 702}, accepted.TaskID)
+		return err == nil && task.Status == service.ImageTaskStatusFailed && task.HTTPStatus == http.StatusBadGateway
+	}, time.Second, 10*time.Millisecond)
+	require.Equal(t, "api_error", entry.ErrorType)
+	require.Contains(t, entry.ErrorMessage, "failed to store generated image")
+}
+
+func TestAsyncImageHandlerRecordsFinalTaskStatePersistenceFailure(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	store := &asyncImageMemoryStore{tasks: make(map[string]*service.ImageTaskRecord), failSaveAfter: 1}
+	privateStorage := &asyncImagePrivateStorage{data: make(map[string][]byte), contentType: make(map[string]string)}
+	tasks := service.NewImageTaskServiceWithUploader(store, service.NewImageResultUploader(privateStorage, "images/", 0, nil), time.Hour, time.Minute)
+	recorded := make(chan *service.OpsInsertErrorLogInput, 1)
+	h := &AsyncImageHandler{tasks: tasks, recordError: func(_ context.Context, entry *service.OpsInsertErrorLogInput) error {
+		recorded <- entry
+		return nil
+	}}
+	h.execute = func(_ string, c *gin.Context) {
+		png := []byte("\x89PNG\r\n\x1a\npayload")
+		c.JSON(http.StatusOK, gin.H{"data": []gin.H{{"b64_json": base64.StdEncoding.EncodeToString(png)}}})
+	}
+
+	router := asyncImageTestRouter(h, 711, 712, 713, service.PlatformOpenAI)
+	req := httptest.NewRequest(http.MethodPost, "/v1/images/generations/async", strings.NewReader(`{"model":"gpt-image-2","prompt":"test"}`))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	router.ServeHTTP(w, req)
+	require.Equal(t, http.StatusAccepted, w.Code)
+
+	select {
+	case entry := <-recorded:
+		require.Equal(t, http.StatusInternalServerError, entry.StatusCode)
+		require.Contains(t, entry.ErrorMessage, "failed to finalize generated image task")
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for final task state failure record")
+	}
+}
+
+func TestAsyncImageHandlerTreatsGrokSensitive403AsClientSecurityRejection(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/images/generations", nil)
+	setOpsSelectedAccount(c, 88, service.PlatformGrok)
+	c.Set(service.OpsUpstreamStatusCodeKey, http.StatusForbidden)
+
+	var recorded *service.OpsInsertErrorLogInput
+	h := &AsyncImageHandler{recordError: func(_ context.Context, entry *service.OpsInsertErrorLogInput) error {
+		recorded = entry
+		return nil
+	}}
+	err := h.recordAsyncImageFailure(c, service.ImageTaskMetadata{
+		Platform: service.PlatformGrok, Model: "grok-imagine-image",
+	}, http.StatusForbidden, imageTaskErrorPayload("invalid_request_error", "image is sensitive"))
+	require.NoError(t, err)
+	require.NotNil(t, recorded)
+	require.Equal(t, "content_policy_violation", recorded.ErrorType)
+	require.Equal(t, service.OpsResponsibilityClient, recorded.ErrorOwner)
+	require.Nil(t, recorded.UpstreamStatusCode)
+
+	classification := service.ClassifyOpsError(service.OpsErrorClassificationInput{
+		StatusCode: recorded.StatusCode, ErrorPhase: recorded.ErrorPhase, ErrorType: recorded.ErrorType,
+		ErrorSource: recorded.ErrorSource, ErrorOwner: recorded.ErrorOwner, ErrorMessage: recorded.ErrorMessage,
+	})
+	require.Equal(t, service.OpsFinalOutcomeSecurityBlocked, classification.FinalOutcome)
+	require.False(t, classification.CountsTowardSLA)
+}
+
+func asyncImageTestRouter(h *AsyncImageHandler, userID, apiKeyID, groupID int64, platform string) *gin.Engine {
+	router := gin.New()
+	router.Use(func(c *gin.Context) {
+		c.Set(string(middleware2.ContextKeyAPIKey), &service.APIKey{
+			ID: apiKeyID, UserID: userID, GroupID: &groupID,
+			Group: &service.Group{ID: groupID, Platform: platform, AllowImageGeneration: true},
+		})
+		c.Next()
+	})
+	router.POST("/v1/images/generations/async", h.Submit)
+	return router
 }
 
 func TestAsyncImageHandlerPreservesProviderFailureEvidence(t *testing.T) {

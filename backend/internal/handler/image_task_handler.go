@@ -308,6 +308,19 @@ func (h *AsyncImageHandler) run(taskID, platform string, metadata service.ImageT
 		}
 		if err := h.tasks.Complete(context.Background(), taskID, statusCode, json.RawMessage(body)); err != nil {
 			logger.L().Error("image_task.complete_store_failed", zap.String("task_id", taskID), zap.Error(err))
+			var completionFailure *service.ImageTaskCompletionFailure
+			if errors.As(err, &completionFailure) {
+				if completionFailure.Stored {
+					if recordErr := h.recordAsyncImageFailure(taskCtx, metadata, completionFailure.StatusCode, completionFailure.TaskError); recordErr != nil {
+						logger.L().Error("image_task.ops_error_store_failed", zap.String("task_id", taskID), zap.Error(recordErr))
+					}
+					return
+				}
+				h.failTask(taskCtx, taskID, metadata, completionFailure.StatusCode, completionFailure.TaskError)
+				return
+			}
+			h.failTask(taskCtx, taskID, metadata, http.StatusInternalServerError,
+				imageTaskErrorPayload("api_error", "failed to finalize generated image task"))
 		}
 		return
 	}
@@ -335,7 +348,8 @@ func (h *AsyncImageHandler) recordAsyncImageFailure(c *gin.Context, metadata ser
 	normalizedType := normalizeOpsErrorType(parsed.ErrorType, parsed.Code)
 	clientRejection := isAsyncImageClientRejection(statusCode, parsed)
 	if isAsyncImageSecurityRejection(parsed) {
-		if code := strings.ToLower(strings.TrimSpace(parsed.Code)); code != "" {
+		normalizedType = "content_policy_violation"
+		if code := strings.ToLower(strings.TrimSpace(parsed.Code)); code == "content_policy_violation" || code == "moderation_blocked" {
 			normalizedType = code
 		}
 	}
@@ -432,15 +446,22 @@ func isAsyncImageSecurityRejection(parsed parsedOpsError) bool {
 	value := strings.ToLower(strings.TrimSpace(parsed.ErrorType + " " + parsed.Code + " " + parsed.Message))
 	return strings.Contains(value, "content_policy_violation") ||
 		strings.Contains(value, "moderation_blocked") ||
-		strings.Contains(value, "content policy")
+		strings.Contains(value, "content policy") ||
+		strings.Contains(value, "content moderation") ||
+		strings.Contains(value, "image is sensitive") ||
+		strings.Contains(value, "text is sensitive") ||
+		strings.Contains(value, "moderation feature is not available") ||
+		strings.Contains(value, "prohibited content") ||
+		strings.Contains(value, "forbidden content")
 }
 
 func isAsyncImageClientRejection(statusCode int, parsed parsedOpsError) bool {
+	if isAsyncImageSecurityRejection(parsed) {
+		return statusCode == http.StatusBadRequest || statusCode == http.StatusForbidden ||
+			statusCode == http.StatusUnprocessableEntity
+	}
 	if statusCode != http.StatusBadRequest && statusCode != http.StatusUnprocessableEntity {
 		return false
-	}
-	if isAsyncImageSecurityRejection(parsed) {
-		return true
 	}
 	errType := strings.ToLower(strings.TrimSpace(parsed.ErrorType))
 	code := strings.ToLower(strings.TrimSpace(parsed.Code))
