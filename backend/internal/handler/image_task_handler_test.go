@@ -401,6 +401,64 @@ func TestAsyncImageHandlerTreatsGrokSensitive403AsClientSecurityRejection(t *tes
 	require.False(t, classification.CountsTowardSLA)
 }
 
+func TestAsyncImageHandlerUsesCanonicalGrokPolicyCodes(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	for _, code := range []string{"new_sensitive", "content_filter", "cyber_policy"} {
+		t.Run(code, func(t *testing.T) {
+			w := httptest.NewRecorder()
+			c, _ := gin.CreateTestContext(w)
+			c.Request = httptest.NewRequest(http.MethodPost, "/v1/images/generations", nil)
+			setOpsSelectedAccount(c, 88, service.PlatformGrok)
+			c.Set(service.OpsUpstreamStatusCodeKey, http.StatusForbidden)
+
+			var recorded *service.OpsInsertErrorLogInput
+			h := &AsyncImageHandler{recordError: func(_ context.Context, entry *service.OpsInsertErrorLogInput) error {
+				recorded = entry
+				return nil
+			}}
+			taskErr := json.RawMessage(`{"type":"invalid_request_error","code":"` + code + `","message":"blocked"}`)
+			err := h.recordAsyncImageFailure(c, service.ImageTaskMetadata{
+				Platform: service.PlatformGrok, Model: "grok-imagine-image",
+			}, http.StatusForbidden, taskErr)
+			require.NoError(t, err)
+			require.NotNil(t, recorded)
+			require.Equal(t, "content_policy_violation", recorded.ErrorType)
+			require.Equal(t, service.OpsResponsibilityClient, recorded.ErrorOwner)
+			require.Nil(t, recorded.UpstreamStatusCode)
+
+			classification := service.ClassifyOpsError(service.OpsErrorClassificationInput{
+				StatusCode: recorded.StatusCode, ErrorPhase: recorded.ErrorPhase, ErrorType: recorded.ErrorType,
+				ErrorSource: recorded.ErrorSource, ErrorOwner: recorded.ErrorOwner, ErrorMessage: recorded.ErrorMessage,
+			})
+			require.Equal(t, service.OpsFinalOutcomeSecurityBlocked, classification.FinalOutcome)
+			require.False(t, classification.CountsTowardSLA)
+		})
+	}
+}
+
+func TestAsyncImageHandlerClassifiesOpenAIContentFilterAsSecurity(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/images/generations", nil)
+
+	var recorded *service.OpsInsertErrorLogInput
+	h := &AsyncImageHandler{recordError: func(_ context.Context, entry *service.OpsInsertErrorLogInput) error {
+		recorded = entry
+		return nil
+	}}
+	taskErr := json.RawMessage(`{"type":"image_generation_user_error","code":"response_incomplete","message":"Upstream image generation incomplete: content_filter"}`)
+	err := h.recordAsyncImageFailure(c, service.ImageTaskMetadata{
+		Platform: service.PlatformOpenAI, Model: "gpt-image-2",
+	}, http.StatusBadRequest, taskErr)
+	require.NoError(t, err)
+	require.NotNil(t, recorded)
+	require.Equal(t, "content_policy_violation", recorded.ErrorType)
+	require.Equal(t, "request", recorded.ErrorPhase)
+	require.Equal(t, service.OpsResponsibilityClient, recorded.ErrorOwner)
+	require.Equal(t, "cyber", service.MapUserErrorCategory(recorded.ErrorPhase, recorded.ErrorType))
+}
+
 func asyncImageTestRouter(h *AsyncImageHandler, userID, apiKeyID, groupID int64, platform string) *gin.Engine {
 	router := gin.New()
 	router.Use(func(c *gin.Context) {

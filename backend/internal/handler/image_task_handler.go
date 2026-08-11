@@ -346,8 +346,9 @@ func (h *AsyncImageHandler) recordAsyncImageFailure(c *gin.Context, metadata ser
 	}{Error: taskErr})
 	parsed := parseOpsErrorResponse(errorBody)
 	normalizedType := normalizeOpsErrorType(parsed.ErrorType, parsed.Code)
-	clientRejection := isAsyncImageClientRejection(statusCode, parsed)
-	if isAsyncImageSecurityRejection(parsed) {
+	securityRejection := isAsyncImageSecurityRejection(metadata.Platform, statusCode, taskErr, parsed)
+	clientRejection := isAsyncImageClientRejection(statusCode, parsed, securityRejection)
+	if securityRejection {
 		normalizedType = "content_policy_violation"
 		if code := strings.ToLower(strings.TrimSpace(parsed.Code)); code == "content_policy_violation" || code == "moderation_blocked" {
 			normalizedType = code
@@ -442,10 +443,15 @@ func (h *AsyncImageHandler) recordAsyncImageFailure(c *gin.Context, metadata ser
 	return h.recordError(context.Background(), entry)
 }
 
-func isAsyncImageSecurityRejection(parsed parsedOpsError) bool {
+func isAsyncImageSecurityRejection(platform string, statusCode int, taskErr json.RawMessage, parsed parsedOpsError) bool {
+	if strings.EqualFold(strings.TrimSpace(platform), service.PlatformGrok) &&
+		service.IsGrokContentPolicyRejection(statusCode, taskErr) {
+		return true
+	}
 	value := strings.ToLower(strings.TrimSpace(parsed.ErrorType + " " + parsed.Code + " " + parsed.Message))
 	return strings.Contains(value, "content_policy_violation") ||
 		strings.Contains(value, "moderation_blocked") ||
+		strings.Contains(value, "content_filter") ||
 		strings.Contains(value, "content policy") ||
 		strings.Contains(value, "content moderation") ||
 		strings.Contains(value, "image is sensitive") ||
@@ -455,8 +461,8 @@ func isAsyncImageSecurityRejection(parsed parsedOpsError) bool {
 		strings.Contains(value, "forbidden content")
 }
 
-func isAsyncImageClientRejection(statusCode int, parsed parsedOpsError) bool {
-	if isAsyncImageSecurityRejection(parsed) {
+func isAsyncImageClientRejection(statusCode int, parsed parsedOpsError, securityRejection bool) bool {
+	if securityRejection {
 		return statusCode == http.StatusBadRequest || statusCode == http.StatusForbidden ||
 			statusCode == http.StatusUnprocessableEntity
 	}
