@@ -169,6 +169,17 @@ describe('Antigravity channel monitor route', () => {
     expect(wrapper.get('input[type="password"]').attributes('required')).toBeDefined()
     expect(wrapper.find('[data-testid="monitor-antigravity-route"]').exists()).toBe(false)
 
+    await wrapper.get('[data-testid="monitor-provider-anthropic"]').trigger('click')
+    expect(wrapper.get('input[type="password"]').attributes('required')).toBeDefined()
+    await wrapper.get('form').trigger('submit')
+    await flushPromises()
+
+    expect(updateMonitor).not.toHaveBeenCalled()
+    expect(showError).toHaveBeenCalledWith(
+      'admin.channelMonitor.form.apiKeyProviderChangeRequired',
+    )
+
+    await wrapper.get('[data-testid="monitor-provider-gemini"]').trigger('click')
     await wrapper.get('[data-testid="monitor-primary-model"]').setValue('gemini-3-flash')
     await wrapper.get('form').trigger('submit')
     await flushPromises()

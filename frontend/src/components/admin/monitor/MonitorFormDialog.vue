@@ -93,6 +93,9 @@
           </button>
         </div>
         <p v-if="editing && editing.api_key_masked" class="mt-1 text-xs text-gray-400">{{ editing.api_key_masked }}</p>
+        <p v-if="editing && providerChangedSinceLoad" class="mt-1 text-xs text-amber-600 dark:text-amber-400">
+          {{ t('admin.channelMonitor.form.apiKeyProviderChangeHint') }}
+        </p>
       </div>
 
       <div>
@@ -274,6 +277,7 @@ const myKeysLoading = ref(false)
 const myActiveKeys = ref<ApiKey[]>([])
 const userGroupRates = ref<Record<number, number>>({})
 const useAntigravityRoute = ref(false)
+const providerChangedSinceLoad = ref(false)
 
 interface MonitorForm {
   name: string
@@ -313,7 +317,7 @@ const form = reactive<MonitorForm>({
 })
 
 const apiKeyRequired = computed<boolean>(() =>
-  !editing.value || editing.value.provider !== form.provider,
+  !editing.value || providerChangedSinceLoad.value,
 )
 
 // jitter 上限与后端校验一致：interval - jitter 不得低于最小检测间隔 15 秒。
@@ -436,6 +440,7 @@ function selectProvider(provider: Provider) {
   const clearGrokModel =
     previousProvider === PROVIDER_GROK && form.primary_model === DEFAULT_GROK_MODEL
   form.provider = provider
+  if (editing.value) providerChangedSinceLoad.value = true
   // Provider changes clear the selected key, so route provenance must be cleared too.
   // Picking an Antigravity key for the new protocol will enable it again.
   useAntigravityRoute.value = false
@@ -476,6 +481,7 @@ function resetForm() {
   form.api_mode = API_MODE_CHAT_COMPLETIONS
   form.endpoint = ''
   useAntigravityRoute.value = false
+  providerChangedSinceLoad.value = false
   form.api_key = ''
   form.primary_model = ''
   form.extra_models = []
@@ -500,6 +506,7 @@ function loadFromMonitor(m: ChannelMonitor) {
   useAntigravityRoute.value =
     (m.provider === PROVIDER_GEMINI || m.provider === PROVIDER_ANTHROPIC) &&
     endpoint.useAntigravityRoute
+  providerChangedSinceLoad.value = false
   form.api_key = ''
   form.primary_model = m.primary_model
   form.extra_models = [...(m.extra_models || [])]
