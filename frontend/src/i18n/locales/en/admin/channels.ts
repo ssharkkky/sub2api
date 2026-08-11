@@ -533,6 +533,7 @@ export default {
         apiModeResponsesHint: 'Use /v1/responses with default instructions + input; best for self-check/Codex paths.',
         endpoint: 'Endpoint',
         endpointPlaceholder: 'https://api.example.com',
+        antigravityRouteHint: 'The dedicated route is applied automatically for the selected Antigravity group.',
         useCurrentDomain: 'Use current service',
         apiKey: 'API Key',
         apiKeyPlaceholder: 'Enter API Key',

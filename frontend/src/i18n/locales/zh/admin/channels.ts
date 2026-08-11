@@ -533,6 +533,7 @@ export default {
         apiModeResponsesHint: '使用 /v1/responses，默认带 instructions + input；适合本站自检/Codex。',
         endpoint: '上游地址',
         endpointPlaceholder: 'https://api.example.com',
+        antigravityRouteHint: '已根据所选 Antigravity 分组自动使用专用路由。',
         useCurrentDomain: '使用当前服务',
         apiKey: 'API Key',
         apiKeyPlaceholder: '请输入 API Key',
