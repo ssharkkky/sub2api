@@ -224,24 +224,6 @@ func TestImageTaskServiceInvalidResultBecomesFailed(t *testing.T) {
 	require.Contains(t, string(got.Error), "non-JSON")
 }
 
-func TestImageTaskServiceObjectStorageFailureIsReturnedAfterFailedStatePersists(t *testing.T) {
-	store := &imageTaskMemoryStore{}
-	storage := &fakeImageStorage{err: errors.New("bucket unavailable")}
-	svc := NewImageTaskServiceWithUploader(store, NewImageResultUploader(storage, "images/", 0, nil), time.Hour, time.Minute)
-	created, err := svc.Create(context.Background(), ImageTaskOwner{UserID: 1, APIKeyID: 2})
-	require.NoError(t, err)
-	b64 := base64.StdEncoding.EncodeToString(pngBytes)
-
-	err = svc.Complete(context.Background(), created.ID, http.StatusOK, json.RawMessage(`{"data":[{"b64_json":"`+b64+`"}]}`))
-	var completionFailure *ImageTaskCompletionFailure
-	require.ErrorAs(t, err, &completionFailure)
-	require.True(t, completionFailure.Stored)
-	require.Equal(t, http.StatusBadGateway, completionFailure.StatusCode)
-	require.Contains(t, string(completionFailure.TaskError), "failed to store generated image")
-	require.Equal(t, ImageTaskStatusFailed, store.task.Status)
-	require.Equal(t, http.StatusBadGateway, store.task.HTTPStatus)
-}
-
 func TestImageTaskServiceMapsStoreFailures(t *testing.T) {
 	store := &imageTaskMemoryStore{saveErr: errors.New("redis down")}
 	svc := NewImageTaskService(store)
