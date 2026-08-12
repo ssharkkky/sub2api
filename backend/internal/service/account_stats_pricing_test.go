@@ -668,8 +668,9 @@ func TestTryModelFilePricing_SeparatesImageInputAndOutput(t *testing.T) {
 		OutputTokens:      439,
 		ImageOutputTokens: 439,
 	}
-	result := tryModelFilePricing(bs, "claude-sonnet-4", tokens)
+	result := tryModelFilePricing(bs, "claude-sonnet-4", tokens, "")
 	require.NotNil(t, result)
+	// 19 text input * 5e-6 + 352 image input * 8e-6 + 439 image output * 30e-6.
 	require.InDelta(t, 0.016081, *result, 1e-12)
 }
 
@@ -693,6 +694,37 @@ func TestTryModelFilePricing_WithCacheTokens(t *testing.T) {
 	// 100*0.001 + 50*0.002 + 200*0.003 + 300*0.0005
 	// = 0.1 + 0.1 + 0.6 + 0.15 = 0.95
 	require.InDelta(t, 0.95, *result, 1e-12)
+}
+
+func TestTryModelFilePricing_WithImageInputAndCacheBreakdown(t *testing.T) {
+	bs := newTestBillingServiceWithPrices(map[string]*ModelPricing{
+		"claude-sonnet-4": {
+			InputPricePerToken:       5e-6,
+			ImageInputPricePerToken:  8e-6,
+			OutputPricePerToken:      10e-6,
+			CacheCreation5mPrice:     15e-6,
+			CacheCreation1hPrice:     20e-6,
+			SupportsCacheBreakdown:   true,
+			CacheReadPricePerToken:   2e-6,
+			ImageOutputPricePerToken: 0,
+		},
+	})
+	tokens := UsageTokens{
+		InputTokens:           100,
+		ImageInputTokens:      60,
+		OutputTokens:          20,
+		ImageOutputTokens:     10,
+		CacheCreationTokens:   30,
+		CacheCreation5mTokens: 10,
+		CacheCreation1hTokens: 20,
+		CacheReadTokens:       40,
+	}
+	result := tryModelFilePricing(bs, "claude-sonnet-4", tokens, "")
+	require.NotNil(t, result)
+	// 40 text input * 5e-6 + 60 image input * 8e-6 +
+	// 10 text output * 10e-6 + 10 image output fallback * 10e-6 +
+	// 10 cache-5m * 15e-6 + 20 cache-1h * 20e-6 + 40 cache-read * 2e-6.
+	require.InDelta(t, 0.00151, *result, 1e-12)
 }
 
 // ---------------------------------------------------------------------------
