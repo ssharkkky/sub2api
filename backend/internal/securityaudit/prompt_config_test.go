@@ -464,6 +464,34 @@ func TestParseLegacyConfigDefaultsMissingFieldsWithoutEnablingBlocking(t *testin
 	require.True(t, storage.AllGroups)
 }
 
+func TestUnusedAIBlockingSwitchDoesNotFailClosedInKeywordOnlyMode(t *testing.T) {
+	const raw = `{"enabled":true,"blocking_enabled":true,"keyword_blocking_enabled":false,"keyword_blocking_mode":"keyword_only","config_version":8}`
+
+	observer := &ConfigManager{}
+	observer.observeExpectedState(raw, true)
+	require.False(t, observer.expectedBlocking.Load())
+	require.False(t, observer.BlockingActivationDegraded())
+	require.Equal(t, ModeOff, observer.EffectiveMode())
+
+	manager := NewConfigManager(nil, staticSettingRepository{values: map[string]string{
+		SettingKeyPromptAuditConfig: raw,
+		SettingKeyRiskControl:       "true",
+	}}, nil, prefixEncryptor{}, testTotpKeyConfig())
+	require.NoError(t, manager.Reload(context.Background()))
+	require.False(t, manager.expectedBlocking.Load())
+	require.False(t, manager.BlockingActivationDegraded())
+	require.Equal(t, ModeAsync, manager.EffectiveMode())
+
+	service := &PromptService{config: manager, evaluator: NewGuardEvaluator(nil, nil, nil)}
+	decision, err := service.Evaluate(context.Background(), Request{
+		Protocol: "openai_chat_completions",
+		Body:     []byte(`{"messages":[{"role":"user","content":"hi"}]}`),
+	})
+	require.NoError(t, err)
+	require.NotNil(t, decision)
+	require.Equal(t, DecisionAllow, decision.Kind)
+}
+
 func TestParsePromptAuditBlockingFlagsPreservesLegacyAndPartialPayloads(t *testing.T) {
 	legacy, err := ParseStorageConfig(`{"enabled":true,"blocking_enabled":true,"keyword_blocking_mode":"keyword_only"}`)
 	require.NoError(t, err)

@@ -533,6 +533,18 @@ func (cfg ActiveConfig) hasSynchronousBlocking() bool {
 		(cfg.keywordModeUsesAI() && cfg.effectiveAIBlockingEnabled())
 }
 
+// configIntentHasSynchronousBlocking is the single fail-closed / save / reload
+// predicate. A switch that the current keyword mode cannot use must not count
+// as "we intended to block".
+func configIntentHasSynchronousBlocking(keywordMode string, keywordEnabled, aiEnabled bool) bool {
+	return ActiveConfig{
+		KeywordBlockingEnabled:  keywordEnabled,
+		AIBlockingEnabled:       aiEnabled,
+		KeywordBlockingMode:     normalizePromptKeywordBlockingMode(keywordMode),
+		blockingFlagsConfigured: true,
+	}.HasSynchronousBlocking()
+}
+
 // shouldRunAsyncAudit reports whether at least one selected audit mechanism
 // must run after the request has been admitted. It is intentionally separate
 // from EffectiveMode so a keyword sync block can coexist with async AI audit.

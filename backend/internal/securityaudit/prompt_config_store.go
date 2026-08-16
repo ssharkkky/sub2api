@@ -126,7 +126,7 @@ func (m *ConfigManager) Reload(ctx context.Context) error {
 	}
 	m.expected.Store(storage.ConfigVersion)
 	m.expectedBlocking.Store(values[SettingKeyRiskControl] == "true" && storage.Enabled &&
-		(storage.KeywordBlockingEnabled || storage.AIBlockingEnabled))
+		configIntentHasSynchronousBlocking(storage.KeywordBlockingMode, storage.KeywordBlockingEnabled, storage.AIBlockingEnabled))
 	active, err := ActiveFromStorage(storage, values[SettingKeyRiskControl] == "true", m.encryptor)
 	if err != nil {
 		m.recordLoadError(err)
@@ -424,11 +424,12 @@ func (m *ConfigManager) observeExpectedState(raw string, riskControlEnabled bool
 		return
 	}
 	var intent struct {
-		Enabled                bool  `json:"enabled"`
-		BlockingEnabled        bool  `json:"blocking_enabled"`
-		KeywordBlockingEnabled *bool `json:"keyword_blocking_enabled"`
-		AIBlockingEnabled      *bool `json:"ai_blocking_enabled"`
-		ConfigVersion          int64 `json:"config_version"`
+		Enabled                bool   `json:"enabled"`
+		BlockingEnabled        bool   `json:"blocking_enabled"`
+		KeywordBlockingEnabled *bool  `json:"keyword_blocking_enabled"`
+		AIBlockingEnabled      *bool  `json:"ai_blocking_enabled"`
+		KeywordBlockingMode    string `json:"keyword_blocking_mode"`
+		ConfigVersion          int64  `json:"config_version"`
 	}
 	if err := json.Unmarshal([]byte(raw), &intent); err != nil {
 		return
@@ -444,7 +445,8 @@ func (m *ConfigManager) observeExpectedState(raw string, riskControlEnabled bool
 	if intent.AIBlockingEnabled != nil {
 		aiBlocking = *intent.AIBlockingEnabled
 	}
-	m.expectedBlocking.Store(riskControlEnabled && intent.Enabled && (keywordBlocking || aiBlocking))
+	m.expectedBlocking.Store(riskControlEnabled && intent.Enabled &&
+		configIntentHasSynchronousBlocking(intent.KeywordBlockingMode, keywordBlocking, aiBlocking))
 }
 
 func (m *ConfigManager) refreshLoop(ctx context.Context) {
