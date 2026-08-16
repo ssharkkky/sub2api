@@ -122,7 +122,7 @@ func (s *PromptService) enqueueAsyncAudit(req Request, allowMixedMode bool) erro
 		return nil
 	}
 	mode := s.EffectiveMode()
-	if mode != ModeAsync && !(allowMixedMode && mode == ModeBlocking) {
+	if mode != ModeAsync && (!allowMixedMode || mode != ModeBlocking) {
 		return nil
 	}
 	select {
