@@ -82,6 +82,49 @@ func TestPublicConfigNeverMarshalsToken(t *testing.T) {
 	require.True(t, public.Endpoints[0].HasToken)
 }
 
+func TestConfigAcceptsOpenAIModerationEndpointAndDefaultsItsModel(t *testing.T) {
+	storage := DefaultStorageConfig()
+	storage.Endpoints = []StorageEndpoint{{
+		ID: "moderation", Name: "Moderation", Protocol: ProtocolOpenAIModeration,
+		BaseURL: "http://127.0.0.1:8080", TimeoutMS: 1000, InputLimit: 1000, Enabled: true,
+	}}
+	normalizeStorageConfig(&storage)
+	require.Equal(t, DefaultModerationModel, storage.Endpoints[0].Model)
+	require.NoError(t, validateStorageConfig(storage))
+}
+
+func TestConfigAcceptsNemotronEndpointAndDefaultsItsModel(t *testing.T) {
+	storage := DefaultStorageConfig()
+	storage.Endpoints = []StorageEndpoint{{
+		ID: "nemotron", Name: "Nemotron", Protocol: ProtocolNemotronSafety,
+		BaseURL: "https://guard.example.com/api", TimeoutMS: 1000, InputLimit: 1000, Enabled: true,
+	}}
+	normalizeStorageConfig(&storage)
+	require.Equal(t, DefaultNemotronModel, storage.Endpoints[0].Model)
+	require.NoError(t, validateStorageConfig(storage))
+}
+
+func TestConfigUsesOpenRouterNemotronModelForOpenRouterEndpoint(t *testing.T) {
+	storage := DefaultStorageConfig()
+	storage.Endpoints = []StorageEndpoint{{
+		ID: "nemotron", Name: "Nemotron", Protocol: ProtocolNemotronSafety,
+		BaseURL: "https://openrouter.ai/api", Model: DefaultNemotronModel,
+		TimeoutMS: 1000, InputLimit: 1000, Enabled: true,
+	}}
+	normalizeStorageConfig(&storage)
+	require.Equal(t, OpenRouterNemotronModel, storage.Endpoints[0].Model)
+	require.NoError(t, validateStorageConfig(storage))
+}
+
+func TestConfigRejectsUnknownPromptAuditProtocol(t *testing.T) {
+	storage := DefaultStorageConfig()
+	storage.Endpoints = []StorageEndpoint{{
+		ID: "unknown", Name: "Unknown", Protocol: "not-supported",
+		BaseURL: "http://127.0.0.1:8080", Model: "model", TimeoutMS: 1000, InputLimit: 1000, Enabled: true,
+	}}
+	require.Error(t, validateStorageConfig(storage))
+}
+
 func TestConfigRuntimeLoadErrorIsStableBoundedAndSecretFree(t *testing.T) {
 	const canary = "CONFIG_LOAD_CANARY_SECRET"
 	manager := &ConfigManager{clock: fixedClock{}}
@@ -412,11 +455,57 @@ func TestParseLegacyConfigDefaultsMissingFieldsWithoutEnablingBlocking(t *testin
 	storage, err := ParseStorageConfig(`{"enabled":false,"config_version":9}`)
 	require.NoError(t, err)
 	require.False(t, storage.BlockingEnabled)
+	require.Equal(t, PromptKeywordModeAIOnly, storage.KeywordBlockingMode)
+	require.Empty(t, storage.BlockedKeywords)
 	require.Equal(t, "priority", storage.Strategy)
 	require.Equal(t, DefaultWorkerCount, storage.WorkerCount)
 	require.Equal(t, DefaultQueueCapacity, storage.QueueCapacity)
 	require.Equal(t, AllScannerIDs, storage.Scanners)
 	require.True(t, storage.AllGroups)
+}
+
+func TestParsePromptAuditBlockingFlagsPreservesLegacyAndPartialPayloads(t *testing.T) {
+	legacy, err := ParseStorageConfig(`{"enabled":true,"blocking_enabled":true,"keyword_blocking_mode":"keyword_only"}`)
+	require.NoError(t, err)
+	require.True(t, legacy.KeywordBlockingEnabled)
+	require.True(t, legacy.AIBlockingEnabled)
+
+	partial, err := ParseStorageConfig(`{"enabled":true,"blocking_enabled":true,"keyword_blocking_enabled":false,"keyword_blocking_mode":"keyword_only"}`)
+	require.NoError(t, err)
+	require.False(t, partial.KeywordBlockingEnabled)
+	require.True(t, partial.AIBlockingEnabled)
+
+	explicitOff, err := ParseStorageConfig(`{"enabled":true,"blocking_enabled":true,"keyword_blocking_enabled":false,"ai_blocking_enabled":false,"keyword_blocking_mode":"keyword_only"}`)
+	require.NoError(t, err)
+	require.False(t, explicitOff.KeywordBlockingEnabled)
+	require.False(t, explicitOff.AIBlockingEnabled)
+}
+
+func TestPromptKeywordOnlyConfigAllowsEmptyAIConfiguration(t *testing.T) {
+	storage, err := ParseStorageConfig(`{"enabled":true,"keyword_blocking_mode":"keyword_only","blocked_keywords":[" Secret ","secret"],"scanners":[],"endpoints":[]}`)
+	require.NoError(t, err)
+	require.Equal(t, PromptKeywordModeKeywordOnly, storage.KeywordBlockingMode)
+	require.Equal(t, []string{"Secret"}, storage.BlockedKeywords)
+	require.Empty(t, storage.Scanners)
+	require.Empty(t, storage.Endpoints)
+
+	active, err := ActiveFromStorage(storage, true, prefixEncryptor{})
+	require.NoError(t, err)
+	require.Empty(t, active.EnabledEndpoints())
+
+	withAI, err := ParseStorageConfig(`{"enabled":true,"keyword_blocking_mode":"keyword_and_ai","scanners":[],"endpoints":[]}`)
+	require.Error(t, err)
+	require.Empty(t, withAI)
+}
+
+func TestPromptKeywordModeValidationAndLegacyFallback(t *testing.T) {
+	legacy := promptAuditUpdateRequest(1, 1, "")
+	legacy.KeywordBlockingMode = ""
+	require.NoError(t, validateUpdateConfigRequest(legacy))
+
+	invalid := legacy
+	invalid.KeywordBlockingMode = "unsupported"
+	require.Equal(t, "prompt_audit_invalid_keyword_mode", infraerrors.Reason(validateUpdateConfigRequest(invalid)))
 }
 
 func TestUpdateConfigStrictBoundsAndKnownValues(t *testing.T) {
