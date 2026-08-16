@@ -301,11 +301,11 @@ func TestErrorRateTTFTAndCacheScoreHelpers(t *testing.T) {
 	require.Equal(t, "healthy", cacheRateBand(0.50, 0.20, 0.05))
 }
 
-type channelMonitorRuntimeStub struct {
+type channelMonitorV2RuntimeStub struct {
 	rt ChannelMonitorRuntime
 }
 
-func (s channelMonitorRuntimeStub) GetChannelMonitorRuntime(context.Context) ChannelMonitorRuntime {
+func (s channelMonitorV2RuntimeStub) GetChannelMonitorRuntime(context.Context) ChannelMonitorRuntime {
 	return s.rt
 }
 
@@ -316,7 +316,7 @@ func TestChannelMonitorV2UsersHiddenWhenSettingEnabled(t *testing.T) {
 		{UserID: &selfID, Email: "self@example.com", Username: "self"},
 	}}}
 	svc := NewChannelMonitorV2Service(repo)
-	svc.SetRuntimeReader(channelMonitorRuntimeStub{rt: ChannelMonitorRuntime{HideUserRanking: true}})
+	svc.SetRuntimeReader(channelMonitorV2RuntimeStub{rt: ChannelMonitorRuntime{HideUserRanking: true}})
 
 	hidden, err := svc.Users(context.Background(), ChannelMonitorV2Filter{}, selfID, false)
 	require.NoError(t, err)

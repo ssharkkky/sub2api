@@ -201,7 +201,7 @@ func (s *SettingService) InitializeDefaultSettings(ctx context.Context) error {
 		SettingKeyChannelMonitorMode:                   ChannelMonitorModeV1,
 		SettingKeyChannelMonitorDefaultIntervalSeconds: "60",
 		SettingKeyChannelMonitorHideThroughput:         "true",
-		SettingKeyChannelMonitorHideUserRanking:       "false",
+		SettingKeyChannelMonitorHideUserRanking:        "false",
 
 		// Grok compatibility defaults: cross-client mapping stays enabled unless
 		// operators explicitly disable it.
