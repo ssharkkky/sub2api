@@ -213,7 +213,10 @@
           "id": "gemini-3-1-pro"
         },
         {
-          "id": "gemini-3.1-pro-low"
+          "id": "gemini-3.1-pro-low",
+          "platforms": [
+            "antigravity"
+          ]
         },
         {
           "id": "gemini-3.1-pro-preview"
@@ -232,7 +235,10 @@
       "aliases": [
         {
           "id": "gemini-3.1-pro-high",
-          "upstream": "gemini-pro-agent"
+          "upstream": "gemini-pro-agent",
+          "platforms": [
+            "antigravity"
+          ]
         }
       ]
     },
@@ -256,16 +262,28 @@
           "id": "gemini-3-6-flash"
         },
         {
-          "id": "gemini-3.6-flash-high"
+          "id": "gemini-3.6-flash-high",
+          "platforms": [
+            "antigravity"
+          ]
         },
         {
-          "id": "gemini-3.6-flash-low"
+          "id": "gemini-3.6-flash-low",
+          "platforms": [
+            "antigravity"
+          ]
         },
         {
-          "id": "gemini-3.6-flash-medium"
+          "id": "gemini-3.6-flash-medium",
+          "platforms": [
+            "antigravity"
+          ]
         },
         {
-          "id": "gemini-3.6-flash-tiered"
+          "id": "gemini-3.6-flash-tiered",
+          "platforms": [
+            "antigravity"
+          ]
         }
       ]
     },
@@ -289,16 +307,28 @@
           "id": "gemini-3-7-flash"
         },
         {
-          "id": "gemini-3.7-flash-high"
+          "id": "gemini-3.7-flash-high",
+          "platforms": [
+            "antigravity"
+          ]
         },
         {
-          "id": "gemini-3.7-flash-low"
+          "id": "gemini-3.7-flash-low",
+          "platforms": [
+            "antigravity"
+          ]
         },
         {
-          "id": "gemini-3.7-flash-medium"
+          "id": "gemini-3.7-flash-medium",
+          "platforms": [
+            "antigravity"
+          ]
         },
         {
-          "id": "gemini-3.7-flash-tiered"
+          "id": "gemini-3.7-flash-tiered",
+          "platforms": [
+            "antigravity"
+          ]
         }
       ]
     },

@@ -1100,6 +1100,18 @@ func (h *GatewayHandler) Models(c *gin.Context) {
 	}
 
 	// Get available models from account configurations for the selected group platform.
+	// A bound channel with RestrictModels owns the user-facing shelf: even an
+	// empty list must not fall through to account mappings or platform defaults.
+	if storefront, ok := h.channelStorefrontModels(c.Request.Context(), groupID, platform); ok {
+		if apiKey != nil && apiKey.Group != nil && apiKey.Group.CustomModelsListEnabled() {
+			storefront = filterModelsByCustomList(storefront, storefront, apiKey.Group.ModelsListConfig.Models)
+			writeCustomModelsList(c, platform, storefront)
+			return
+		}
+		writeModelsList(c, platform, storefront)
+		return
+	}
+
 	availableModels := h.gatewayService.GetAvailableModels(c.Request.Context(), groupID, platform)
 	if apiKey != nil && apiKey.Group != nil && apiKey.Group.CustomModelsListEnabled() {
 		fallbackModels := defaultModelIDsForPlatform(platform)
@@ -1140,6 +1152,13 @@ func (h *GatewayHandler) Models(c *gin.Context) {
 	})
 }
 
+func (h *GatewayHandler) channelStorefrontModels(ctx context.Context, groupID *int64, platform string) ([]string, bool) {
+	if h == nil || h.gatewayService == nil {
+		return nil, false
+	}
+	return h.gatewayService.ListChannelStorefrontModels(ctx, groupID, platform)
+}
+
 func (h *GatewayHandler) compositeAvailableModels(ctx context.Context, groupID *int64) []string {
 	if h == nil || h.gatewayService == nil {
 		return nil
@@ -1148,10 +1167,13 @@ func (h *GatewayHandler) compositeAvailableModels(ctx context.Context, groupID *
 	models := make([]string, 0)
 	schedulablePlatforms := h.gatewayService.GetSchedulablePlatforms(ctx, groupID)
 	for _, platform := range []string{service.PlatformAnthropic, service.PlatformGemini, service.PlatformOpenAI, service.PlatformAntigravity, service.PlatformGrok} {
-		platformModels := h.gatewayService.GetAvailableModels(ctx, groupID, platform)
-		if len(platformModels) == 0 {
-			if _, ok := schedulablePlatforms[platform]; ok {
-				platformModels = defaultModelIDsForPlatform(platform)
+		platformModels, storefront := h.channelStorefrontModels(ctx, groupID, platform)
+		if !storefront {
+			platformModels = h.gatewayService.GetAvailableModels(ctx, groupID, platform)
+			if len(platformModels) == 0 {
+				if _, ok := schedulablePlatforms[platform]; ok {
+					platformModels = defaultModelIDsForPlatform(platform)
+				}
 			}
 		}
 		for _, model := range platformModels {

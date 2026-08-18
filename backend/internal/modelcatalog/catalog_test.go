@@ -81,3 +81,19 @@ func TestCatalogDoesNotAliasDistinctSoldModels(t *testing.T) {
 		require.Empty(t, PriceCardID(model), model)
 	}
 }
+
+func TestStorefrontItemsScopesThinkingTiersToAntigravity(t *testing.T) {
+	gemini := map[string]struct{}{}
+	for _, item := range StorefrontItems("gemini") {
+		gemini[item.ID] = struct{}{}
+	}
+	antigravity := map[string]struct{}{}
+	for _, item := range StorefrontItems("antigravity") {
+		antigravity[item.ID] = struct{}{}
+	}
+
+	require.Contains(t, gemini, "gemini-3.7-flash")
+	require.NotContains(t, gemini, "gemini-3.7-flash-high")
+	require.Contains(t, antigravity, "gemini-3.7-flash")
+	require.Contains(t, antigravity, "gemini-3.7-flash-high")
+}

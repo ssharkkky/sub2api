@@ -636,3 +636,23 @@ func (h *ChannelHandler) SyncPricingModels(c *gin.Context) {
 	models := h.pricingService.ListModelNamesByProvider(provider)
 	response.Success(c, gin.H{"models": models})
 }
+
+// ListCatalogModels 返回本 fork 目录里指定平台可勾选的模型及底稿价。
+// GET /api/v1/admin/channels/catalog-models?platform=antigravity
+func (h *ChannelHandler) ListCatalogModels(c *gin.Context) {
+	platform := strings.ToLower(strings.TrimSpace(c.Query("platform")))
+	if platform == "" {
+		response.ErrorFrom(c, infraerrors.BadRequest("MISSING_PARAMETER", "platform parameter is required").
+			WithMetadata(map[string]string{"param": "platform"}))
+		return
+	}
+	switch platform {
+	case service.PlatformAnthropic, service.PlatformOpenAI, service.PlatformGemini, service.PlatformAntigravity, service.PlatformGrok:
+	default:
+		response.ErrorFrom(c, infraerrors.BadRequest("UNSUPPORTED_PLATFORM",
+			fmt.Sprintf("unsupported platform: %s", platform)).
+			WithMetadata(map[string]string{"param": "platform"}))
+		return
+	}
+	response.Success(c, gin.H{"models": service.ListCatalogStorefrontModels(platform)})
+}

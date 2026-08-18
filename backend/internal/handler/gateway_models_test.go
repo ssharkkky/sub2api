@@ -703,3 +703,60 @@ func modelIDsForTest(models []gatewayModelItemForTest) []string {
 	}
 	return ids
 }
+
+func TestGatewayModels_RestrictedChannelDoesNotFallBackToDefaults(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	groupID := int64(77)
+	channelSvc := service.NewChannelService(&gatewayModelsChannelRepoStub{
+		channels: []service.Channel{{
+			ID:             1,
+			Status:         service.StatusActive,
+			GroupIDs:       []int64{groupID},
+			RestrictModels: true,
+			ModelPricing: []service.ChannelModelPricing{
+				{Platform: service.PlatformAntigravity, Models: []string{"gemini-3.7-flash"}},
+			},
+		}},
+		platforms: map[int64]string{groupID: service.PlatformAntigravity},
+	}, nil, nil, nil)
+
+	h := &GatewayHandler{
+		gatewayService: service.NewGatewayService(
+			&gatewayModelsAccountRepoStub{byGroup: map[int64][]service.Account{
+				groupID: {{ID: 1, Platform: service.PlatformAntigravity}},
+			}},
+			nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil,
+			nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil,
+			channelSvc, nil, nil, nil, nil,
+		),
+	}
+
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	c.Request = httptest.NewRequest(http.MethodGet, "/v1/models", nil)
+	c.Set(string(middleware2.ContextKeyAPIKey), &service.APIKey{
+		Group: &service.Group{ID: groupID, Platform: service.PlatformAntigravity},
+	})
+
+	h.Models(c)
+	require.Equal(t, http.StatusOK, rec.Code)
+
+	var got gatewayModelsResponseForTest
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &got))
+	require.Equal(t, []string{"gemini-3.7-flash"}, modelIDsForTest(got.Data))
+}
+
+type gatewayModelsChannelRepoStub struct {
+	service.ChannelRepository
+	channels  []service.Channel
+	platforms map[int64]string
+}
+
+func (s *gatewayModelsChannelRepoStub) ListAll(context.Context) ([]service.Channel, error) {
+	return s.channels, nil
+}
+
+func (s *gatewayModelsChannelRepoStub) GetGroupPlatforms(_ context.Context, _ []int64) (map[int64]string, error) {
+	return s.platforms, nil
+}

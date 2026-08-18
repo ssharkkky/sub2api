@@ -3,6 +3,7 @@ package modelcatalog
 import (
 	"encoding/json"
 	"fmt"
+	"sort"
 	"strings"
 	"sync"
 
@@ -261,6 +262,61 @@ func (idx *Catalog) SharedRateCardID(modelID string) string {
 // IsCanonical reports whether this entry is the primary catalog row.
 func (e *Entry) IsCanonical() bool {
 	return e != nil && e.ID == e.CanonicalID
+}
+
+// StorefrontItem is one checkbox on the channel shelf.
+type StorefrontItem struct {
+	ID          string
+	DisplayName string
+	Platforms   []string
+	CanonicalID string
+	Price       *Price
+}
+
+// StorefrontItems returns public catalog IDs that can be sold on a platform.
+func StorefrontItems(platform string) []StorefrontItem {
+	return Default().StorefrontItems(platform)
+}
+
+// StorefrontItems returns public catalog IDs that can be sold on a platform.
+func (idx *Catalog) StorefrontItems(platform string) []StorefrontItem {
+	if idx == nil {
+		return nil
+	}
+	platform = strings.ToLower(strings.TrimSpace(platform))
+	out := make([]StorefrontItem, 0)
+	for _, entry := range idx.entries {
+		if entry == nil || entry.Price == nil {
+			continue
+		}
+		if platform != "" && !entryHasPlatform(entry, platform) {
+			continue
+		}
+		out = append(out, StorefrontItem{
+			ID:          entry.ID,
+			DisplayName: firstNonEmpty(entry.DisplayName, entry.ID),
+			Platforms:   append([]string(nil), entry.Platforms...),
+			CanonicalID: entry.CanonicalID,
+			Price:       entry.Price,
+		})
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].ID < out[j].ID })
+	return out
+}
+
+func entryHasPlatform(entry *Entry, platform string) bool {
+	if entry == nil {
+		return false
+	}
+	if len(entry.Platforms) == 0 {
+		return platform == ""
+	}
+	for _, item := range entry.Platforms {
+		if item == platform {
+			return true
+		}
+	}
+	return false
 }
 
 // Locked reports whether this model uses a human-owned price card.

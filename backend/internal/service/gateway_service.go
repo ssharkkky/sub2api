@@ -1342,7 +1342,18 @@ func (s *GatewayService) DoGrokNativeResponsesJSON(ctx context.Context, account 
 	return respBytes, nil
 }
 
+func (s *GatewayService) ListChannelStorefrontModels(ctx context.Context, groupID *int64, platform string) ([]string, bool) {
+	if s == nil || s.channelService == nil || groupID == nil {
+		return nil, false
+	}
+	return s.channelService.ListStorefrontModels(ctx, *groupID, platform)
+}
+
 func (s *GatewayService) GetAvailableModels(ctx context.Context, groupID *int64, platform string) []string {
+	if models, ok := s.ListChannelStorefrontModels(ctx, groupID, platform); ok {
+		return models
+	}
+
 	cacheKey := modelsListCacheKey(groupID, platform)
 	if s.modelsListCache != nil {
 		if cached, found := s.modelsListCache.Get(cacheKey); found {
