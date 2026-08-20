@@ -36,7 +36,7 @@ type createChannelRequest struct {
 	ModelPricing               []channelModelPricingRequest      `json:"model_pricing"`
 	ModelMapping               map[string]map[string]string      `json:"model_mapping"`
 	BillingModelSource         string                            `json:"billing_model_source" binding:"omitempty,oneof=requested upstream channel_mapped response_model"`
-	RestrictModels             bool                              `json:"restrict_models"`
+	RestrictModels             *bool                             `json:"restrict_models"`
 	Features                   string                            `json:"features"`
 	FeaturesConfig             map[string]any                    `json:"features_config"`
 	ServiceTierConfig          *service.ChannelServiceTierConfig `json:"service_tier_config"`
@@ -448,7 +448,7 @@ func (h *ChannelHandler) Create(c *gin.Context) {
 		ModelPricing:               pricing,
 		ModelMapping:               req.ModelMapping,
 		BillingModelSource:         req.BillingModelSource,
-		RestrictModels:             req.RestrictModels,
+		RestrictModels:             createChannelRestrictModels(req.RestrictModels),
 		Features:                   req.Features,
 		FeaturesConfig:             req.FeaturesConfig,
 		ServiceTierConfig:          req.ServiceTierConfig,
@@ -480,6 +480,13 @@ func channelServiceTierAuditExtra(before, after service.ChannelServiceTierConfig
 		"service_tier_outbound_billing_before":    before.UseOutboundTierForBilling,
 		"service_tier_outbound_billing_after":     after.UseOutboundTierForBilling,
 	}
+}
+
+func createChannelRestrictModels(value *bool) bool {
+	if value == nil {
+		return true
+	}
+	return *value
 }
 
 // Update handles updating a channel

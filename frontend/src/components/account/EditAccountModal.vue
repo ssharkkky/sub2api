@@ -4399,7 +4399,7 @@ const handleClose = () => {
 
 const currentModelMappingRestricts = () => {
   if (props.account?.platform === 'antigravity') {
-    return false
+    return readModelMappingRestricts(props.account.credentials as Record<string, unknown> | undefined) ?? false
   }
   if (openaiPassthroughEnabled.value) {
     return false

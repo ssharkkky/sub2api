@@ -250,7 +250,7 @@ func TestGatewayModels_CustomModelsListDisabledUsesPlatformDefaults(t *testing.T
 	require.Greater(t, len(ids), 2)
 }
 
-func TestGatewayModels_CustomModelsListFiltersAndOrdersMappedModels(t *testing.T) {
+func TestGatewayModels_CustomModelsListDoesNotReplacePublicModels(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 
 	groupID := int64(23)
@@ -300,7 +300,7 @@ func TestGatewayModels_CustomModelsListFiltersAndOrdersMappedModels(t *testing.T
 	require.Greater(t, len(ids), 2)
 }
 
-func TestGatewayModels_CompositeCustomModelsListFiltersAcrossConcretePlatforms(t *testing.T) {
+func TestGatewayModels_CompositeCustomModelsListDoesNotReplacePublicModels(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 
 	groupID := int64(33)
@@ -404,7 +404,7 @@ func TestGatewayModels_CompositeUnmappedAccountsFallbackToLinkedPlatformsOnly(t 
 	require.NotContains(t, ids, "gemini-2.5-flash")
 }
 
-func TestGatewayModels_CustomModelsListKeepsConcreteModelAllowedByWildcardMapping(t *testing.T) {
+func TestGatewayModels_CustomModelsListDoesNotOverrideWildcardFallback(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 
 	groupID := int64(26)
@@ -603,7 +603,7 @@ func TestGatewayModels_AnthropicCustomModelsListIncludesOAuthClaudeWithoutMappin
 	require.Greater(t, len(ids), 2)
 }
 
-func TestGatewayModels_CustomModelsListCanReturnEmptyWhenSelectionsUnavailable(t *testing.T) {
+func TestGatewayModels_CustomModelsListUnavailableSelectionsStillReturnPublicModels(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 
 	groupID := int64(24)
@@ -647,10 +647,11 @@ func TestGatewayModels_CustomModelsListCanReturnEmptyWhenSelectionsUnavailable(t
 	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &got))
 	ids := modelIDsForTest(got.Data)
 	require.Contains(t, ids, "gpt-5.4")
-	require.NotEmpty(t, ids)
+	require.NotContains(t, ids, "not-a-real-openai-model")
+	require.Greater(t, len(ids), 1)
 }
 
-func TestGatewayModels_CustomModelsListFiltersDefaultFallbackModels(t *testing.T) {
+func TestGatewayModels_CustomModelsListDoesNotFilterDefaultFallbackModels(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 
 	groupID := int64(25)
@@ -690,7 +691,7 @@ func TestGatewayModels_CustomModelsListFiltersDefaultFallbackModels(t *testing.T
 	require.Greater(t, len(ids), 2)
 }
 
-func TestGatewayModels_OpenAICustomModelsListKeepsOpenAIResponseShapeForDefaultFallback(t *testing.T) {
+func TestGatewayModels_OpenAICustomModelsListDoesNotChangeResponseShape(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 
 	groupID := int64(27)
@@ -849,6 +850,89 @@ func TestGatewayModels_RestrictedChannelDoesNotFallBackToDefaults(t *testing.T) 
 	var got gatewayModelsResponseForTest
 	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &got))
 	require.Equal(t, []string{"gemini-3.7-flash"}, modelIDsForTest(got.Data))
+}
+
+func TestGatewayModels_RestrictedChannelEmptyStorefrontStaysEmpty(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	groupID := int64(78)
+	channelSvc := service.NewChannelService(&gatewayModelsChannelRepoStub{
+		channels: []service.Channel{{
+			ID:             1,
+			Status:         service.StatusActive,
+			GroupIDs:       []int64{groupID},
+			RestrictModels: true,
+		}},
+		platforms: map[int64]string{groupID: service.PlatformAntigravity},
+	}, nil, nil, nil)
+
+	h := &GatewayHandler{
+		gatewayService: service.NewGatewayService(
+			&gatewayModelsAccountRepoStub{byGroup: map[int64][]service.Account{
+				groupID: {{ID: 1, Platform: service.PlatformAntigravity}},
+			}},
+			nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil,
+			nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil,
+			channelSvc, nil, nil, nil, nil,
+		),
+	}
+
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	c.Request = httptest.NewRequest(http.MethodGet, "/v1/models", nil)
+	c.Set(string(middleware2.ContextKeyAPIKey), &service.APIKey{
+		Group: &service.Group{ID: groupID, Platform: service.PlatformAntigravity},
+	})
+
+	h.Models(c)
+	require.Equal(t, http.StatusOK, rec.Code)
+
+	var got gatewayModelsResponseForTest
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &got))
+	require.Empty(t, modelIDsForTest(got.Data))
+}
+
+func TestGatewayModels_CompositeRestrictedEmptyStorefrontStaysEmpty(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	groupID := int64(79)
+	channelSvc := service.NewChannelService(&gatewayModelsChannelRepoStub{
+		channels: []service.Channel{{
+			ID:             1,
+			Status:         service.StatusActive,
+			GroupIDs:       []int64{groupID},
+			RestrictModels: true,
+		}},
+		platforms: map[int64]string{groupID: service.PlatformComposite},
+	}, nil, nil, nil)
+
+	h := &GatewayHandler{
+		gatewayService: service.NewGatewayService(
+			&gatewayModelsAccountRepoStub{byGroup: map[int64][]service.Account{
+				groupID: {
+					{ID: 1, Platform: service.PlatformOpenAI},
+					{ID: 2, Platform: service.PlatformAnthropic},
+				},
+			}},
+			nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil,
+			nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil,
+			channelSvc, nil, nil, nil, nil,
+		),
+	}
+
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	c.Request = httptest.NewRequest(http.MethodGet, "/v1/models", nil)
+	c.Set(string(middleware2.ContextKeyAPIKey), &service.APIKey{
+		Group: &service.Group{ID: groupID, Platform: service.PlatformComposite},
+	})
+
+	h.Models(c)
+	require.Equal(t, http.StatusOK, rec.Code)
+
+	var got gatewayModelsResponseForTest
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &got))
+	require.Empty(t, modelIDsForTest(got.Data))
 }
 
 type gatewayModelsChannelRepoStub struct {

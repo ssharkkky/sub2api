@@ -1088,6 +1088,10 @@ func (h *GatewayHandler) Models(c *gin.Context) {
 
 	if platform == service.PlatformComposite {
 		availableModels := h.compositeAvailableModels(c.Request.Context(), groupID)
+		if _, restricted := h.channelStorefrontModels(c.Request.Context(), groupID, ""); restricted {
+			writePlatformModelsList(c, service.PlatformComposite, availableModels)
+			return
+		}
 		if len(availableModels) == 0 {
 			availableModels = service.PlatformDefaultModelIDs(service.PlatformComposite)
 		}
