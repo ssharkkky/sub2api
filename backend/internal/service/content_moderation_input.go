@@ -28,7 +28,7 @@ func ExtractContentModerationInput(protocol string, body []byte) ContentModerati
 		collectLastResponsesInput(gjson.GetBytes(body, "input"), &parts, &images)
 	case ContentModerationProtocolGemini:
 		collectLastGeminiContent(gjson.GetBytes(body, "contents"), &parts, &images)
-	case ContentModerationProtocolOpenAIImages:
+	case ContentModerationProtocolOpenAIImages, "grok_media":
 		addModerationText(&parts, gjson.GetBytes(body, "prompt").String())
 		collectContentValue(gjson.GetBytes(body, "images"), &parts, &images)
 	default:

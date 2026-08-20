@@ -619,22 +619,24 @@ func (s *OpenAIGatewayService) HasPromptAuditFallbackAccounts(ctx context.Contex
 	requirements := promptAuditFallbackRequirementsFromContext(ctx)
 	requiredCapability := promptAuditFallbackOpenAICapability(protocol, targetPlatform, requirements)
 	eligibilityCtx := ctx
+	eligibilityModel := model
 	if protocol != ContentModerationProtocolOpenAIImages && s.channelService != nil {
 		mapping := s.channelService.ResolveChannelMapping(ctx, groupID, model)
+		eligibilityModel = mapping.MappedModel
 		eligibilityCtx = WithOpenAIForwardModel(ctx, mapping.MappedModel, requirements.RequireCompact)
 	}
 	checkUpstreamRestriction := s.needsUpstreamChannelRestrictionCheck(eligibilityCtx, &groupID)
 	for i := range accounts {
 		account := &accounts[i]
-		modelSupported := s.promptAuditFallbackOpenAIModelSupported(eligibilityCtx, groupID, account, protocol, model)
+		modelSupported := s.promptAuditFallbackOpenAIModelSupported(eligibilityCtx, groupID, account, protocol, eligibilityModel)
 		imageCapability := requirements.ImageCapability
 		if targetPlatform != PlatformOpenAI {
 			imageCapability = ""
 		}
 		imageCapabilitySupported := promptAuditFallbackImageCapabilitySupported(account, imageCapability)
-		endpointEligible := promptAuditFallbackAccountSupportsModel(account, model)
+		endpointEligible := promptAuditFallbackAccountSupportsModel(account, eligibilityModel)
 		if targetPlatform == PlatformOpenAI || targetPlatform == PlatformGrok {
-			endpointEligible = isOpenAICompatibleAccountEligibleForRequest(eligibilityCtx, account, targetPlatform, model, requirements.RequireCompact, requiredCapability)
+			endpointEligible = isOpenAICompatibleAccountEligibleForRequest(eligibilityCtx, account, targetPlatform, eligibilityModel, requirements.RequireCompact, requiredCapability)
 		}
 		requiredTransport := requirements.RequiredTransport
 		if targetPlatform == PlatformGrok && requiredTransport == OpenAIUpstreamTransportResponsesWebsocketV2Ingress {

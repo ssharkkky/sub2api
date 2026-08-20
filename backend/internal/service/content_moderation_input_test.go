@@ -188,4 +188,9 @@ func TestExtractContentModerationInput_PromptFallbackProtocolAliases(t *testing.
 	liveBody := []byte(`{"input":[{"type":"message","role":"user","content":[{"type":"input_text","text":"live audit text"}]}]}`)
 	input := ExtractContentModerationInput("openai_live", liveBody)
 	require.Equal(t, "live audit text", input.Text)
+
+	mediaBody := []byte(`{"prompt":"media audit text","images":[{"image_url":"https://example.test/image.png"}]}`)
+	input = ExtractContentModerationInput("grok_media", mediaBody)
+	require.Equal(t, "media audit text", input.Text)
+	require.Equal(t, []string{"https://example.test/image.png"}, input.Images)
 }
