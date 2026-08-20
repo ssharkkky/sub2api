@@ -1198,14 +1198,6 @@ func writeModelsList(c *gin.Context, platform string, modelIDs []string) {
 	})
 }
 
-func writeCustomModelsList(c *gin.Context, platform string, modelIDs []string) {
-	if platform == service.PlatformOpenAI {
-		writeOpenAIModelsList(c, modelIDs)
-		return
-	}
-	writeModelsList(c, platform, modelIDs)
-}
-
 type grokReasoningEffortOption struct {
 	Value   string `json:"value"`
 	Label   string `json:"label"`
@@ -1292,85 +1284,8 @@ func writeOpenAIModelsList(c *gin.Context, modelIDs []string) {
 	})
 }
 
-func customModelsListSource(platform string, availableModels, fallbackModels []string) []string {
-	if platform == service.PlatformAnthropic && len(availableModels) > 0 {
-		return mergeModelIDs(availableModels, fallbackModels)
-	}
-	return availableModels
-}
-
-func filterModelsByCustomList(availableModels, fallbackModels, selectedModels []string) []string {
-	if len(selectedModels) == 0 {
-		return availableModels
-	}
-	source := availableModels
-	if len(source) == 0 {
-		source = fallbackModels
-	}
-	if len(source) == 0 {
-		return nil
-	}
-
-	allowed := make([]string, 0, len(source))
-	for _, model := range source {
-		model = strings.TrimSpace(model)
-		if model != "" {
-			allowed = append(allowed, model)
-		}
-	}
-
-	seen := make(map[string]struct{}, len(selectedModels))
-	filtered := make([]string, 0, len(selectedModels))
-	for _, model := range selectedModels {
-		model = strings.TrimSpace(model)
-		if model == "" {
-			continue
-		}
-		if !customModelsListAllowsModel(allowed, model) {
-			continue
-		}
-		if _, ok := seen[model]; ok {
-			continue
-		}
-		seen[model] = struct{}{}
-		filtered = append(filtered, model)
-	}
-	return filtered
-}
-
-func customModelsListAllowsModel(availablePatterns []string, model string) bool {
-	for _, pattern := range availablePatterns {
-		if pattern == model {
-			return true
-		}
-		if strings.HasSuffix(pattern, "*") && strings.HasPrefix(model, strings.TrimSuffix(pattern, "*")) {
-			return true
-		}
-	}
-	return false
-}
-
 func defaultModelIDsForPlatform(platform string) []string {
 	return service.PlatformDefaultModelIDs(platform)
-}
-
-func mergeModelIDs(primary, secondary []string) []string {
-	seen := make(map[string]struct{}, len(primary)+len(secondary))
-	merged := make([]string, 0, len(primary)+len(secondary))
-	for _, models := range [][]string{primary, secondary} {
-		for _, model := range models {
-			model = strings.TrimSpace(model)
-			if model == "" {
-				continue
-			}
-			if _, ok := seen[model]; ok {
-				continue
-			}
-			seen[model] = struct{}{}
-			merged = append(merged, model)
-		}
-	}
-	return merged
 }
 
 // AntigravityModels 返回 Antigravity 支持的全部模型
