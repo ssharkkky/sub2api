@@ -96,7 +96,7 @@ func (h *GatewayHandler) WebSearch(c *gin.Context) {
 			"role": "user", "content": req.Query,
 		}},
 	})
-	if decision := h.checkSecurityAudit(c, reqLog, apiKey, subject, service.ContentModerationProtocolOpenAIChat, searchModel, auditBody); decision != nil && !decision.AllowNextStage {
+	if decision := h.checkSecurityAudit(c, reqLog, apiKey, subject, "grok_web_search", searchModel, auditBody); decision != nil && !decision.AllowNextStage {
 		status := decision.HTTPStatus
 		if status == 0 {
 			status = http.StatusForbidden
@@ -111,6 +111,24 @@ func (h *GatewayHandler) WebSearch(c *gin.Context) {
 		}
 		c.JSON(status, gin.H{"error": gin.H{"type": code, "message": msg}})
 		return
+	}
+	if effectiveAPIKeyPlatform(c, apiKey) != service.PlatformGrok {
+		c.JSON(http.StatusBadRequest, gin.H{"error": gin.H{
+			"type":    "invalid_request_error",
+			"message": searchLabel + " is only supported for grok groups",
+		}})
+		return
+	}
+	if promptAuditFallbackUsed(c) {
+		subscription, _ = middleware2.GetSubscriptionFromContext(c)
+		if err := h.billingCacheService.CheckBillingEligibility(c.Request.Context(), apiKey.User, apiKey, apiKey.Group, subscription, service.QuotaPlatform(c.Request.Context(), apiKey)); err != nil {
+			status, code, message, retryAfter := billingErrorDetails(err)
+			if retryAfter > 0 {
+				c.Header("Retry-After", strconv.Itoa(retryAfter))
+			}
+			c.JSON(status, gin.H{"error": gin.H{"type": code, "message": message}})
+			return
+		}
 	}
 
 	// Use exactly the same scheduling as other requests (SelectAccountWithLoadAwareness handles load, rate limit, sticky, etc.)
