@@ -222,15 +222,21 @@ export interface CatalogStorefrontModel {
   image_input_price?: number
   image_output_price?: number
   per_request_price?: number
+  coverage_have?: number
+  coverage_total?: number
+  coverage_synced?: number
 }
 
 export interface CatalogStorefrontResult {
   models: CatalogStorefrontModel[]
 }
 
-export async function listCatalogModels(platform: string): Promise<CatalogStorefrontResult> {
+export async function listCatalogModels(platform: string, groupIds?: number[]): Promise<CatalogStorefrontResult> {
   const { data } = await apiClient.get<CatalogStorefrontResult>('/admin/channels/catalog-models', {
-    params: { platform }
+    params: {
+      platform,
+      ...(groupIds && groupIds.length > 0 ? { group_ids: groupIds.join(',') } : {})
+    }
   })
   return data
 }

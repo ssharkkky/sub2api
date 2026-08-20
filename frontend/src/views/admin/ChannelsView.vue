@@ -525,6 +525,11 @@
                       @change="toggleCatalogModel(model.id)"
                     />
                     <span class="min-w-0 flex-1 truncate">{{ model.display_name || model.id }}</span>
+                    <span
+                      v-if="model.coverage_total != null"
+                      class="shrink-0 text-gray-400"
+                      :title="formatCatalogCoverageTitle(model)"
+                    >{{ formatCatalogCoverage(model) }}</span>
                     <span class="shrink-0 text-gray-400">{{ formatCatalogPrice(model) }}</span>
                   </label>
                 </div>
@@ -1000,7 +1005,7 @@ async function toggleCatalogPicker(sectionIdx: number) {
   const platform = form.platforms[sectionIdx].platform
   catalogPickerLoading.value = platform
   try {
-    const result = await adminAPI.channels.listCatalogModels(platform)
+    const result = await adminAPI.channels.listCatalogModels(platform, form.platforms[sectionIdx].group_ids)
     catalogExistingModels.value = collectExistingModels(sectionIdx)
     catalogPickerModels.value = result.models || []
     catalogPickerSelected.value = new Set()
@@ -1025,6 +1030,23 @@ function formatCatalogPrice(model: CatalogStorefrontModel): string {
   const input = perTokenToMTok(model.input_price ?? null)
   const output = perTokenToMTok(model.output_price ?? null)
   return `$${input ?? '-'} / $${output ?? '-'}`
+}
+
+function formatCatalogCoverage(model: CatalogStorefrontModel): string {
+  if (model.coverage_total == null) return ''
+  if (model.coverage_total === 0) return t('admin.channels.form.catalogCoverageNone')
+  return t('admin.channels.form.catalogCoverage', {
+    have: model.coverage_have ?? 0,
+    total: model.coverage_total
+  })
+}
+
+function formatCatalogCoverageTitle(model: CatalogStorefrontModel): string {
+  if (model.coverage_total == null) return ''
+  return t('admin.channels.form.catalogCoverageSynced', {
+    synced: model.coverage_synced ?? 0,
+    total: model.coverage_total
+  })
 }
 
 function addSelectedCatalogModels(sectionIdx: number) {

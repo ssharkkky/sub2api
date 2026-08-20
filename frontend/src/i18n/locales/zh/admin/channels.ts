@@ -216,9 +216,12 @@ export default {
         syncModelsSuccess: '已同步 {count} 个新模型',
         syncModelsAlreadyUpToDate: '模型列表已是最新',
         syncModelsError: '加载目录失败',
-        catalogPickerHint: '勾选后会带上底稿价，仍可再改。',
+        catalogPickerHint: '勾选后会带上底稿价，仍可再改。覆盖率只表示最近同步到的账号能力，不是货架本身。',
         catalogPickerEmpty: '这个平台目录里还没有模型',
-        catalogPickerAdd: '添加已选模型'
+        catalogPickerAdd: '添加已选模型',
+        catalogCoverage: '{have}/{total} 账号有',
+        catalogCoverageNone: '暂无账号',
+        catalogCoverageSynced: '已同步 {synced}/{total} 个账号'
       }
     },
 

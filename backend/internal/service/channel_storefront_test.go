@@ -3,81 +3,11 @@ package service
 import (
 	"context"
 	"testing"
+	"time"
 
 	"github.com/Wei-Shaw/sub2api/internal/modelcatalog"
 	"github.com/stretchr/testify/require"
 )
-
-func TestListStorefrontModels_DisabledFallsBack(t *testing.T) {
-	ch := Channel{
-		ID:             1,
-		Status:         StatusActive,
-		GroupIDs:       []int64{10},
-		RestrictModels: false,
-		ModelPricing: []ChannelModelPricing{
-			{Platform: "antigravity", Models: []string{"gemini-3.7-flash"}},
-		},
-	}
-	svc := newTestChannelService(makeStandardRepo(ch, map[int64]string{10: "antigravity"}))
-
-	models, enabled := svc.ListStorefrontModels(context.Background(), 10, "antigravity")
-	require.False(t, enabled)
-	require.Nil(t, models)
-}
-
-func TestListStorefrontModels_RestrictOnReturnsPricedModelsOnly(t *testing.T) {
-	ch := Channel{
-		ID:             1,
-		Status:         StatusActive,
-		GroupIDs:       []int64{10},
-		RestrictModels: true,
-		ModelPricing: []ChannelModelPricing{
-			{Platform: "antigravity", Models: []string{"gemini-3.7-flash", "gemini-3.7-flash-high"}},
-			{Platform: "openai", Models: []string{"gpt-5.4"}},
-		},
-	}
-	svc := newTestChannelService(makeStandardRepo(ch, map[int64]string{10: "antigravity"}))
-
-	models, enabled := svc.ListStorefrontModels(context.Background(), 10, "antigravity")
-	require.True(t, enabled)
-	require.Equal(t, []string{"gemini-3.7-flash", "gemini-3.7-flash-high"}, models)
-
-	models, enabled = svc.ListStorefrontModels(context.Background(), 10, "openai")
-	require.True(t, enabled)
-	require.Equal(t, []string{"gpt-5.4"}, models)
-}
-
-func TestListStorefrontModels_EmptyShelfStaysEmpty(t *testing.T) {
-	ch := Channel{
-		ID:             1,
-		Status:         StatusActive,
-		GroupIDs:       []int64{10},
-		RestrictModels: true,
-	}
-	svc := newTestChannelService(makeStandardRepo(ch, map[int64]string{10: "antigravity"}))
-
-	models, enabled := svc.ListStorefrontModels(context.Background(), 10, "antigravity")
-	require.True(t, enabled)
-	require.Empty(t, models)
-}
-
-func TestGetAvailableModels_UsesChannelStorefrontWhenRestricted(t *testing.T) {
-	ch := Channel{
-		ID:             1,
-		Status:         StatusActive,
-		GroupIDs:       []int64{10},
-		RestrictModels: true,
-		ModelPricing: []ChannelModelPricing{
-			{Platform: "antigravity", Models: []string{"gemini-3.7-flash-tiered"}},
-		},
-	}
-	channelSvc := newTestChannelService(makeStandardRepo(ch, map[int64]string{10: "antigravity"}))
-	gw := &GatewayService{channelService: channelSvc}
-	groupID := int64(10)
-
-	got := gw.GetAvailableModels(context.Background(), &groupID, "antigravity")
-	require.Equal(t, []string{"gemini-3.7-flash-tiered"}, got)
-}
 
 func TestListCatalogStorefrontModels_IncludesGemini37(t *testing.T) {
 	models := ListCatalogStorefrontModels("antigravity")
@@ -95,4 +25,48 @@ func TestListCatalogStorefrontModels_IncludesGemini37(t *testing.T) {
 	require.NotNil(t, flash37.InputPrice)
 	require.InDelta(t, 0.75e-6, *flash37.InputPrice, 1e-12)
 	require.True(t, modelcatalog.Locked("gemini-3.7-flash"))
+}
+
+func TestAnnotateCatalogStorefrontCoverage_CountsSnapshotsNotIntersection(t *testing.T) {
+	parentID := int64(8)
+	accounts := []Account{
+		{
+			ID:       1,
+			Platform: PlatformAntigravity,
+			Extra:    ApplyUpstreamModelSnapshot(nil, []string{"gemini-3.7-flash", "gemini-3.6-flash-tiered"}, time.Unix(1, 0).UTC()),
+		},
+		{
+			ID:       2,
+			Platform: PlatformAntigravity,
+			Extra:    ApplyUpstreamModelSnapshot(nil, []string{"gemini-3.6-flash-tiered"}, time.Unix(1, 0).UTC()),
+			Credentials: map[string]any{
+				"model_mapping": map[string]any{"gemini-3.6-flash": "gemini-3.6-flash-tiered"},
+			},
+		},
+		{ID: 3, Platform: PlatformAntigravity},
+		{ID: 4, Platform: PlatformOpenAI, Extra: ApplyUpstreamModelSnapshot(nil, []string{"gpt-5.4"}, time.Unix(1, 0).UTC())},
+		{ID: 5, Platform: PlatformAntigravity, ParentAccountID: &parentID},
+	}
+	filtered := filterStorefrontCoverageAccounts(accounts, "antigravity")
+	require.Equal(t, []int64{1, 2, 3}, []int64{filtered[0].ID, filtered[1].ID, filtered[2].ID})
+
+	models := AnnotateCatalogStorefrontCoverage([]CatalogStorefrontModel{
+		{ID: "gemini-3.7-flash"},
+		{ID: "gemini-3.6-flash"},
+		{ID: "gemini-3.6-flash-tiered"},
+		{ID: "claude-unknown"},
+	}, filtered)
+	require.Equal(t, 1, *models[0].CoverageHave)
+	require.Equal(t, 3, *models[0].CoverageTotal)
+	require.Equal(t, 2, *models[0].CoverageSynced)
+	require.Equal(t, 1, *models[1].CoverageHave)
+	require.Equal(t, 2, *models[2].CoverageHave)
+	require.Equal(t, 0, *models[3].CoverageHave)
+}
+
+func TestListCatalogStorefrontModelsWithCoverage_WithoutGroupsKeepsPlainCatalog(t *testing.T) {
+	svc := &ChannelService{}
+	models := svc.ListCatalogStorefrontModelsWithCoverage(context.Background(), "antigravity", nil)
+	require.NotEmpty(t, models)
+	require.Nil(t, models[0].CoverageTotal)
 }

@@ -97,3 +97,14 @@ func TestStorefrontItemsScopesThinkingTiersToAntigravity(t *testing.T) {
 	require.Contains(t, antigravity, "gemini-3.7-flash")
 	require.Contains(t, antigravity, "gemini-3.7-flash-high")
 }
+
+func TestPublicIDsAndDefaultMappings(t *testing.T) {
+	ids := PublicIDs("antigravity")
+	require.Contains(t, ids, "gemini-3.7-flash")
+	require.Contains(t, ids, "gemini-3.7-flash-high")
+	require.Contains(t, ids, "gemini-3.1-pro-high")
+
+	mappings := DefaultMappings("antigravity")
+	require.Equal(t, "gemini-pro-agent", mappings["gemini-3.1-pro-high"])
+	require.NotContains(t, mappings, "gemini-3.7-flash")
+}

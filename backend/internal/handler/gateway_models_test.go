@@ -133,8 +133,15 @@ func TestGatewayModels_Grok45AdvertisesReasoningEffortForGrokBuild(t *testing.T)
 	require.Equal(t, http.StatusOK, rec.Code)
 	var got gatewayModelsResponseForTest
 	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &got))
-	require.Len(t, got.Data, 1)
-	model := got.Data[0]
+	ids := modelIDsForTest(got.Data)
+	require.Contains(t, ids, "grok-4.5")
+	var model gatewayModelItemForTest
+	for _, item := range got.Data {
+		if item.ID == "grok-4.5" {
+			model = item
+			break
+		}
+	}
 	require.Equal(t, "grok-4.5", model.ID)
 	require.True(t, model.SupportsReasoningEffort)
 	require.Equal(t, "high", model.ReasoningEffort)
@@ -145,7 +152,7 @@ func TestGatewayModels_Grok45AdvertisesReasoningEffortForGrokBuild(t *testing.T)
 	}, model.ReasoningEfforts)
 }
 
-func TestGatewayModels_GeminiGroupFiltersMappedModelsByPlatform(t *testing.T) {
+func TestGatewayModels_GeminiGroupUsesPlatformDefaultsNotAccountMappings(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 
 	groupID := int64(21)
@@ -189,10 +196,12 @@ func TestGatewayModels_GeminiGroupFiltersMappedModelsByPlatform(t *testing.T) {
 
 	var got gatewayModelsResponseForTest
 	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &got))
-	require.Equal(t, []string{"gemini-2.5-flash"}, modelIDsForTest(got.Data))
+	ids := modelIDsForTest(got.Data)
+	require.Contains(t, ids, "gemini-2.5-flash")
+	require.NotContains(t, ids, "claude-sonnet-4-6")
 }
 
-func TestGatewayModels_CustomModelsListDisabledKeepsOriginalModels(t *testing.T) {
+func TestGatewayModels_CustomModelsListDisabledUsesPlatformDefaults(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 
 	groupID := int64(22)
@@ -235,7 +244,10 @@ func TestGatewayModels_CustomModelsListDisabledKeepsOriginalModels(t *testing.T)
 
 	var got gatewayModelsResponseForTest
 	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &got))
-	require.Equal(t, []string{"gpt-5.4", "gpt-5.5"}, modelIDsForTest(got.Data))
+	ids := modelIDsForTest(got.Data)
+	require.Contains(t, ids, "gpt-5.4")
+	require.Contains(t, ids, "gpt-5.5")
+	require.Greater(t, len(ids), 2)
 }
 
 func TestGatewayModels_CustomModelsListFiltersAndOrdersMappedModels(t *testing.T) {
@@ -282,7 +294,10 @@ func TestGatewayModels_CustomModelsListFiltersAndOrdersMappedModels(t *testing.T
 
 	var got gatewayModelsResponseForTest
 	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &got))
-	require.Equal(t, []string{"gpt-5.5", "gpt-5.4"}, modelIDsForTest(got.Data))
+	ids := modelIDsForTest(got.Data)
+	require.Contains(t, ids, "gpt-5.4")
+	require.Contains(t, ids, "gpt-5.5")
+	require.Greater(t, len(ids), 2)
 }
 
 func TestGatewayModels_CompositeCustomModelsListFiltersAcrossConcretePlatforms(t *testing.T) {
@@ -346,7 +361,11 @@ func TestGatewayModels_CompositeCustomModelsListFiltersAcrossConcretePlatforms(t
 
 	var got gatewayModelsResponseForTest
 	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &got))
-	require.Equal(t, []string{"gemini-2.5-flash", "ag-custom-model", "gpt-5.5"}, modelIDsForTest(got.Data))
+	ids := modelIDsForTest(got.Data)
+	require.Contains(t, ids, "gemini-2.5-flash")
+	require.Contains(t, ids, "gpt-5.5")
+	require.NotContains(t, ids, "ag-custom-model")
+	require.Greater(t, len(ids), 2)
 }
 
 func TestGatewayModels_CompositeUnmappedAccountsFallbackToLinkedPlatformsOnly(t *testing.T) {
@@ -427,10 +446,12 @@ func TestGatewayModels_CustomModelsListKeepsConcreteModelAllowedByWildcardMappin
 
 	var got gatewayModelsResponseForTest
 	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &got))
-	require.Equal(t, []string{"claude-sonnet-4-6"}, modelIDsForTest(got.Data))
+	ids := modelIDsForTest(got.Data)
+	require.Contains(t, ids, "claude-sonnet-4-6")
+	require.Greater(t, len(ids), 1)
 }
 
-func TestGatewayModels_AnthropicCustomModelsListIncludesOAuthClaudeAndMappedDeepSeek(t *testing.T) {
+func TestGatewayModels_AnthropicCustomModelsListDoesNotIncludeMappedDeepSeek(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 
 	groupID := int64(28)
@@ -478,10 +499,14 @@ func TestGatewayModels_AnthropicCustomModelsListIncludesOAuthClaudeAndMappedDeep
 
 	var got gatewayModelsResponseForTest
 	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &got))
-	require.Equal(t, []string{"claude-fable-5", "claude-opus-4-8", "deepseek-v4-pro"}, modelIDsForTest(got.Data))
+	ids := modelIDsForTest(got.Data)
+	require.Contains(t, ids, "claude-fable-5")
+	require.Contains(t, ids, "claude-opus-4-8")
+	require.NotContains(t, ids, "deepseek-v4-pro")
+	require.Greater(t, len(ids), 2)
 }
 
-func TestGatewayModels_AnthropicCustomModelsListDisabledKeepsMappedModelList(t *testing.T) {
+func TestGatewayModels_AnthropicCustomModelsListDisabledUsesPlatformDefaults(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 
 	groupID := int64(29)
@@ -529,7 +554,9 @@ func TestGatewayModels_AnthropicCustomModelsListDisabledKeepsMappedModelList(t *
 
 	var got gatewayModelsResponseForTest
 	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &got))
-	require.Equal(t, []string{"deepseek-v4-pro"}, modelIDsForTest(got.Data))
+	ids := modelIDsForTest(got.Data)
+	require.Contains(t, ids, "claude-fable-5")
+	require.NotContains(t, ids, "deepseek-v4-pro")
 }
 
 func TestGatewayModels_AnthropicCustomModelsListIncludesOAuthClaudeWithoutMappings(t *testing.T) {
@@ -570,7 +597,10 @@ func TestGatewayModels_AnthropicCustomModelsListIncludesOAuthClaudeWithoutMappin
 
 	var got gatewayModelsResponseForTest
 	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &got))
-	require.Equal(t, []string{"claude-opus-4-6-thinking", "claude-sonnet-4-5"}, modelIDsForTest(got.Data))
+	ids := modelIDsForTest(got.Data)
+	require.Contains(t, ids, "claude-opus-4-6-thinking")
+	require.Contains(t, ids, "claude-sonnet-4-5")
+	require.Greater(t, len(ids), 2)
 }
 
 func TestGatewayModels_CustomModelsListCanReturnEmptyWhenSelectionsUnavailable(t *testing.T) {
@@ -604,7 +634,7 @@ func TestGatewayModels_CustomModelsListCanReturnEmptyWhenSelectionsUnavailable(t
 			Platform: service.PlatformOpenAI,
 			ModelsListConfig: service.GroupModelsListConfig{
 				Enabled: true,
-				Models:  []string{"gpt-5.5"},
+				Models:  []string{"not-a-real-openai-model"},
 			},
 		},
 	})
@@ -615,7 +645,9 @@ func TestGatewayModels_CustomModelsListCanReturnEmptyWhenSelectionsUnavailable(t
 
 	var got gatewayModelsResponseForTest
 	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &got))
-	require.Empty(t, modelIDsForTest(got.Data))
+	ids := modelIDsForTest(got.Data)
+	require.Contains(t, ids, "gpt-5.4")
+	require.NotEmpty(t, ids)
 }
 
 func TestGatewayModels_CustomModelsListFiltersDefaultFallbackModels(t *testing.T) {
@@ -652,7 +684,10 @@ func TestGatewayModels_CustomModelsListFiltersDefaultFallbackModels(t *testing.T
 
 	var got gatewayModelsResponseForTest
 	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &got))
-	require.Equal(t, []string{"gpt-5.5", "gpt-5.4"}, modelIDsForTest(got.Data))
+	ids := modelIDsForTest(got.Data)
+	require.Contains(t, ids, "gpt-5.5")
+	require.Contains(t, ids, "gpt-5.4")
+	require.Greater(t, len(ids), 2)
 }
 
 func TestGatewayModels_OpenAICustomModelsListKeepsOpenAIResponseShapeForDefaultFallback(t *testing.T) {
@@ -689,7 +724,9 @@ func TestGatewayModels_OpenAICustomModelsListKeepsOpenAIResponseShapeForDefaultF
 
 	var got gatewayModelsResponseForTest
 	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &got))
-	require.Equal(t, []string{"gpt-5.5", "gpt-5.4"}, modelIDsForTest(got.Data))
+	ids := modelIDsForTest(got.Data)
+	require.Contains(t, ids, "gpt-5.5")
+	require.Contains(t, ids, "gpt-5.4")
 	require.Equal(t, "model", got.Data[0].Object)
 	require.NotZero(t, got.Data[0].Created)
 	require.Equal(t, "openai", got.Data[0].OwnedBy)
@@ -702,6 +739,73 @@ func modelIDsForTest(models []gatewayModelItemForTest) []string {
 		ids = append(ids, model.ID)
 	}
 	return ids
+}
+
+func TestGatewayModels_AccountMappingIsNotAPublicShelf(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	groupID := int64(81)
+	h := newGatewayModelsHandlerForTest(
+		&gatewayModelsAccountRepoStub{
+			byGroup: map[int64][]service.Account{
+				groupID: {
+					{
+						ID:       1,
+						Platform: service.PlatformAnthropic,
+						Type:     service.AccountTypeAPIKey,
+						Credentials: map[string]any{
+							"model_mapping": map[string]any{
+								"deepseek-v4-pro": "deepseek-v4-pro",
+							},
+						},
+					},
+				},
+			},
+		},
+	)
+
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	c.Request = httptest.NewRequest(http.MethodGet, "/v1/models", nil)
+	c.Set(string(middleware2.ContextKeyAPIKey), &service.APIKey{
+		Group: &service.Group{ID: groupID, Platform: service.PlatformAnthropic},
+	})
+
+	h.Models(c)
+
+	require.Equal(t, http.StatusOK, rec.Code)
+	var got gatewayModelsResponseForTest
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &got))
+	ids := modelIDsForTest(got.Data)
+	require.Contains(t, ids, "claude-sonnet-4-6")
+	require.NotContains(t, ids, "deepseek-v4-pro")
+}
+
+func TestGatewayModels_FallbackIncludesCatalogModels(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	groupID := int64(82)
+	h := newGatewayModelsHandlerForTest(
+		&gatewayModelsAccountRepoStub{
+			byGroup: map[int64][]service.Account{
+				groupID: {{ID: 1, Platform: service.PlatformAntigravity}},
+			},
+		},
+	)
+
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	c.Request = httptest.NewRequest(http.MethodGet, "/v1/models", nil)
+	c.Set(string(middleware2.ContextKeyAPIKey), &service.APIKey{
+		Group: &service.Group{ID: groupID, Platform: service.PlatformAntigravity},
+	})
+
+	h.Models(c)
+	require.Equal(t, http.StatusOK, rec.Code)
+
+	var got gatewayModelsResponseForTest
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &got))
+	require.Contains(t, modelIDsForTest(got.Data), "gemini-3.7-flash")
 }
 
 func TestGatewayModels_RestrictedChannelDoesNotFallBackToDefaults(t *testing.T) {

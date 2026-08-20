@@ -654,5 +654,39 @@ func (h *ChannelHandler) ListCatalogModels(c *gin.Context) {
 			WithMetadata(map[string]string{"param": "platform"}))
 		return
 	}
-	response.Success(c, gin.H{"models": service.ListCatalogStorefrontModels(platform)})
+	models := service.ListCatalogStorefrontModels(platform)
+	if h != nil && h.channelService != nil {
+		models = h.channelService.ListCatalogStorefrontModelsWithCoverage(c.Request.Context(), platform, parseQueryInt64List(c, "group_ids"))
+	}
+	response.Success(c, gin.H{"models": models})
+}
+
+func parseQueryInt64List(c *gin.Context, key string) []int64 {
+	if c == nil {
+		return nil
+	}
+	values := append([]string{}, c.QueryArray(key)...)
+	if raw := strings.TrimSpace(c.Query(key)); raw != "" && len(values) == 0 {
+		values = []string{raw}
+	}
+	out := make([]int64, 0, len(values))
+	seen := make(map[int64]struct{}, len(values))
+	for _, value := range values {
+		for _, part := range strings.Split(value, ",") {
+			part = strings.TrimSpace(part)
+			if part == "" {
+				continue
+			}
+			id, err := strconv.ParseInt(part, 10, 64)
+			if err != nil || id <= 0 {
+				continue
+			}
+			if _, ok := seen[id]; ok {
+				continue
+			}
+			seen[id] = struct{}{}
+			out = append(out, id)
+		}
+	}
+	return out
 }

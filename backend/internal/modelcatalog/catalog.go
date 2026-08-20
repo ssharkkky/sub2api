@@ -319,6 +319,63 @@ func entryHasPlatform(entry *Entry, platform string) bool {
 	return false
 }
 
+// PublicIDs returns every public catalog ID for a platform, including aliases.
+func PublicIDs(platform string) []string {
+	return Default().PublicIDs(platform)
+}
+
+// PublicIDs returns every public catalog ID for a platform, including aliases.
+func (idx *Catalog) PublicIDs(platform string) []string {
+	if idx == nil {
+		return nil
+	}
+	platform = strings.ToLower(strings.TrimSpace(platform))
+	out := make([]string, 0)
+	for _, entry := range idx.entries {
+		if entry == nil || strings.TrimSpace(entry.ID) == "" {
+			continue
+		}
+		if platform != "" && !entryHasPlatform(entry, platform) {
+			continue
+		}
+		out = append(out, entry.ID)
+	}
+	sort.Strings(out)
+	return out
+}
+
+// DefaultMappings returns catalog upstream rewrites for a platform.
+// Existing keys in an account mapping should win over these defaults.
+func DefaultMappings(platform string) map[string]string {
+	return Default().DefaultMappings(platform)
+}
+
+// DefaultMappings returns catalog upstream rewrites for a platform.
+func (idx *Catalog) DefaultMappings(platform string) map[string]string {
+	if idx == nil {
+		return nil
+	}
+	platform = strings.ToLower(strings.TrimSpace(platform))
+	out := make(map[string]string)
+	for _, entry := range idx.entries {
+		if entry == nil {
+			continue
+		}
+		if platform != "" && !entryHasPlatform(entry, platform) {
+			continue
+		}
+		upstream := strings.TrimSpace(entry.Upstream)
+		if upstream == "" || upstream == entry.ID {
+			continue
+		}
+		out[entry.ID] = upstream
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
+}
+
 // Locked reports whether this model uses a human-owned price card.
 func Locked(modelID string) bool {
 	return Default().Locked(modelID)

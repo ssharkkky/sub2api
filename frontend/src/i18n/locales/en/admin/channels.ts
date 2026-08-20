@@ -216,9 +216,12 @@ export default {
          syncModelsSuccess: 'Synced {count} new model(s)',
          syncModelsAlreadyUpToDate: 'Models already up to date',
          syncModelsError: 'Failed to load catalog',
-        catalogPickerHint: 'Selected models get draft prices that you can still edit.',
+        catalogPickerHint: 'Selected models get draft prices that you can still edit. Coverage is last synced account capability, not the shelf.',
         catalogPickerEmpty: 'No catalog models for this platform yet',
-        catalogPickerAdd: 'Add selected models'
+        catalogPickerAdd: 'Add selected models',
+        catalogCoverage: '{have}/{total} accounts have it',
+        catalogCoverageNone: 'No accounts',
+        catalogCoverageSynced: 'Synced {synced}/{total} accounts'
        }
      },
 
