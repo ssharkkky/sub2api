@@ -103,6 +103,16 @@ describe('useModelWhitelist', () => {
     expect(models).toContain('gemini-3.1-pro')
   })
 
+  it('antigravity 模型列表包含 Gemini 3.7 Flash 及思考档位', () => {
+    const models = getModelsByPlatform('antigravity')
+
+    expect(models).toContain('gemini-3.7-flash')
+    expect(models).toContain('gemini-3.7-flash-high')
+    expect(models).toContain('gemini-3.7-flash-low')
+    expect(models).toContain('gemini-3.7-flash-medium')
+    expect(models).toContain('gemini-3.7-flash-tiered')
+  })
+
   it('whitelist 模式会忽略通配符条目', () => {
     const mapping = buildModelMappingObject('whitelist', ['claude-*', 'gemini-3.1-flash-image'], [])
     expect(mapping).toEqual({
