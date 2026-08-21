@@ -81,6 +81,12 @@ const antigravityModels = [
   'gemini-3.1-pro-high',
   'gemini-3.1-pro-low',
   'gemini-3-pro-image',
+  // Gemini 3.7 Flash 及 Antigravity 的思考档位
+  'gemini-3.7-flash',
+  'gemini-3.7-flash-high',
+  'gemini-3.7-flash-low',
+  'gemini-3.7-flash-medium',
+  'gemini-3.7-flash-tiered',
   // 其他
   'gpt-oss-120b-medium',
   'tab_flash_lite_preview'
