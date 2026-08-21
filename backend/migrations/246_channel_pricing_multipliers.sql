@@ -20,8 +20,16 @@ ALTER TABLE channel_pricing_intervals
 -- every new or changed value is constrained immediately without a table scan.
 -- sub2api-managed-update: reviewed-compatible
 ALTER TABLE channel_model_pricing
+    DROP CONSTRAINT IF EXISTS channel_model_pricing_fast_multiplier_positive;
+
+-- sub2api-managed-update: reviewed-compatible
+ALTER TABLE channel_model_pricing
     ADD CONSTRAINT channel_model_pricing_fast_multiplier_positive
     CHECK (fast_multiplier IS NULL OR fast_multiplier > 0) NOT VALID;
+
+-- sub2api-managed-update: reviewed-compatible
+ALTER TABLE channel_model_pricing
+    DROP CONSTRAINT IF EXISTS channel_model_pricing_flex_multiplier_positive;
 
 -- sub2api-managed-update: reviewed-compatible
 ALTER TABLE channel_model_pricing
@@ -30,8 +38,16 @@ ALTER TABLE channel_model_pricing
 
 -- sub2api-managed-update: reviewed-compatible
 ALTER TABLE channel_pricing_intervals
+    DROP CONSTRAINT IF EXISTS channel_pricing_intervals_input_multiplier_positive;
+
+-- sub2api-managed-update: reviewed-compatible
+ALTER TABLE channel_pricing_intervals
     ADD CONSTRAINT channel_pricing_intervals_input_multiplier_positive
     CHECK (input_multiplier IS NULL OR input_multiplier > 0) NOT VALID;
+
+-- sub2api-managed-update: reviewed-compatible
+ALTER TABLE channel_pricing_intervals
+    DROP CONSTRAINT IF EXISTS channel_pricing_intervals_output_multiplier_positive;
 
 -- sub2api-managed-update: reviewed-compatible
 ALTER TABLE channel_pricing_intervals
@@ -40,8 +56,16 @@ ALTER TABLE channel_pricing_intervals
 
 -- sub2api-managed-update: reviewed-compatible
 ALTER TABLE channel_pricing_intervals
+    DROP CONSTRAINT IF EXISTS channel_pricing_intervals_cache_write_multiplier_positive;
+
+-- sub2api-managed-update: reviewed-compatible
+ALTER TABLE channel_pricing_intervals
     ADD CONSTRAINT channel_pricing_intervals_cache_write_multiplier_positive
     CHECK (cache_write_multiplier IS NULL OR cache_write_multiplier > 0) NOT VALID;
+
+-- sub2api-managed-update: reviewed-compatible
+ALTER TABLE channel_pricing_intervals
+    DROP CONSTRAINT IF EXISTS channel_pricing_intervals_cache_read_multiplier_positive;
 
 -- sub2api-managed-update: reviewed-compatible
 ALTER TABLE channel_pricing_intervals

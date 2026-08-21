@@ -96,6 +96,10 @@ EXECUTE FUNCTION sub2api_clear_channel_monitor_account_on_delete();
 
 -- sub2api-managed-update: reviewed-compatible
 ALTER TABLE channel_monitors
+    DROP CONSTRAINT IF EXISTS channel_monitors_check_mode_check;
+
+-- sub2api-managed-update: reviewed-compatible
+ALTER TABLE channel_monitors
     ADD CONSTRAINT channel_monitors_check_mode_check
     CHECK (check_mode IN ('probe', 'quota', 'quota_probe')) NOT VALID;
 
