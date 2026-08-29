@@ -31,6 +31,7 @@ jobs:
           fetch-depth: 0
           ref: ${{ github.event.pull_request.head.sha }}
       - name: Detect release PR and enforce drift-free base
+        id: detect
         env:
           PR_NUMBER: ${{ github.event.pull_request.number }}
         run: |
@@ -48,10 +49,13 @@ jobs:
           if ! grep -qx 'backend/cmd/server/VERSION' "$RUNNER_TEMP/changed-files.txt" && \
             ! grep -Eq '^docs/releases/v[0-9]+\.[0-9]+\.[0-9]+-ts\.[0-9]+\.md$' "$RUNNER_TEMP/changed-files.txt"; then
             echo "Not a release PR (no VERSION or release notes changes); Release Check passes"
+            echo "is_release=false" >> "$GITHUB_OUTPUT"
             exit 0
           fi
+          echo "is_release=true" >> "$GITHUB_OUTPUT"
           echo "Release PR detected; running the lightweight release gate"
       - name: Setup Go
+        if: steps.detect.outputs.is_release == 'true'
         uses: actions/setup-go@v6
         with:
           go-version-file: backend/go.mod
@@ -59,6 +63,7 @@ jobs:
           cache: true
           cache-dependency-path: backend/go.sum
       - name: Lightweight release gate
+        if: steps.detect.outputs.is_release == 'true'
         env:
           GH_TOKEN: ${{ github.token }}
           PR_NUMBER: ${{ github.event.pull_request.number }}

@@ -41,6 +41,7 @@ require_literal "$CI_WORKFLOW" 'bash .github/scripts/test-release-check.sh'
 require_literal "$RELEASE_CHECK_WORKFLOW" 'name: Release Check'
 require_literal "$RELEASE_CHECK_WORKFLOW" 'backend/cmd/server/VERSION'
 require_literal "$RELEASE_CHECK_WORKFLOW" 'MERGE_BASE=$(git merge-base HEAD origin/main)'
+require_literal "$RELEASE_CHECK_WORKFLOW" "if: steps.detect.outputs.is_release == 'true'"
 require_literal "$RELEASE_CHECK_WORKFLOW" 'Not a release PR'
 require_literal "$RELEASE_CHECK_WORKFLOW" 'bash .github/scripts/release-check.sh containment'
 require_literal "$RELEASE_CHECK_WORKFLOW" 'bash .github/scripts/release-check.sh version-increment'
