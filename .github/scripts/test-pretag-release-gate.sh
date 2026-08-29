@@ -5,6 +5,7 @@ set -euo pipefail
 REPO_ROOT=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../.." && pwd)
 CI_WORKFLOW="$REPO_ROOT/.github/workflows/backend-ci.yml"
 PRETAG_WORKFLOW="$REPO_ROOT/.github/workflows/release-preflight.yml"
+RELEASE_CHECK_WORKFLOW="$REPO_ROOT/.github/workflows/release-check.yml"
 PROMOTE_WORKFLOW="$REPO_ROOT/.github/workflows/promote-release.yml"
 RELEASE_WORKFLOW="$REPO_ROOT/.github/workflows/release.yml"
 
@@ -28,6 +29,30 @@ for expected in \
 done
 
 require_literal "$CI_WORKFLOW" 'bash .github/scripts/test-pretag-release-gate.sh'
+require_literal "$CI_WORKFLOW" 'name: Verify SHA Evidence'
+require_literal "$CI_WORKFLOW" "if: github.event_name == 'push' && github.ref == 'refs/heads/main'"
+require_literal "$CI_WORKFLOW" 'bash .github/scripts/release-evidence.sh classify'
+require_literal "$CI_WORKFLOW" 'bash .github/scripts/release-evidence-data.sh'
+require_literal "$CI_WORKFLOW" 'bash .github/scripts/release-evidence.sh decide'
+require_literal "$CI_WORKFLOW" 'needs: [verify-sha-evidence]'
+require_literal "$CI_WORKFLOW" "if: always() && needs.verify-sha-evidence.outputs.evidence != 'inherit'"
+require_literal "$CI_WORKFLOW" 'bash .github/scripts/test-release-evidence.sh'
+require_literal "$CI_WORKFLOW" 'bash .github/scripts/test-release-check.sh'
+require_literal "$RELEASE_CHECK_WORKFLOW" 'name: Release Check'
+require_literal "$RELEASE_CHECK_WORKFLOW" 'backend/cmd/server/VERSION'
+require_literal "$RELEASE_CHECK_WORKFLOW" 'MERGE_BASE=$(git merge-base HEAD origin/main)'
+require_literal "$RELEASE_CHECK_WORKFLOW" "if: steps.detect.outputs.is_release == 'true'"
+require_literal "$RELEASE_CHECK_WORKFLOW" 'Not a release PR'
+require_literal "$RELEASE_CHECK_WORKFLOW" 'bash .github/scripts/release-check.sh containment'
+require_literal "$RELEASE_CHECK_WORKFLOW" 'bash .github/scripts/release-check.sh version-increment'
+require_literal "$RELEASE_CHECK_WORKFLOW" 'bash .github/scripts/release-check.sh high-risk'
+require_literal "$RELEASE_CHECK_WORKFLOW" 'bash .github/scripts/validate-release-candidate.sh'
+require_literal "$RELEASE_CHECK_WORKFLOW" 'MAIN_TIP=$(git rev-parse origin/main)'
+require_literal "$PRETAG_WORKFLOW" "if: github.event_name == 'push' && needs.candidate.outputs.required == 'true'"
+require_literal "$PROMOTE_WORKFLOW" 'name == "test"'
+require_literal "$PROMOTE_WORKFLOW" 'name == "Verify SHA Evidence"'
+require_literal "$PROMOTE_WORKFLOW" 'bash .github/scripts/release-evidence-data.sh'
+require_literal "$PROMOTE_WORKFLOW" 'bash .github/scripts/release-evidence.sh decide'
 require_literal "$PRETAG_WORKFLOW" 'name: Release Preflight'
 require_literal "$PRETAG_WORKFLOW" 'TARGET_SHA: ${{ github.event.pull_request.head.sha || github.sha }}'
 require_literal "$PRETAG_WORKFLOW" 'WORKFLOW_SHA: ${{ github.workflow_sha }}'

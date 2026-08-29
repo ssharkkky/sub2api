@@ -59,7 +59,9 @@ jobs:
   release-contracts:
     name: Release Contracts
     needs: candidate
-    if: needs.candidate.outputs.required == 'true'
+    # PR stage is gated by the lightweight Release Check workflow (SOP sec 10.6);
+    # the full contracts suite only runs after merge (push context).
+    if: github.event_name == 'push' && needs.candidate.outputs.required == 'true'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
@@ -114,7 +116,8 @@ jobs:
   frontend-release:
     name: Frontend Release Suite
     needs: candidate
-    if: needs.candidate.outputs.required == 'true'
+    # Frontend production build moved to the post-merge push run (SOP sec 10.6).
+    if: github.event_name == 'push' && needs.candidate.outputs.required == 'true'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
@@ -366,10 +369,12 @@ jobs:
         run: |
           [[ "$CANDIDATE_RESULT" == success ]] || { echo "Candidate detection failed: $CANDIDATE_RESULT" >&2; exit 1; }
           if [[ "$PREFLIGHT_REQUIRED" == true ]]; then
-            [[ "$CONTRACTS_RESULT" == success ]] || { echo "Release contracts failed: $CONTRACTS_RESULT" >&2; exit 1; }
-            [[ "$FRONTEND_RESULT" == success ]] || { echo "Frontend release suite failed: $FRONTEND_RESULT" >&2; exit 1; }
             if [[ "$EVENT_NAME" == push ]]; then
+              [[ "$CONTRACTS_RESULT" == success ]] || { echo "Release contracts failed: $CONTRACTS_RESULT" >&2; exit 1; }
+              [[ "$FRONTEND_RESULT" == success ]] || { echo "Frontend release suite failed: $FRONTEND_RESULT" >&2; exit 1; }
               [[ "$BUILD_RESULT" == success ]] || { echo "Build Once candidate failed: $BUILD_RESULT" >&2; exit 1; }
+            else
+              echo "PR stage: heavy preflight is deferred to the post-merge push run; the PR is gated by Release Check"
             fi
           fi
           echo "Release preflight passed for $TARGET_SHA"
