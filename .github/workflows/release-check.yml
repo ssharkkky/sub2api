@@ -96,15 +96,17 @@ jobs:
 
           # 5) High-risk mechanical audit decision over the release content
           #    (everything changed since the last published release tag).
-          # ls-remote --tags also lists peeled lines ("refs/tags/v...^{}}");
+          # ls-remote --tags also lists peeled lines ("refs/tags/v...^{}");
           # those are not fetchable refspecs and must be excluded.
           tag_list() {
             git ls-remote --tags origin "$1" | awk '$2 !~ /\^\{\}$/ {print $2}' | sed 's|^refs/tags/||'
           }
           LAST_TAG=$(tag_list 'refs/tags/v*-ts.*' | sort -V | tail -n 1)
           if [[ -n "$LAST_TAG" ]]; then
-            git fetch --depth 1 --no-tags origin "refs/tags/v${LAST_TAG}"
-            git diff --name-only "v${LAST_TAG}" HEAD > "$RUNNER_TEMP/release-files.txt"
+            # LAST_TAG already includes the "v" prefix (it is the real tag
+            # name); use it verbatim or the ref doubles to refs/tags/vv...
+            git fetch --depth 1 --no-tags origin "refs/tags/${LAST_TAG}"
+            git diff --name-only "${LAST_TAG}" HEAD > "$RUNNER_TEMP/release-files.txt"
           else
             cp "$RUNNER_TEMP/changed-files.txt" "$RUNNER_TEMP/release-files.txt"
           fi
