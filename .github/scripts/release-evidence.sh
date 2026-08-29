@@ -92,17 +92,19 @@ cmd_classify() {
 
 # run_jobs_all_green <jobs-file> <test-job-name>
 # Terminal runs must be executed: every job completed with conclusion success
-# (no skipped jobs accepted), and the heavy test job must exist and have run.
+# (conditionally skipped jobs, e.g. an already-signed CLA, are allowed), and
+# the heavy test job must exist and have run to success (a skipped test job
+# means the suite did not actually execute).
 run_jobs_all_green() {
   local jobs_file="$1" test_job_name="$2"
   [[ -f "$jobs_file" ]] || return 1
   jq -e . "$jobs_file" >/dev/null 2>&1 || return 1
   local bad
-  bad=$(jq -r '[.jobs[]? | select(.status != "completed" or .conclusion != "success")] | length' "$jobs_file")
+  bad=$(jq -r '[.jobs[]? | select(.conclusion != "success" and .conclusion != "skipped")] | length' "$jobs_file")
   [[ "$bad" == "0" ]] || return 1
   local test_jobs
   test_jobs=$(jq -r --arg name "$test_job_name" \
-    '[.jobs[]? | select(.name == $name and .conclusion == "success")] | length' "$jobs_file")
+    '[.jobs[]? | select(.name == $name and .status == "completed" and .conclusion == "success")] | length' "$jobs_file")
   [[ "$test_jobs" == "1" ]] || return 1
   return 0
 }
@@ -135,7 +137,7 @@ emit_none() {
 cmd_decide() {
   local data_dir="" target_sha="" parent_sha="" parent_tree=""
   local max_age=604800 now_epoch=""
-  local test_job_name="Backend Test"
+  local test_job_name="test"
   while [[ $# -gt 0 ]]; do
     case "$1" in
       --data-dir) data_dir="${2:?}"; shift 2 ;;

@@ -124,7 +124,7 @@ echo '[]' > "$DATA/pr-data.json"
 green_jobs() {
   cat > "$1" <<'EOF'
 {"total_count":2,"jobs":[
-  {"id":1,"name":"Backend Test","status":"completed","conclusion":"success"},
+  {"id":1,"name":"test","status":"completed","conclusion":"success"},
   {"id":2,"name":"Shell","status":"completed","conclusion":"success"}
 ]}
 EOF
@@ -167,7 +167,7 @@ cat > "$DATA/parent-runs.json" <<EOF
 EOF
 cat > "$DATA/jobs-222.json" <<'EOF'
 {"total_count":2,"jobs":[
-  {"id":1,"name":"Backend Test","status":"completed","conclusion":"skipped"},
+  {"id":1,"name":"test","status":"completed","conclusion":"skipped"},
   {"id":2,"name":"Shell","status":"completed","conclusion":"success"}
 ]}
 EOF
@@ -241,5 +241,50 @@ if out=$(bash "$EVIDENCE" decide \
   fail "decide (missing data dir) should fail: $out"
 fi
 [[ "$out" == *"data dir not found"* ]] || fail "decide (missing data dir) wrong error: $out"
+
+# Case H: L1 — a parent push run with conditionally skipped jobs (e.g. CLA
+# already signed) still counts when the test job executed and was green.
+cat > "$DATA/parent-runs.json" <<EOF
+{"workflow_runs":[{"id":444,"head_sha":"$PARENT_SHA","created_at":"$RECENT_ISO","conclusion":"success"}]}
+EOF
+cat > "$DATA/jobs-444.json" <<'EOF'
+{"total_count":3,"jobs":[
+  {"id":1,"name":"test","status":"completed","conclusion":"success"},
+  {"id":2,"name":"CLA Check","status":"completed","conclusion":"skipped"},
+  {"id":3,"name":"Shell","status":"completed","conclusion":"success"}
+]}
+EOF
+out=$(bash "$EVIDENCE" decide \
+  --data-dir "$DATA" \
+  --target-sha "$TARGET_SHA" \
+  --parent-sha "$PARENT_SHA" \
+  --parent-tree "$PARENT_TREE" \
+  --now-epoch "$NOW") || fail "decide (L1 with skipped jobs) should succeed: $out"
+echo "$out" | jq -e --arg p "$PARENT_SHA" \
+  '.evidence == "inherit" and .terminal.run_id == 444 and .terminal.sha == $p' >/dev/null \
+  || fail "decide (L1 with skipped jobs) produced unexpected JSON: $out"
+
+# Case I: L2 — a PR-context run with skipped jobs (CLA etc.) still counts
+# when the test job executed and was green.
+echo '{"workflow_runs":[]}' > "$DATA/parent-runs.json"
+cat > "$DATA/pr-runs-${PR_HEAD_SHA}.json" <<EOF
+{"workflow_runs":[{"id":555,"head_sha":"$PR_HEAD_SHA","created_at":"$RECENT_ISO","conclusion":"success"}]}
+EOF
+cat > "$DATA/pr-jobs-555.json" <<'EOF'
+{"total_count":3,"jobs":[
+  {"id":1,"name":"test","status":"completed","conclusion":"success"},
+  {"id":2,"name":"CLA Check","status":"completed","conclusion":"skipped"},
+  {"id":3,"name":"Shell","status":"completed","conclusion":"success"}
+]}
+EOF
+out=$(bash "$EVIDENCE" decide \
+  --data-dir "$DATA" \
+  --target-sha "$TARGET_SHA" \
+  --parent-sha "$PARENT_SHA" \
+  --parent-tree "$PARENT_TREE" \
+  --now-epoch "$NOW") || fail "decide (L2 with skipped jobs) should succeed: $out"
+echo "$out" | jq -e --arg h "$PR_HEAD_SHA" \
+  '.evidence == "inherit" and .terminal.run_id == 555 and .terminal.sha == $h' >/dev/null \
+  || fail "decide (L2 with skipped jobs) produced unexpected JSON: $out"
 
 echo "release-evidence contract tests passed"
