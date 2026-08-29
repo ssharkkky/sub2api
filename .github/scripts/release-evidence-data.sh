@@ -19,6 +19,9 @@ fail() {
   exit 1
 }
 
+# Every gh api call below passes -f fields, which makes gh default to POST and
+# 404 on these GET-only endpoints; --method GET is required on each call.
+
 : "${GH_TOKEN:?GH_TOKEN is required}"
 export GH_TOKEN
 
@@ -43,6 +46,7 @@ mkdir -p "$out"
 
 # 1) Parent's Backend CI push runs (completed, any conclusion, newest first).
 gh api "repos/${repo}/actions/workflows/backend-ci.yml/runs" \
+  --method GET \
   -f branch=main \
   -f event=push \
   -f head_sha="$parent_sha" \
@@ -57,6 +61,7 @@ run_id=""
 while IFS= read -r run_id; do
   [[ -n "$run_id" ]] || continue
   gh api "repos/${repo}/actions/runs/${run_id}/jobs" -f per_page=100 \
+    --method GET \
     > "$out/jobs-${run_id}.json"
   jq -e . "$out/jobs-${run_id}.json" >/dev/null 2>&1 || fail "jobs-${run_id}.json is not valid JSON"
 done < <(jq -r '.workflow_runs[].id // empty' "$out/parent-runs.json")
@@ -64,6 +69,7 @@ done < <(jq -r '.workflow_runs[].id // empty' "$out/parent-runs.json")
 # 3) Recently merged PRs (newest first). The L2 chain may only terminate at
 #    one of these, so a bounded window is enough for the 7-day freshness cap.
 gh api "repos/${repo}/pulls" \
+  --method GET \
   -f state=closed \
   -f sort=updated \
   -f direction=desc \
@@ -89,6 +95,7 @@ while IFS= read -r line; do
     '{number: $number, sha: $sha, tree: $tree}' >> "$out/pr-head-trees.jsonl"
 
   gh api "repos/${repo}/actions/workflows/backend-ci.yml/runs" \
+    --method GET \
     -f event=pull_request \
     -f head_sha="$pr_head" \
     -f status=completed \
@@ -100,9 +107,10 @@ while IFS= read -r line; do
   while IFS= read -r pr_run_id; do
     [[ -n "$pr_run_id" ]] || continue
     gh api "repos/${repo}/actions/runs/${pr_run_id}/jobs" -f per_page=100 \
+      --method GET \
       > "$out/pr-jobs-${pr_run_id}.json"
     jq -e . "$out/pr-jobs-${pr_run_id}.json" >/dev/null 2>&1 || fail "pr-jobs-${pr_run_id}.json is not valid JSON"
   done < <(jq -r '.workflow_runs[].id // empty' "$out/pr-runs-${pr_head}.json")
-done < "$out/pr-data.json"
+done < <(jq -c '.[]' "$out/pr-data.json" 2>/dev/null)
 
 echo "release-evidence-data: data package ready in $out"
