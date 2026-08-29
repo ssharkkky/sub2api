@@ -27,10 +27,17 @@ jobs:
           /bin/bash -n .github/scripts/test-pretag-release-gate.sh
           /bin/bash -n .github/scripts/release-promotion-state.sh
           /bin/bash -n .github/scripts/test-release-promotion-state.sh
+          /bin/bash -n .github/scripts/release-evidence.sh
+          /bin/bash -n .github/scripts/release-evidence-data.sh
+          /bin/bash -n .github/scripts/release-check.sh
+          /bin/bash -n .github/scripts/test-release-evidence.sh
+          /bin/bash -n .github/scripts/test-release-check.sh
           /bin/bash .github/scripts/validate-release-candidate.sh
           /bin/bash .github/scripts/test-release-candidate.sh
           /bin/bash .github/scripts/test-pretag-release-gate.sh
           /bin/bash .github/scripts/test-release-promotion-state.sh
+          /bin/bash .github/scripts/test-release-evidence.sh
+          /bin/bash .github/scripts/test-release-check.sh
           /bin/bash -n deploy/apple-container.sh
           /bin/bash deploy/tests/apple-container-test.sh
           /bin/sh deploy/tests/docker-compose-security-test.sh
@@ -51,13 +58,105 @@ jobs:
           bash -n .github/scripts/test-pretag-release-gate.sh
           bash -n .github/scripts/release-promotion-state.sh
           bash -n .github/scripts/test-release-promotion-state.sh
+          bash -n .github/scripts/release-evidence.sh
+          bash -n .github/scripts/release-evidence-data.sh
+          bash -n .github/scripts/release-check.sh
+          bash -n .github/scripts/test-release-evidence.sh
+          bash -n .github/scripts/test-release-check.sh
           bash .github/scripts/validate-release-candidate.sh
           bash .github/scripts/test-release-candidate.sh
           bash .github/scripts/test-pretag-release-gate.sh
           bash .github/scripts/test-release-promotion-state.sh
           bash .github/scripts/test-release-safety.sh
+          bash .github/scripts/test-release-evidence.sh
+          bash .github/scripts/test-release-check.sh
 
+  verify-sha-evidence:
+    name: Verify SHA Evidence
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    permissions:
+      actions: read
+      contents: read
+    outputs:
+      evidence: ${{ steps.decide.outputs.evidence }}
+      terminal_run_id: ${{ steps.decide.outputs.terminal_run_id }}
+    steps:
+      - name: Checkout full history
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+      - name: Classify diff against first parent
+        id: classify
+        env:
+          TARGET_SHA: ${{ github.sha }}
+        run: |
+          PARENT_SHA=$(git rev-parse "${TARGET_SHA}^" 2>/dev/null || true)
+          echo "parent_sha=$PARENT_SHA" >> "$GITHUB_OUTPUT"
+          if [[ -z "$PARENT_SHA" ]]; then
+            echo "Root commit: no parent, full test run required"
+            echo "kind=none" >> "$GITHUB_OUTPUT"
+          else
+            kind=$(bash .github/scripts/release-evidence.sh classify \
+              --parent "$PARENT_SHA" --target "$TARGET_SHA")
+            echo "kind=$kind" >> "$GITHUB_OUTPUT"
+            echo "Diff classification: $kind (parent $PARENT_SHA)"
+          fi
+      - name: Fetch evidence data and decide
+        id: decide
+        if: steps.classify.outputs.kind == 'release-only'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TARGET_SHA: ${{ github.sha }}
+          PARENT_SHA: ${{ steps.classify.outputs.parent_sha }}
+          EVIDENCE_MAX_AGE_SECONDS: 604800
+        run: |
+          bash .github/scripts/release-evidence-data.sh \
+            --repo "$GITHUB_REPOSITORY" \
+            --parent-sha "$PARENT_SHA" \
+            --out "$RUNNER_TEMP/evidence-data"
+          status=0
+          bash .github/scripts/release-evidence.sh decide \
+            --data-dir "$RUNNER_TEMP/evidence-data" \
+            --target-sha "$TARGET_SHA" \
+            --parent-sha "$PARENT_SHA" \
+            --parent-tree "$(git rev-parse "${PARENT_SHA}^{tree}")" \
+            --max-age-seconds "$EVIDENCE_MAX_AGE_SECONDS" \
+            > "$RUNNER_TEMP/evidence-decision.json" || status=$?
+          if [[ "$status" -ne 0 && "$status" -ne 3 ]]; then
+            echo "Evidence decision failed (status=$status); fail-closed to full test run"
+            echo "evidence=none" >> "$GITHUB_OUTPUT"
+            echo "terminal_run_id=" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          evidence=$(jq -r '.evidence' "$RUNNER_TEMP/evidence-decision.json")
+          terminal_run_id=$(jq -r '.terminal.run_id // empty' "$RUNNER_TEMP/evidence-decision.json")
+          echo "evidence=$evidence" >> "$GITHUB_OUTPUT"
+          echo "terminal_run_id=$terminal_run_id" >> "$GITHUB_OUTPUT"
+      - name: Record audit chain in job summary
+        if: always()
+        env:
+          KIND: ${{ steps.classify.outputs.kind }}
+          PARENT_SHA: ${{ steps.classify.outputs.parent_sha }}
+          TARGET_SHA: ${{ github.sha }}
+          EVIDENCE: ${{ steps.decide.outputs.evidence }}
+          TERMINAL_RUN_ID: ${{ steps.decide.outputs.terminal_run_id }}
+          REPOSITORY: ${{ github.repository }}
+        run: |
+          {
+            echo "## SHA Evidence Decision (SOP evidence inheritance)"
+            echo
+            echo "- target: \`$TARGET_SHA\`"
+            echo "- parent: \`${PARENT_SHA:-n/a}\`"
+            echo "- classification: ${KIND:-unknown}"
+            echo "- decision: ${EVIDENCE:-not-run}"
+            if [[ -n "$TERMINAL_RUN_ID" ]]; then
+              echo "- terminal executed run: https://github.com/$REPOSITORY/actions/runs/$TERMINAL_RUN_ID"
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
   test:
+    needs: [verify-sha-evidence]
+    if: always() && needs.verify-sha-evidence.outputs.evidence != 'inherit'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6

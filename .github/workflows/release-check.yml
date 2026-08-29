@@ -1,0 +1,105 @@
+name: Release Check
+
+# Lightweight release-PR gate (SOP sec 10.6), replaces the heavy preflight
+# chain at the PR stage. Budget: < 60s. Runs on every PR to main so it can be
+# a required status check; non-release PRs pass immediately (same pattern as
+# Detect Release Candidate). For a release PR the checks are:
+#   1. branch protection: no drift (head must descend from the current main tip)
+#   2. diff containment: only backend/cmd/server/VERSION + release notes
+#   3. release notes validation (shared validator with preflight)
+#   4. version increment (no tag reuse; new base starts at ts.1)
+#   5. go module graph already tidy
+#   6. high-risk mechanical audit decision over the release content
+# The frontend production build and candidate build run after merge in
+# release-preflight.yml (push context).
+
+on:
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  release-check:
+    name: Release Check
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout PR head with full history
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+          ref: ${{ github.event.pull_request.head.sha }}
+      - name: Detect release PR and enforce drift-free base
+        env:
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+        run: |
+          set -euo pipefail
+          git fetch origin main --no-tags
+          MAIN_TIP=$(git rev-parse origin/main)
+          MERGE_BASE=$(git merge-base HEAD origin/main)
+
+          # A release PR changes VERSION and/or a release notes file.
+          if [[ "$MERGE_BASE" != "$MAIN_TIP" ]]; then
+            echo "PR head is not based on the current main tip ($MAIN_TIP, merge-base $MERGE_BASE); rebase onto main" >&2
+            exit 1
+          fi
+          git diff --name-only "$MAIN_TIP" HEAD > "$RUNNER_TEMP/changed-files.txt"
+          if ! grep -qx 'backend/cmd/server/VERSION' "$RUNNER_TEMP/changed-files.txt" && \
+            ! grep -Eq '^docs/releases/v[0-9]+\.[0-9]+\.[0-9]+-ts\.[0-9]+\.md$' "$RUNNER_TEMP/changed-files.txt"; then
+            echo "Not a release PR (no VERSION or release notes changes); Release Check passes"
+            exit 0
+          fi
+          echo "Release PR detected; running the lightweight release gate"
+      - name: Setup Go
+        uses: actions/setup-go@v6
+        with:
+          go-version-file: backend/go.mod
+          check-latest: false
+          cache: true
+          cache-dependency-path: backend/go.sum
+      - name: Lightweight release gate
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+        run: |
+          set -euo pipefail
+          VERSION=$(tr -d '\r\n' < backend/cmd/server/VERSION)
+
+          # The previous step already fetched origin/main and wrote the
+          # changed-files list; re-derive the diff base defensively.
+          MAIN_TIP=$(git rev-parse origin/main)
+          git diff --name-only "$MAIN_TIP" HEAD > "$RUNNER_TEMP/changed-files.txt"
+
+          # 1) Diff containment (SOP sec 10.6): release PRs only touch VERSION + notes.
+          bash .github/scripts/release-check.sh containment \
+            --files "$RUNNER_TEMP/changed-files.txt" --version "$VERSION"
+
+          # 2) Release notes validation (shared with preflight).
+          bash .github/scripts/validate-release-candidate.sh
+
+          # 3) Version increment (no tag reuse; a new base starts at ts.1).
+          git ls-remote --tags origin | awk '{print $2}' | sed 's|^refs/tags/||' \
+            > "$RUNNER_TEMP/existing-tags.txt"
+          bash .github/scripts/release-check.sh version-increment \
+            --version "$VERSION" --existing-tags "$RUNNER_TEMP/existing-tags.txt"
+
+          # 4) Go module graph must already be tidy.
+          (cd backend && go mod tidy && git diff --exit-code -- go.mod go.sum)
+
+          # 5) High-risk mechanical audit decision over the release content
+          #    (everything changed since the last published release tag).
+          LAST_TAG=$(git ls-remote --tags origin 'refs/tags/v*-ts.*' \
+            | awk '{print $2}' | sed 's|^refs/tags/v||' | sort -V | tail -n 1)
+          if [[ -n "$LAST_TAG" ]]; then
+            git fetch --depth 1 --no-tags origin "refs/tags/v${LAST_TAG}"
+            git diff --name-only "v${LAST_TAG}" HEAD > "$RUNNER_TEMP/release-files.txt"
+          else
+            cp "$RUNNER_TEMP/changed-files.txt" "$RUNNER_TEMP/release-files.txt"
+          fi
+          gh api "repos/${GITHUB_REPOSITORY}/pulls/${PR_NUMBER}" --jq .body \
+            > "$RUNNER_TEMP/pr-body.md"
+          bash .github/scripts/release-check.sh high-risk \
+            --release-files "$RUNNER_TEMP/release-files.txt" --pr-body "$RUNNER_TEMP/pr-body.md"
+
+          echo "Release Check passed for $VERSION"
