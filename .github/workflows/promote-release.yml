@@ -119,6 +119,7 @@ jobs:
           # the Verify SHA Evidence job (then re-derived independently here;
           # Release Check and Promote judgments never reuse each other).
           gh api "repos/${GITHUB_REPOSITORY}/actions/runs/${BACKEND_RUN_ID}/jobs" \
+            --method GET \
             -f per_page=100 > "$RUNNER_TEMP/backend-ci-jobs.json"
           jq -e . "$RUNNER_TEMP/backend-ci-jobs.json" >/dev/null \
             || { echo "Backend CI jobs payload is not valid JSON" >&2; exit 1; }
