@@ -69,7 +69,10 @@ func TestMigrationsRunner_IsIdempotent_AndSchemaIsUpToDate(t *testing.T) {
 	requireColumn(t, tx, "usage_logs", "billing_type", "smallint", 0, false)
 	requireColumn(t, tx, "usage_logs", "request_type", "smallint", 0, false)
 	requireColumn(t, tx, "usage_logs", "openai_ws_mode", "boolean", 0, false)
-	requireColumn(t, tx, "usage_logs", "native_compaction_v2", "boolean", 0, false)
+	// NULL is intentionally treated as false for rollback-compatible rollout
+	// (migration 231 keeps the expansion nullable; reviewed-compatible
+	// SET DEFAULT covers rows inserted by older binaries).
+	requireColumn(t, tx, "usage_logs", "native_compaction_v2", "boolean", 0, true)
 	requireColumnDefaultContains(t, tx, "usage_logs", "native_compaction_v2", "false")
 	requireColumn(t, tx, "usage_logs", "image_input_size", "character varying", 32, true)
 	requireColumn(t, tx, "usage_logs", "image_output_size", "character varying", 32, true)
