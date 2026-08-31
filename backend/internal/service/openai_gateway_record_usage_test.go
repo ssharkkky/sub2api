@@ -142,9 +142,10 @@ func TestRecordCyberPolicyUsageLog_APIKeyActualTierOverridesOutboundUsingSnapsho
 	require.InDelta(t, expected.ActualCost, userRepo.lastAmount, 1e-12)
 }
 
-// 上游 200602b41 契约：API key 凭据的响应档位可降级计费（观察 default 低于出站
-// priority → 按 default/standard 倍率计）。OAuth 类凭据的 default 观察不降级，
-// 见 TestRecordCyberPolicyUsageLog_OAuthFastKeepsOutboundPriorityWhenResponseIsDefault。
+// 渠道显式 use_outbound_tier_for_billing=false 时采用上游 200602b41 契约：
+// API key 凭据的响应档位可降级计费（观察 default 低于出站 priority → 按
+// default/standard 倍率计）。默认 true 保持出站档，见
+// TestRecordCyberPolicyUsageLog_APIKeyOutboundBillingKeptByDefaultChannelConfig。
 func TestRecordCyberPolicyUsageLog_APIKeyObservedDefaultLowersBilling(t *testing.T) {
 	usageRepo := &openAIRecordUsageLogRepoStub{inserted: true}
 	userRepo := &openAIRecordUsageUserRepoStub{}
@@ -153,6 +154,7 @@ func TestRecordCyberPolicyUsageLog_APIKeyObservedDefaultLowersBilling(t *testing
 	config := DefaultChannelServiceTierConfig()
 	config.Standard.Multiplier = 1.25
 	config.Priority.Multiplier = 3
+	config.UseOutboundTierForBilling = false
 	actualTier := "default"
 
 	svc.RecordCyberPolicyUsageLog(context.Background(), CyberPolicyUsageInput{
@@ -181,6 +183,45 @@ func TestRecordCyberPolicyUsageLog_APIKeyObservedDefaultLowersBilling(t *testing
 	require.InDelta(t, expected.ActualCost, userRepo.lastAmount, 1e-12)
 }
 
+// 渠道默认配置（use_outbound_tier_for_billing=true）：出站档位恒权威，
+// 上游响应观察 default 不降级 —— fork 原本计费语义。
+func TestRecordCyberPolicyUsageLog_APIKeyOutboundBillingKeptByDefaultChannelConfig(t *testing.T) {
+	usageRepo := &openAIRecordUsageLogRepoStub{inserted: true}
+	userRepo := &openAIRecordUsageUserRepoStub{}
+	svc := newOpenAIRecordUsageServiceForTest(usageRepo, userRepo, &openAIRecordUsageSubRepoStub{}, nil)
+	usage := OpenAIUsage{InputTokens: 1200, OutputTokens: 300}
+	config := DefaultChannelServiceTierConfig()
+	config.Standard.Multiplier = 1.25
+	config.Priority.Multiplier = 3
+	require.True(t, config.UseOutboundTierForBilling) // 默认值守护
+	actualTier := "default"
+
+	svc.RecordCyberPolicyUsageLog(context.Background(), CyberPolicyUsageInput{
+		APIKey:            &APIKey{ID: 2, User: &User{ID: 1}},
+		Account:           &Account{ID: 3, Platform: PlatformOpenAI, Type: AccountTypeAPIKey},
+		RequestID:         "rid-cyber-api-key-outbound-default-config",
+		Model:             "gpt-5.1",
+		Stream:            true,
+		InputTokens:       usage.InputTokens,
+		OutputTokens:      usage.OutputTokens,
+		ActualServiceTier: &actualTier,
+		ServiceTierState: &OpenAIServiceTierRequestState{
+			Snapshot:              &ChannelServiceTierSnapshot{ChannelID: 1, GroupID: 2, Config: config},
+			RequestedProtocolTier: "fast",
+			OutboundProtocolTier:  "priority",
+			RequestedTier:         OpenAICommercialTierPriority,
+			OutboundTier:          OpenAICommercialTierPriority,
+		},
+	})
+
+	require.Equal(t, 1, usageRepo.calls)
+	require.NotNil(t, usageRepo.lastLog.ServiceTier)
+	require.Equal(t, "priority", *usageRepo.lastLog.ServiceTier)
+	expected := expectedOpenAICost(t, svc, "gpt-5.1", usage, 1.1*3)
+	require.InDelta(t, expected.ActualCost, usageRepo.lastLog.ActualCost, 1e-12)
+	require.InDelta(t, expected.ActualCost, userRepo.lastAmount, 1e-12)
+}
+
 func TestRecordCyberPolicyUsageLog_OAuthFastKeepsOutboundPriorityWhenResponseIsDefault(t *testing.T) {
 	usageRepo := &openAIRecordUsageLogRepoStub{inserted: true}
 	userRepo := &openAIRecordUsageUserRepoStub{}
@@ -189,6 +230,9 @@ func TestRecordCyberPolicyUsageLog_OAuthFastKeepsOutboundPriorityWhenResponseIsD
 	config := DefaultChannelServiceTierConfig()
 	config.Standard.Multiplier = 1.25
 	config.Priority.Multiplier = 3
+	// 关闭渠道出站档开关，走到上游 OAuth 契约层：OAuth 凭据观察 default 非权威，
+	// 保留出站 priority（区别于 API key 凭据会降级）。
+	config.UseOutboundTierForBilling = false
 	actualTier := "default"
 
 	svc.RecordCyberPolicyUsageLog(context.Background(), CyberPolicyUsageInput{
@@ -3148,6 +3192,11 @@ func TestOpenAIGatewayServiceRecordUsage_ServiceTierDowngradedByUpstreamResponse
 	serviceTier := "priority"
 	usage := OpenAIUsage{InputTokens: 100, OutputTokens: 50}
 
+	// fork 语义：无渠道快照 / use_outbound_tier_for_billing=true（默认）时按出站档
+	// 计费；这里显式关闭渠道出站档开关以验证上游降级契约路径。
+	downgradeCfg := DefaultChannelServiceTierConfig()
+	downgradeCfg.UseOutboundTierForBilling = false
+
 	err := svc.RecordUsage(context.Background(), &OpenAIRecordUsageInput{
 		Result: &OpenAIForwardResult{
 			RequestID:                   "resp_service_tier_downgraded",
@@ -3160,6 +3209,11 @@ func TestOpenAIGatewayServiceRecordUsage_ServiceTierDowngradedByUpstreamResponse
 		APIKey:  &APIKey{ID: 1017},
 		User:    &User{ID: 2017},
 		Account: &Account{ID: 3017, Platform: PlatformOpenAI, Type: AccountTypeAPIKey},
+		ServiceTierState: &OpenAIServiceTierRequestState{
+			Snapshot:             &ChannelServiceTierSnapshot{ChannelID: 1, GroupID: 2, Config: downgradeCfg},
+			OutboundProtocolTier: "priority",
+			OutboundTier:         OpenAICommercialTierPriority,
+		},
 	})
 
 	require.NoError(t, err)

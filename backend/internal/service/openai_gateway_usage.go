@@ -175,7 +175,7 @@ func (s *OpenAIGatewayService) RecordUsage(ctx context.Context, input *OpenAIRec
 	if !isGrokVideoUsageResult(result, nil) {
 		ApplyOpenAIImageBillingResolution(result)
 	}
-	logServiceTierBillingDowngrade("service.openai_gateway", account, result.RequestID, ApplyOpenAIServiceTierBillingResolution(billingAccount, result))
+	logServiceTierBillingDowngrade("service.openai_gateway", account, result.RequestID, resolveUsageServiceTierBilling(input.ServiceTierState, billingAccount, result))
 
 	// OpenAI input_tokens 是总输入，包含缓存读取和缓存写入明细。
 	// 将三类 token 拆成互斥桶，避免缓存写入同时按普通输入和 cache_write 重复计费。
@@ -235,9 +235,10 @@ func (s *OpenAIGatewayService) RecordUsage(ctx context.Context, input *OpenAIRec
 	if result.ServiceTier != nil {
 		serviceTier = strings.TrimSpace(*result.ServiceTier)
 	}
-	// tier 计费决策已由上方 ApplyOpenAIServiceTierBillingResolution 收敛
-	// （降级时把计费 tier 写回 result.ServiceTier，并留 logServiceTierBillingDowngrade
-	// 审计）；这里仅保留 fork 渠道定价 / response-model 计费路径需要的渠道快照。
+	// tier 计费决策已由上方 resolveUsageServiceTierBilling 收敛（渠道
+	// use_outbound_tier_for_billing=false 时按观察档降级写回 result.ServiceTier
+	// 并留 logServiceTierBillingDowngrade 审计；默认 true 保持出站档）；
+	// 这里仅保留 fork 渠道定价 / response-model 计费路径需要的渠道快照。
 	serviceTierDecision := resolveOpenAIServiceTierBillingDecision(result, input.ServiceTierState, billingAccount)
 	longContextBillingGate := openAILongContextBillingGate(billingAccount)
 	cost, err = s.calculateOpenAIRecordUsageCost(

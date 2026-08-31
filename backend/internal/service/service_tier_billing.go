@@ -97,6 +97,21 @@ func ApplyOpenAIServiceTierBillingResolution(account *Account, result *OpenAIFor
 	return resolution
 }
 
+// resolveUsageServiceTierBilling 统一用量路径的计费档位决策：渠道配置
+// use_outbound_tier_for_billing=true（默认；含无渠道快照的路径）时按出站档位
+// 计费（fork 原本语义，不用上游响应自报档位降级）；仅当渠道显式置 false 时
+// 才采用上游降级契约（观察档位可把计费降下来）。
+func resolveUsageServiceTierBilling(state *OpenAIServiceTierRequestState, account *Account, result *OpenAIForwardResult) ServiceTierBillingResolution {
+	if state != nil && state.Snapshot != nil && !state.Snapshot.Config.UseOutboundTierForBilling {
+		return ApplyOpenAIServiceTierBillingResolution(account, result)
+	}
+	return ServiceTierBillingResolution{
+		Requested: optionalStringValue(result.ServiceTier),
+		Observed:  result.UpstreamResponseServiceTier,
+		Billing:   optionalStringValue(result.ServiceTier),
+	}
+}
+
 // ApplyForwardServiceTierBillingResolution is the ForwardResult counterpart of
 // ApplyOpenAIServiceTierBillingResolution.
 func ApplyForwardServiceTierBillingResolution(result *ForwardResult) ServiceTierBillingResolution {
