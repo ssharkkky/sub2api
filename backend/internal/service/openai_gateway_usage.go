@@ -83,11 +83,26 @@ func (s *OpenAIGatewayService) RecordCyberPolicyUsageLog(ctx context.Context, in
 	if s == nil || in.APIKey == nil || in.APIKey.User == nil || in.Account == nil || strings.TrimSpace(in.Model) == "" {
 		return
 	}
+	// 与正常路径的 result 构造口径一致：requested tier 取出站档位，observed tier
+	// 取上游响应自报档位；计费收敛由 RecordUsage 内的
+	// ApplyOpenAIServiceTierBillingResolution 统一完成（OAuth 类凭据对
+	// default 观察不降级，API key 凭据允许观察降级）。
+	var outboundTier *string
+	if in.ServiceTierState != nil && strings.TrimSpace(in.ServiceTierState.OutboundProtocolTier) != "" {
+		t := strings.TrimSpace(in.ServiceTierState.OutboundProtocolTier)
+		outboundTier = &t
+	}
+	var observedTier string
+	if in.ActualServiceTier != nil {
+		observedTier = strings.TrimSpace(*in.ActualServiceTier)
+	}
 	result := &OpenAIForwardResult{
-		RequestID:         in.RequestID,
-		Model:             in.Model,
-		Stream:            in.Stream,
-		ActualServiceTier: in.ActualServiceTier,
+		RequestID:                   in.RequestID,
+		Model:                       in.Model,
+		Stream:                      in.Stream,
+		ServiceTier:                 outboundTier,
+		UpstreamResponseServiceTier: observedTier,
+		ActualServiceTier:           in.ActualServiceTier,
 		Usage: OpenAIUsage{
 			InputTokens:  in.InputTokens,
 			OutputTokens: in.OutputTokens,
@@ -153,10 +168,14 @@ func (s *OpenAIGatewayService) RecordUsage(ctx context.Context, input *OpenAIRec
 	user := input.User
 	account := input.Account
 	subscription := input.Subscription
+	billingAccount, err := resolveCredentialAccount(ctx, s.accountRepo, account)
+	if err != nil {
+		return err
+	}
 	if !isGrokVideoUsageResult(result, nil) {
 		ApplyOpenAIImageBillingResolution(result)
 	}
-	logServiceTierBillingDowngrade("service.openai_gateway", account, result.RequestID, ApplyOpenAIServiceTierBillingResolution(result))
+	logServiceTierBillingDowngrade("service.openai_gateway", account, result.RequestID, ApplyOpenAIServiceTierBillingResolution(billingAccount, result))
 
 	// OpenAI input_tokens 是总输入，包含缓存读取和缓存写入明细。
 	// 将三类 token 拆成互斥桶，避免缓存写入同时按普通输入和 cache_write 重复计费。
@@ -193,7 +212,6 @@ func (s *OpenAIGatewayService) RecordUsage(ctx context.Context, input *OpenAIRec
 	videoMultiplier := resolveVideoRateMultiplier(apiKey, baseMultiplier)
 
 	var cost *CostBreakdown
-	var err error
 	billingModel := forwardResultBillingModel(result.Model, result.UpstreamModel)
 	if result.BillingModel != "" {
 		billingModel = strings.TrimSpace(result.BillingModel)
@@ -213,64 +231,14 @@ func (s *OpenAIGatewayService) RecordUsage(ctx context.Context, input *OpenAIRec
 		result.Model,
 	)
 	billingModels = s.filterCNProviderBillingModelCandidates(ctx, account, apiKey, billingModels)
-	billingAccount := account
-	if account.IsShadow() {
-		billingAccount, err = resolveCredentialAccount(ctx, s.accountRepo, account)
-		if err != nil {
-			return err
-		}
+	serviceTier := ""
+	if result.ServiceTier != nil {
+		serviceTier = strings.TrimSpace(*result.ServiceTier)
 	}
+	// tier 计费决策已由上方 ApplyOpenAIServiceTierBillingResolution 收敛
+	// （降级时把计费 tier 写回 result.ServiceTier，并留 logServiceTierBillingDowngrade
+	// 审计）；这里仅保留 fork 渠道定价 / response-model 计费路径需要的渠道快照。
 	serviceTierDecision := resolveOpenAIServiceTierBillingDecision(result, input.ServiceTierState, billingAccount)
-	serviceTier := serviceTierDecision.ProtocolTier
-	if serviceTierDecision.Evidence == openAIServiceTierEvidenceChannelOutboundAuthoritative &&
-		serviceTierDecision.ActualWasObserved {
-		logger.L().With(
-			zap.String("component", "service.openai_gateway"),
-			zap.String("actual_service_tier", serviceTierDecision.ActualProtocolTier),
-			zap.String("billing_service_tier", serviceTier),
-			zap.String("service_tier_evidence", string(serviceTierDecision.Evidence)),
-			zap.Int64("account_id", account.ID),
-		).Debug("openai_usage.outbound_authoritative_observed_service_tier")
-	} else if serviceTierDecision.ActualWasUnknown {
-		logger.L().With(
-			zap.String("component", "service.openai_gateway"),
-			zap.String("actual_service_tier", serviceTierDecision.ActualProtocolTier),
-			zap.String("fallback_service_tier", serviceTier),
-			zap.String("service_tier_evidence", string(serviceTierDecision.Evidence)),
-			zap.Int64("account_id", account.ID),
-		).Warn("openai_usage.unknown_actual_service_tier")
-	}
-	if serviceTierDecision.ActualWasUsed && input.ServiceTierState != nil &&
-		serviceTierDecision.CommercialTier != input.ServiceTierState.OutboundTier {
-		mismatchDirection := classifyOpenAIServiceTierMismatch(
-			input.ServiceTierState.OutboundTier,
-			serviceTierDecision.CommercialTier,
-		)
-		fields := []zap.Field{
-			zap.String("component", "service.openai_gateway"),
-			zap.String("requested_service_tier", input.ServiceTierState.RequestedProtocolTier),
-			zap.String("outbound_service_tier", input.ServiceTierState.OutboundProtocolTier),
-			zap.String("actual_service_tier", serviceTierDecision.ActualProtocolTier),
-			zap.String("billing_service_tier", string(serviceTierDecision.CommercialTier)),
-			zap.String("service_tier_evidence", string(serviceTierDecision.Evidence)),
-			zap.String("service_tier_mismatch_direction", mismatchDirection),
-			zap.String("model", billingModel),
-			zap.Int64("account_id", account.ID),
-		}
-		if serviceTierDecision.Snapshot != nil {
-			fields = append(fields,
-				zap.Int64("channel_id", serviceTierDecision.Snapshot.ChannelID),
-				zap.Int64("group_id", serviceTierDecision.Snapshot.GroupID),
-				zap.String("service_tier_config_revision", serviceTierDecision.Snapshot.ConfigRevision),
-			)
-		}
-		entry := logger.L().With(fields...)
-		if mismatchDirection == "upgraded" {
-			entry.Info("openai_usage.service_tier_mismatch")
-		} else {
-			entry.Warn("openai_usage.service_tier_mismatch")
-		}
-	}
 	longContextBillingGate := openAILongContextBillingGate(billingAccount)
 	cost, err = s.calculateOpenAIRecordUsageCost(
 		ctx,
