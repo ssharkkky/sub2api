@@ -428,6 +428,28 @@ func TestUsageLogRepositoryListWithFiltersNativeCompactionV2(t *testing.T) {
 	require.NoError(t, mock.ExpectationsWereMet())
 }
 
+// 迁移 231 将 native_compaction_v2 改为可空列后，历史行该列为 NULL。
+// “非 compaction”（false）过滤必须用 COALESCE 命中这些历史行。
+func TestUsageLogRepositoryListWithFiltersNativeCompactionV2FalseCoalescesNull(t *testing.T) {
+	db, mock := newSQLMock(t)
+	repo := &usageLogRepository{sql: db}
+	nativeCompactionV2 := false
+	filters := usagestats.UsageLogFilters{NativeCompactionV2: &nativeCompactionV2, ExactTotal: true}
+
+	mock.ExpectQuery("SELECT COUNT\\(\\*\\) FROM usage_logs WHERE COALESCE\\(native_compaction_v2, FALSE\\) = \\$1").
+		WithArgs(false).
+		WillReturnRows(sqlmock.NewRows([]string{"count"}).AddRow(int64(0)))
+	mock.ExpectQuery("SELECT .* FROM usage_logs WHERE COALESCE\\(native_compaction_v2, FALSE\\) = \\$1 ORDER BY id DESC LIMIT \\$2 OFFSET \\$3").
+		WithArgs(false, 20, 0).
+		WillReturnRows(sqlmock.NewRows([]string{"id"}))
+
+	logs, page, err := repo.ListWithFilters(context.Background(), pagination.PaginationParams{Page: 1, PageSize: 20}, filters)
+	require.NoError(t, err)
+	require.Empty(t, logs)
+	require.NotNil(t, page)
+	require.NoError(t, mock.ExpectationsWereMet())
+}
+
 func TestUsageLogRepositoryListWithFiltersRequestID(t *testing.T) {
 	db, mock := newSQLMock(t)
 	repo := &usageLogRepository{sql: db}
@@ -959,7 +981,7 @@ func TestScanUsageLogRequestTypeAndLegacyFallback(t *testing.T) {
 			sql.NullFloat64{},
 			sql.NullFloat64{},
 			sql.NullString{},
-			false, // native_compaction_v2
+			sql.NullBool{Valid: true}, // native_compaction_v2 (NULL-safe scan)
 			now,
 		}})
 		require.NoError(t, err)
@@ -1039,7 +1061,7 @@ func TestScanUsageLogRequestTypeAndLegacyFallback(t *testing.T) {
 			sql.NullFloat64{}, // account_stats_cost
 			sql.NullFloat64{}, // kiro_credits
 			sql.NullString{},  // session_id
-			false,             // native_compaction_v2
+			sql.NullBool{Valid: true}, // native_compaction_v2 (NULL-safe scan)
 			now,
 		}})
 		require.NoError(t, err)
@@ -1102,7 +1124,7 @@ func TestScanUsageLogRequestTypeAndLegacyFallback(t *testing.T) {
 			sql.NullFloat64{}, // account_stats_cost
 			sql.NullFloat64{}, // kiro_credits
 			sql.NullString{},  // session_id
-			true,              // native_compaction_v2
+			sql.NullBool{Valid: true, Bool: true}, // native_compaction_v2 (NULL-safe scan)
 			now,
 		}})
 		require.NoError(t, err)
@@ -1166,7 +1188,7 @@ func TestScanUsageLogRequestTypeAndLegacyFallback(t *testing.T) {
 			sql.NullFloat64{}, // account_stats_cost
 			sql.NullFloat64{}, // kiro_credits
 			sql.NullString{},  // session_id
-			false,             // native_compaction_v2
+			sql.NullBool{Valid: true}, // native_compaction_v2 (NULL-safe scan)
 			now,
 		}})
 		require.NoError(t, err)

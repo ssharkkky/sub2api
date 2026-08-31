@@ -207,7 +207,13 @@ func appendNativeCompactionV2WhereCondition(conditions []string, args []any, nat
 	if alias != "" {
 		column = alias + "." + column
 	}
-	conditions = append(conditions, fmt.Sprintf("%s = $%d", column, len(args)+1))
+	if *nativeCompactionV2 {
+		conditions = append(conditions, fmt.Sprintf("%s = $%d", column, len(args)+1))
+	} else {
+		// 可空列（迁移 231）：历史行该列为 NULL，语义上等同 FALSE，
+		// 用 COALESCE 保证“非 compaction”过滤命中历史行。
+		conditions = append(conditions, fmt.Sprintf("COALESCE(%s, FALSE) = $%d", column, len(args)+1))
+	}
 	args = append(args, *nativeCompactionV2)
 	return conditions, args
 }

@@ -544,7 +544,7 @@ func scanUsageLog(scanner interface{ Scan(...any) error }) (*service.UsageLog, e
 		accountStatsCost          sql.NullFloat64
 		kiroCredits               sql.NullFloat64
 		sessionID                 sql.NullString
-		nativeCompactionV2        bool
+		nativeCompactionV2        sql.NullBool
 		createdAt                 time.Time
 	)
 
@@ -643,7 +643,7 @@ func scanUsageLog(scanner interface{ Scan(...any) error }) (*service.UsageLog, e
 		AccountRateMultiplier:     nullFloat64Ptr(accountRateMultiplier),
 		BillingType:               int8(billingType),
 		RequestType:               service.RequestTypeFromInt16(requestTypeRaw),
-		NativeCompactionV2:        nativeCompactionV2,
+		NativeCompactionV2:        nativeCompactionV2.Bool,
 		ImageCount:                imageCount,
 		VideoCount:                videoCount,
 		CacheTTLOverridden:        cacheTTLOverridden,
