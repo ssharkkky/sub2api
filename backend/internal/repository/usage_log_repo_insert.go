@@ -838,6 +838,7 @@ func buildUsageLogBatchInsertQuery(keys []string, preparedByKey map[string]usage
 				billing_tier,
 				billing_mode,
 				account_stats_cost,
+				kiro_credits,
 				session_id,
 				native_compaction_v2,
 				created_at
@@ -901,6 +902,7 @@ func buildUsageLogBatchInsertQuery(keys []string, preparedByKey map[string]usage
 				billing_tier,
 				billing_mode,
 				account_stats_cost,
+				kiro_credits,
 				session_id,
 				native_compaction_v2,
 				created_at
