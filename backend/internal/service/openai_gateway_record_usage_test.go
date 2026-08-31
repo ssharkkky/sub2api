@@ -142,7 +142,11 @@ func TestRecordCyberPolicyUsageLog_APIKeyActualTierOverridesOutboundUsingSnapsho
 	require.InDelta(t, expected.ActualCost, userRepo.lastAmount, 1e-12)
 }
 
-func TestRecordCyberPolicyUsageLog_APIKeyOutboundTierCanRemainAuthoritative(t *testing.T) {
+// 渠道显式 use_outbound_tier_for_billing=false 时采用上游 200602b41 契约：
+// API key 凭据的响应档位可降级计费（观察 default 低于出站 priority → 按
+// default/standard 倍率计）。默认 true 保持出站档，见
+// TestRecordCyberPolicyUsageLog_APIKeyOutboundBillingKeptByDefaultChannelConfig。
+func TestRecordCyberPolicyUsageLog_APIKeyObservedDefaultLowersBilling(t *testing.T) {
 	usageRepo := &openAIRecordUsageLogRepoStub{inserted: true}
 	userRepo := &openAIRecordUsageUserRepoStub{}
 	svc := newOpenAIRecordUsageServiceForTest(usageRepo, userRepo, &openAIRecordUsageSubRepoStub{}, nil)
@@ -150,12 +154,52 @@ func TestRecordCyberPolicyUsageLog_APIKeyOutboundTierCanRemainAuthoritative(t *t
 	config := DefaultChannelServiceTierConfig()
 	config.Standard.Multiplier = 1.25
 	config.Priority.Multiplier = 3
+	config.UseOutboundTierForBilling = false
 	actualTier := "default"
 
 	svc.RecordCyberPolicyUsageLog(context.Background(), CyberPolicyUsageInput{
 		APIKey:            &APIKey{ID: 2, User: &User{ID: 1}},
 		Account:           &Account{ID: 3, Platform: PlatformOpenAI, Type: AccountTypeAPIKey},
 		RequestID:         "rid-cyber-api-key-fast",
+		Model:             "gpt-5.1",
+		Stream:            true,
+		InputTokens:       usage.InputTokens,
+		OutputTokens:      usage.OutputTokens,
+		ActualServiceTier: &actualTier,
+		ServiceTierState: &OpenAIServiceTierRequestState{
+			Snapshot:              &ChannelServiceTierSnapshot{ChannelID: 1, GroupID: 2, Config: config},
+			RequestedProtocolTier: "fast",
+			OutboundProtocolTier:  "priority",
+			RequestedTier:         OpenAICommercialTierPriority,
+			OutboundTier:          OpenAICommercialTierPriority,
+		},
+	})
+
+	require.Equal(t, 1, usageRepo.calls)
+	require.NotNil(t, usageRepo.lastLog.ServiceTier)
+	require.Equal(t, "default", *usageRepo.lastLog.ServiceTier)
+	expected := expectedOpenAICost(t, svc, "gpt-5.1", usage, 1.1*1.25)
+	require.InDelta(t, expected.ActualCost, usageRepo.lastLog.ActualCost, 1e-12)
+	require.InDelta(t, expected.ActualCost, userRepo.lastAmount, 1e-12)
+}
+
+// 渠道默认配置（use_outbound_tier_for_billing=true）：出站档位恒权威，
+// 上游响应观察 default 不降级 —— fork 原本计费语义。
+func TestRecordCyberPolicyUsageLog_APIKeyOutboundBillingKeptByDefaultChannelConfig(t *testing.T) {
+	usageRepo := &openAIRecordUsageLogRepoStub{inserted: true}
+	userRepo := &openAIRecordUsageUserRepoStub{}
+	svc := newOpenAIRecordUsageServiceForTest(usageRepo, userRepo, &openAIRecordUsageSubRepoStub{}, nil)
+	usage := OpenAIUsage{InputTokens: 1200, OutputTokens: 300}
+	config := DefaultChannelServiceTierConfig()
+	config.Standard.Multiplier = 1.25
+	config.Priority.Multiplier = 3
+	require.True(t, config.UseOutboundTierForBilling) // 默认值守护
+	actualTier := "default"
+
+	svc.RecordCyberPolicyUsageLog(context.Background(), CyberPolicyUsageInput{
+		APIKey:            &APIKey{ID: 2, User: &User{ID: 1}},
+		Account:           &Account{ID: 3, Platform: PlatformOpenAI, Type: AccountTypeAPIKey},
+		RequestID:         "rid-cyber-api-key-outbound-default-config",
 		Model:             "gpt-5.1",
 		Stream:            true,
 		InputTokens:       usage.InputTokens,
@@ -186,6 +230,9 @@ func TestRecordCyberPolicyUsageLog_OAuthFastKeepsOutboundPriorityWhenResponseIsD
 	config := DefaultChannelServiceTierConfig()
 	config.Standard.Multiplier = 1.25
 	config.Priority.Multiplier = 3
+	// 关闭渠道出站档开关，走到上游 OAuth 契约层：OAuth 凭据观察 default 非权威，
+	// 保留出站 priority（区别于 API key 凭据会降级）。
+	config.UseOutboundTierForBilling = false
 	actualTier := "default"
 
 	svc.RecordCyberPolicyUsageLog(context.Background(), CyberPolicyUsageInput{
@@ -3145,6 +3192,11 @@ func TestOpenAIGatewayServiceRecordUsage_ServiceTierDowngradedByUpstreamResponse
 	serviceTier := "priority"
 	usage := OpenAIUsage{InputTokens: 100, OutputTokens: 50}
 
+	// fork 语义：无渠道快照 / use_outbound_tier_for_billing=true（默认）时按出站档
+	// 计费；这里显式关闭渠道出站档开关以验证上游降级契约路径。
+	downgradeCfg := DefaultChannelServiceTierConfig()
+	downgradeCfg.UseOutboundTierForBilling = false
+
 	err := svc.RecordUsage(context.Background(), &OpenAIRecordUsageInput{
 		Result: &OpenAIForwardResult{
 			RequestID:                   "resp_service_tier_downgraded",
@@ -3156,7 +3208,12 @@ func TestOpenAIGatewayServiceRecordUsage_ServiceTierDowngradedByUpstreamResponse
 		},
 		APIKey:  &APIKey{ID: 1017},
 		User:    &User{ID: 2017},
-		Account: &Account{ID: 3017},
+		Account: &Account{ID: 3017, Platform: PlatformOpenAI, Type: AccountTypeAPIKey},
+		ServiceTierState: &OpenAIServiceTierRequestState{
+			Snapshot:             &ChannelServiceTierSnapshot{ChannelID: 1, GroupID: 2, Config: downgradeCfg},
+			OutboundProtocolTier: "priority",
+			OutboundTier:         OpenAICommercialTierPriority,
+		},
 	})
 
 	require.NoError(t, err)
@@ -3167,6 +3224,89 @@ func TestOpenAIGatewayServiceRecordUsage_ServiceTierDowngradedByUpstreamResponse
 	baseCost, calcErr := svc.billingService.CalculateCost("gpt-5.4", UsageTokens{InputTokens: 100, OutputTokens: 50}, 1.0)
 	require.NoError(t, calcErr)
 	require.InDelta(t, baseCost.TotalCost, usageRepo.lastLog.TotalCost, 1e-10, "a request served at default must not pay the priority price")
+}
+
+func TestOpenAIGatewayServiceRecordUsage_CodexDefaultEchoKeepsFastBilling(t *testing.T) {
+	for _, accountType := range []string{AccountTypeOAuth, AccountTypeSetupToken} {
+		t.Run(accountType, func(t *testing.T) {
+			usageRepo := &openAIRecordUsageLogRepoStub{inserted: true}
+			svc := newOpenAIRecordUsageServiceForTest(
+				usageRepo,
+				&openAIRecordUsageUserRepoStub{},
+				&openAIRecordUsageSubRepoStub{},
+				nil,
+			)
+			serviceTier := "priority"
+			tokens := UsageTokens{InputTokens: 100, OutputTokens: 50}
+
+			err := svc.RecordUsage(context.Background(), &OpenAIRecordUsageInput{
+				Result: &OpenAIForwardResult{
+					RequestID:                   "resp_codex_default_echo",
+					ServiceTier:                 &serviceTier,
+					UpstreamResponseServiceTier: "default",
+					Usage:                       OpenAIUsage{InputTokens: tokens.InputTokens, OutputTokens: tokens.OutputTokens},
+					Model:                       "gpt-5.6-sol",
+					Duration:                    time.Second,
+				},
+				APIKey:  &APIKey{ID: 1019},
+				User:    &User{ID: 2019},
+				Account: &Account{ID: 3019, Platform: PlatformOpenAI, Type: accountType},
+			})
+
+			require.NoError(t, err)
+			require.NotNil(t, usageRepo.lastLog)
+			require.NotNil(t, usageRepo.lastLog.ServiceTier)
+			require.Equal(t, "priority", *usageRepo.lastLog.ServiceTier)
+
+			fastCost, calcErr := svc.billingService.CalculateCostWithServiceTier("gpt-5.6-sol", tokens, 1.0, "priority")
+			require.NoError(t, calcErr)
+			require.InDelta(t, fastCost.TotalCost, usageRepo.lastLog.TotalCost, 1e-10)
+		})
+	}
+}
+
+func TestOpenAIGatewayServiceRecordUsage_ShadowUsesParentCredentialTierContract(t *testing.T) {
+	usageRepo := &openAIRecordUsageLogRepoStub{inserted: true}
+	svc := newOpenAIRecordUsageServiceForTest(
+		usageRepo,
+		&openAIRecordUsageUserRepoStub{},
+		&openAIRecordUsageSubRepoStub{},
+		nil,
+	)
+	parentID := int64(9001)
+	accountRepo := &openAIRecordUsageAccountRepoStub{account: &Account{
+		ID: parentID, Platform: PlatformOpenAI, Type: AccountTypeOAuth,
+	}}
+	svc.accountRepo = accountRepo
+	serviceTier := "priority"
+	tokens := UsageTokens{InputTokens: 100, OutputTokens: 50}
+
+	err := svc.RecordUsage(context.Background(), &OpenAIRecordUsageInput{
+		Result: &OpenAIForwardResult{
+			RequestID:                   "resp_shadow_codex_default_echo",
+			ServiceTier:                 &serviceTier,
+			UpstreamResponseServiceTier: "default",
+			Usage:                       OpenAIUsage{InputTokens: tokens.InputTokens, OutputTokens: tokens.OutputTokens},
+			Model:                       "gpt-5.6-sol",
+			Duration:                    time.Second,
+		},
+		APIKey: &APIKey{ID: 1020},
+		User:   &User{ID: 2020},
+		Account: &Account{
+			ID: 3020, Platform: PlatformOpenAI, Type: AccountTypeAPIKey,
+			ParentAccountID: &parentID,
+		},
+	})
+
+	require.NoError(t, err)
+	require.Equal(t, 1, accountRepo.calls)
+	require.NotNil(t, usageRepo.lastLog)
+	require.NotNil(t, usageRepo.lastLog.ServiceTier)
+	require.Equal(t, "priority", *usageRepo.lastLog.ServiceTier)
+
+	fastCost, calcErr := svc.billingService.CalculateCostWithServiceTier("gpt-5.6-sol", tokens, 1.0, "priority")
+	require.NoError(t, calcErr)
+	require.InDelta(t, fastCost.TotalCost, usageRepo.lastLog.TotalCost, 1e-10)
 }
 
 func TestOpenAIGatewayServiceRecordUsage_ServiceTierNeverRaisedByUpstreamResponse(t *testing.T) {
@@ -3186,7 +3326,7 @@ func TestOpenAIGatewayServiceRecordUsage_ServiceTierNeverRaisedByUpstreamRespons
 		},
 		APIKey:  &APIKey{ID: 1018},
 		User:    &User{ID: 2018},
-		Account: &Account{ID: 3018},
+		Account: &Account{ID: 3018, Platform: PlatformOpenAI, Type: AccountTypeAPIKey},
 	})
 
 	require.NoError(t, err)

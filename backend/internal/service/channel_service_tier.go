@@ -141,30 +141,6 @@ func ValidateNativeGrokServiceTier(raw string) *OpenAIFastBlockedError {
 	}
 }
 
-func classifyOpenAIServiceTierMismatch(outbound, actual OpenAICommercialServiceTier) string {
-	performanceRank := func(tier OpenAICommercialServiceTier) (int, bool) {
-		switch tier {
-		case OpenAICommercialTierFlex:
-			return 0, true
-		case OpenAICommercialTierStandard:
-			return 1, true
-		case OpenAICommercialTierPriority:
-			return 2, true
-		default:
-			return 0, false
-		}
-	}
-	outboundRank, outboundKnown := performanceRank(outbound)
-	actualRank, actualKnown := performanceRank(actual)
-	if !outboundKnown || !actualKnown || outboundRank == actualRank {
-		return "changed"
-	}
-	if actualRank < outboundRank {
-		return "degraded"
-	}
-	return "upgraded"
-}
-
 func applyChannelServiceTierRateMultiplier(
 	rateMultiplier float64,
 	protocolTier string,

@@ -58,19 +58,58 @@ func serviceTierCostRank(tier string) (rank int, known bool) {
 	}
 }
 
-// ApplyOpenAIServiceTierBillingResolution lowers result.ServiceTier to the tier
-// the upstream reports having used, so cost calculation and the usage log share
-// one billable tier. The returned resolution is meant for the audit log.
-func ApplyOpenAIServiceTierBillingResolution(result *OpenAIForwardResult) ServiceTierBillingResolution {
+// ResolveOpenAIServiceTierBilling applies the response-tier contract for the
+// selected credential. Public OpenAI API responses declare the actual tier and
+// may lower billing. The private ChatGPT Codex endpoint does not: it commonly
+// reports default for effective Fast turns, so OAuth-like credentials retain
+// the final outbound tier while still exposing the observed value.
+func ResolveOpenAIServiceTierBilling(account *Account, requested, observed string) ServiceTierBillingResolution {
+	if account != nil && account.IsOpenAIOAuthLike() && codexOAuthResponseTierIsNonAuthoritative(observed) {
+		return ServiceTierBillingResolution{
+			Requested: normalizeBillingServiceTier(requested),
+			Observed:  normalizeBillingServiceTier(observed),
+			Billing:   normalizeBillingServiceTier(requested),
+		}
+	}
+	return ResolveBillingServiceTier(requested, observed)
+}
+
+func codexOAuthResponseTierIsNonAuthoritative(observed string) bool {
+	switch normalizeBillingServiceTier(observed) {
+	case "default":
+		return true
+	default:
+		return false
+	}
+}
+
+// ApplyOpenAIServiceTierBillingResolution lowers result.ServiceTier only when
+// the selected credential's upstream response tier is authoritative.
+func ApplyOpenAIServiceTierBillingResolution(account *Account, result *OpenAIForwardResult) ServiceTierBillingResolution {
 	if result == nil {
 		return ServiceTierBillingResolution{}
 	}
-	resolution := ResolveBillingServiceTier(optionalStringValue(result.ServiceTier), result.UpstreamResponseServiceTier)
+	resolution := ResolveOpenAIServiceTierBilling(account, optionalStringValue(result.ServiceTier), result.UpstreamResponseServiceTier)
 	if resolution.Downgraded {
 		billing := resolution.Billing
 		result.ServiceTier = &billing
 	}
 	return resolution
+}
+
+// resolveUsageServiceTierBilling 统一用量路径的计费档位决策：渠道配置
+// use_outbound_tier_for_billing=true（默认；含无渠道快照的路径）时按出站档位
+// 计费（fork 原本语义，不用上游响应自报档位降级）；仅当渠道显式置 false 时
+// 才采用上游降级契约（观察档位可把计费降下来）。
+func resolveUsageServiceTierBilling(state *OpenAIServiceTierRequestState, account *Account, result *OpenAIForwardResult) ServiceTierBillingResolution {
+	if state != nil && state.Snapshot != nil && !state.Snapshot.Config.UseOutboundTierForBilling {
+		return ApplyOpenAIServiceTierBillingResolution(account, result)
+	}
+	return ServiceTierBillingResolution{
+		Requested: optionalStringValue(result.ServiceTier),
+		Observed:  result.UpstreamResponseServiceTier,
+		Billing:   optionalStringValue(result.ServiceTier),
+	}
 }
 
 // ApplyForwardServiceTierBillingResolution is the ForwardResult counterpart of
