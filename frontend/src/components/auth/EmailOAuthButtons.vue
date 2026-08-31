@@ -84,8 +84,9 @@ function startLogin(provider: EmailOAuthProvider): void {
   if (affiliateCode) {
     params.aff_code = affiliateCode
   }
-  if (props.promoCode?.trim()) {
-    params.promo_code = props.promoCode.trim()
+  const promoCode = props.promoCode?.trim()
+  if (promoCode) {
+    params.promo_code = promoCode
   }
   emit('start', { provider, params })
 }

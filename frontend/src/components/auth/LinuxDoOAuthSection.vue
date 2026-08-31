@@ -64,8 +64,9 @@ function startLogin(): void {
   const redirectTo = (route.query.redirect as string) || '/dashboard'
   storeOAuthAffiliateCode(resolveAffiliateReferralCode(props.affCode, route.query.aff, route.query.aff_code))
   const params: Record<string, string> = { redirect: redirectTo }
-  if (props.promoCode?.trim()) {
-    params.promo_code = props.promoCode.trim()
+  const promoCode = props.promoCode?.trim()
+  if (promoCode) {
+    params.promo_code = promoCode
   }
   emit('start', { provider: 'linuxdo', params })
 }
