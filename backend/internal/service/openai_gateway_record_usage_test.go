@@ -1706,6 +1706,8 @@ func TestOpenAIGatewayServiceRecordUsage_UsesRequestedModelAndUpstreamModelMetad
 	require.Equal(t, serviceTier, *usageRepo.lastLog.ServiceTier)
 	require.NotNil(t, usageRepo.lastLog.ReasoningEffort)
 	require.Equal(t, reasoning, *usageRepo.lastLog.ReasoningEffort)
+	require.NotNil(t, usageRepo.lastLog.RequestedReasoningEffort)
+	require.Equal(t, reasoning, *usageRepo.lastLog.RequestedReasoningEffort)
 	require.NotNil(t, usageRepo.lastLog.UserAgent)
 	require.Equal(t, "codex-cli/1.0", *usageRepo.lastLog.UserAgent)
 	require.NotNil(t, usageRepo.lastLog.IPAddress)
@@ -1713,6 +1715,39 @@ func TestOpenAIGatewayServiceRecordUsage_UsesRequestedModelAndUpstreamModelMetad
 	require.NotNil(t, usageRepo.lastLog.GroupID)
 	require.Equal(t, int64(11), *usageRepo.lastLog.GroupID)
 	require.Equal(t, 1, userRepo.deductCalls)
+}
+
+func TestOpenAIGatewayServiceRecordUsage_PersistsRequestedReasoningEffort(t *testing.T) {
+	usageRepo := &openAIRecordUsageLogRepoStub{inserted: true}
+	userRepo := &openAIRecordUsageUserRepoStub{}
+	subRepo := &openAIRecordUsageSubRepoStub{}
+	svc := newOpenAIRecordUsageServiceForTest(usageRepo, userRepo, subRepo, nil)
+	requested := "max"
+	forwarded := "xhigh"
+
+	err := svc.RecordUsage(context.Background(), &OpenAIRecordUsageInput{
+		Result: &OpenAIForwardResult{
+			RequestID:                "resp_requested_effort",
+			Model:                    "gpt-5.4",
+			ReasoningEffort:          &forwarded,
+			RequestedReasoningEffort: &requested,
+			Usage: OpenAIUsage{
+				InputTokens:  20,
+				OutputTokens: 10,
+			},
+			Duration: time.Second,
+		},
+		APIKey:  &APIKey{ID: 10},
+		User:    &User{ID: 20},
+		Account: &Account{ID: 30},
+	})
+
+	require.NoError(t, err)
+	require.NotNil(t, usageRepo.lastLog)
+	require.NotNil(t, usageRepo.lastLog.ReasoningEffort)
+	require.Equal(t, forwarded, *usageRepo.lastLog.ReasoningEffort)
+	require.NotNil(t, usageRepo.lastLog.RequestedReasoningEffort)
+	require.Equal(t, requested, *usageRepo.lastLog.RequestedReasoningEffort)
 }
 
 func TestOpenAIGatewayServiceRecordUsage_PreservesChannelMappedUpstreamModel(t *testing.T) {
@@ -3012,6 +3047,30 @@ func TestGatewayServiceCalculateRecordUsageCost_GroupImagePriceOverridesChannelI
 	require.InDelta(t, 0.042, cost.ActualCost, 1e-12)
 }
 
+func TestRecordUsageKeepsCompactionSemanticFlagOrthogonalToTransport(t *testing.T) {
+	logStub := &openAIRecordUsageLogRepoStub{inserted: true}
+	svc := newOpenAIRecordUsageServiceForTest(logStub, &openAIRecordUsageUserRepoStub{}, &openAIRecordUsageSubRepoStub{}, nil)
+
+	apiKey := &APIKey{ID: 20, UserID: 21, Group: &Group{RateMultiplier: 1}}
+	require.NoError(t, svc.RecordUsage(context.Background(), &OpenAIRecordUsageInput{
+		NativeCompactionV2: true,
+		Result: &OpenAIForwardResult{
+			Model:    "gpt-5",
+			Stream:   true,
+			Duration: time.Second,
+			Usage:    OpenAIUsage{InputTokens: 100, OutputTokens: 10},
+		},
+		APIKey:  apiKey,
+		User:    &User{ID: 21},
+		Account: &Account{ID: 22},
+	}))
+
+	require.NotNil(t, logStub.lastLog)
+	require.True(t, logStub.lastLog.Stream)
+	require.True(t, logStub.lastLog.NativeCompactionV2)
+	require.Equal(t, RequestTypeStream, RequestTypeFromLegacy(logStub.lastLog.Stream, logStub.lastLog.OpenAIWSMode))
+}
+
 func TestRecordUsageMarksCyberRequestType(t *testing.T) {
 	logStub := &openAIRecordUsageLogRepoStub{inserted: true}
 	userStub := &openAIRecordUsageUserRepoStub{}
@@ -3020,7 +3079,8 @@ func TestRecordUsageMarksCyberRequestType(t *testing.T) {
 	svc := newOpenAIRecordUsageServiceForTest(logStub, userStub, subStub, rateStub)
 
 	in := &OpenAIRecordUsageInput{
-		CyberBlocked: true,
+		CyberBlocked:       true,
+		NativeCompactionV2: true,
 		Result: &OpenAIForwardResult{
 			Model:    "gpt-5",
 			Duration: time.Second,
@@ -3033,6 +3093,7 @@ func TestRecordUsageMarksCyberRequestType(t *testing.T) {
 	require.NoError(t, svc.RecordUsage(context.Background(), in))
 	require.NotNil(t, logStub.lastLog)
 	require.Equal(t, RequestTypeCyberBlocked, logStub.lastLog.RequestType)
+	require.True(t, logStub.lastLog.NativeCompactionV2)
 	require.Equal(t, 100, logStub.lastLog.InputTokens, "计费 token 不变(正常计费)")
 }
 
