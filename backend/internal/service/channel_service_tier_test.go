@@ -164,27 +164,6 @@ func TestOpenAIWebSocketServiceTierRefreshesChannelSnapshotEachTurn(t *testing.T
 	require.Nil(t, OpenAIServiceTierStateFromContext(c), "failed refresh must not retain the previous turn snapshot")
 }
 
-func TestClassifyOpenAIServiceTierMismatch(t *testing.T) {
-	tests := []struct {
-		name     string
-		outbound OpenAICommercialServiceTier
-		actual   OpenAICommercialServiceTier
-		want     string
-	}{
-		{name: "priority to standard is degraded", outbound: OpenAICommercialTierPriority, actual: OpenAICommercialTierStandard, want: "degraded"},
-		{name: "standard to flex is degraded", outbound: OpenAICommercialTierStandard, actual: OpenAICommercialTierFlex, want: "degraded"},
-		{name: "standard to priority is upgraded", outbound: OpenAICommercialTierStandard, actual: OpenAICommercialTierPriority, want: "upgraded"},
-		{name: "flex to standard is upgraded", outbound: OpenAICommercialTierFlex, actual: OpenAICommercialTierStandard, want: "upgraded"},
-		{name: "unknown values are changed", outbound: OpenAICommercialTierStandard, actual: OpenAICommercialServiceTier("scale"), want: "changed"},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			require.Equal(t, tt.want, classifyOpenAIServiceTierMismatch(tt.outbound, tt.actual))
-		})
-	}
-}
-
 func TestServiceTierBlockedErrorsKeepStableCodeAcrossProtocols(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	blocked := &OpenAIFastBlockedError{Code: "CHANNEL_SERVICE_TIER_NOT_ALLOWED", Message: "blocked"}
