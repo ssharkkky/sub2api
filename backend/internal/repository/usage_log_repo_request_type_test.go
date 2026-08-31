@@ -1054,13 +1054,13 @@ func TestScanUsageLogRequestTypeAndLegacyFallback(t *testing.T) {
 			sql.NullString{},
 			false,
 			false,
-			sql.NullInt64{},   // channel_id
-			sql.NullString{},  // model_mapping_chain
-			sql.NullString{},  // billing_tier
-			sql.NullString{},  // billing_mode
-			sql.NullFloat64{}, // account_stats_cost
-			sql.NullFloat64{}, // kiro_credits
-			sql.NullString{},  // session_id
+			sql.NullInt64{},           // channel_id
+			sql.NullString{},          // model_mapping_chain
+			sql.NullString{},          // billing_tier
+			sql.NullString{},          // billing_mode
+			sql.NullFloat64{},         // account_stats_cost
+			sql.NullFloat64{},         // kiro_credits
+			sql.NullString{},          // session_id
 			sql.NullBool{Valid: true}, // native_compaction_v2 (NULL-safe scan)
 			now,
 		}})
@@ -1117,13 +1117,13 @@ func TestScanUsageLogRequestTypeAndLegacyFallback(t *testing.T) {
 			sql.NullString{},
 			false,
 			false,
-			sql.NullInt64{},   // channel_id
-			sql.NullString{},  // model_mapping_chain
-			sql.NullString{},  // billing_tier
-			sql.NullString{},  // billing_mode
-			sql.NullFloat64{}, // account_stats_cost
-			sql.NullFloat64{}, // kiro_credits
-			sql.NullString{},  // session_id
+			sql.NullInt64{},                       // channel_id
+			sql.NullString{},                      // model_mapping_chain
+			sql.NullString{},                      // billing_tier
+			sql.NullString{},                      // billing_mode
+			sql.NullFloat64{},                     // account_stats_cost
+			sql.NullFloat64{},                     // kiro_credits
+			sql.NullString{},                      // session_id
 			sql.NullBool{Valid: true, Bool: true}, // native_compaction_v2 (NULL-safe scan)
 			now,
 		}})
@@ -1181,13 +1181,13 @@ func TestScanUsageLogRequestTypeAndLegacyFallback(t *testing.T) {
 			sql.NullString{},
 			false,
 			false,
-			sql.NullInt64{},   // channel_id
-			sql.NullString{},  // model_mapping_chain
-			sql.NullString{},  // billing_tier
-			sql.NullString{},  // billing_mode
-			sql.NullFloat64{}, // account_stats_cost
-			sql.NullFloat64{}, // kiro_credits
-			sql.NullString{},  // session_id
+			sql.NullInt64{},           // channel_id
+			sql.NullString{},          // model_mapping_chain
+			sql.NullString{},          // billing_tier
+			sql.NullString{},          // billing_mode
+			sql.NullFloat64{},         // account_stats_cost
+			sql.NullFloat64{},         // kiro_credits
+			sql.NullString{},          // session_id
 			sql.NullBool{Valid: true}, // native_compaction_v2 (NULL-safe scan)
 			now,
 		}})
