@@ -14,7 +14,6 @@ import (
 
 	"github.com/Wei-Shaw/sub2api/internal/config"
 	infraerrors "github.com/Wei-Shaw/sub2api/internal/pkg/errors"
-	"github.com/Wei-Shaw/sub2api/internal/pkg/keywordmatcher"
 	"github.com/Wei-Shaw/sub2api/internal/service"
 	"github.com/redis/go-redis/v9"
 )
@@ -547,7 +546,11 @@ func cloneActiveConfig(cfg ActiveConfig) ActiveConfig {
 	cfg.Scanners = append([]string(nil), cfg.Scanners...)
 	cfg.GroupIDs = append([]int64(nil), cfg.GroupIDs...)
 	cfg.BlockedKeywords = append([]string(nil), cfg.BlockedKeywords...)
-	cfg.keywordMatcher = keywordmatcher.New(cfg.BlockedKeywords)
+	// keywordMatcher is carried by the value copy above. It is immutable, so
+	// sharing the compiled automaton is safe. Do not rebuild it here: every
+	// Active() call clones, and the 32 audit workers tick every 500ms, which
+	// would recompile the full matcher ~64 times per second (steady-state CPU
+	// burn observed in production, ~0.4 core with a 1400-keyword list).
 	cfg.Endpoints = append([]ActiveEndpoint(nil), cfg.Endpoints...)
 	for i := range cfg.Endpoints {
 		cfg.Endpoints[i].ProxyID = cloneInt64Ptr(cfg.Endpoints[i].ProxyID)
