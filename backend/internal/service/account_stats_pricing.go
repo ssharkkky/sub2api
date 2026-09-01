@@ -61,13 +61,14 @@ func resolveAccountStatsCost(
 	return nil
 }
 
-// tryModelFilePricing 使用模型定价文件（LiteLLM/fallback）中的统一计费明细计算费用。
-//
-// 这里必须复用 BillingService 的核心计算器，不能手工把 input/output 相乘：
-// 核心计算器还负责图片输入/输出的独立价格、5m/1h cache breakdown、priority/flex
-// 价格、长上下文倍率以及未显式配置图片价格时的回退规则。
+// tryModelFilePricing 使用模型定价文件（LiteLLM/fallback）中的价格计算费用。
+// 与用户计费共用同一条定价管线，避免这里维护第二份"单价 × token 数"实现后，
+// 每加一个定价特性都要手工镜像一次。channelPricing 为 nil，保持优先级 3 的
+// 语义：只取模型定价文件，不引入渠道自定义定价。
 func tryModelFilePricing(billingService *BillingService, model string, tokens UsageTokens, serviceTier string) *float64 {
-	breakdown, err := billingService.CalculateCostWithServiceTier(model, tokens, 1, serviceTier)
+	breakdown, err := billingService.CalculateCostWithServiceTier(
+		model, tokens, 1, normalizeBillingServiceTier(serviceTier),
+	)
 	if err != nil || breakdown == nil || breakdown.TotalCost <= 0 {
 		return nil
 	}
