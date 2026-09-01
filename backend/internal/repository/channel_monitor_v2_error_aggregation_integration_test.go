@@ -46,7 +46,9 @@ func TestChannelMonitorV2RecomputeErrorAggregationCompositePlatform(t *testing.T
 		compositeGroup.ID, account.ID, start.Add(30*time.Second),
 	).Scan(&compositeErrID)
 	require.NoError(t, err)
-	t.Cleanup(func() { _, _ = integrationDB.ExecContext(ctx, `DELETE FROM ops_error_logs WHERE id = $1`, compositeErrID) })
+	t.Cleanup(func() {
+		_, _ = integrationDB.ExecContext(ctx, `DELETE FROM ops_error_logs WHERE id = $1`, compositeErrID)
+	})
 
 	// 对照组：非 composite 分组错误保持记录平台。
 	var plainErrID int64
