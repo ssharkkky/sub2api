@@ -621,3 +621,33 @@ func TestConfigLoadedIsLoggedOnlyWhenSomethingChanged(t *testing.T) {
 	require.NoError(t, manager.Reload(context.Background()))
 	require.Equal(t, 4, loadedCount(), "recovering from a failed reload must be visible")
 }
+
+// Regression test: Active() clones the active snapshot on every call, and the
+// 32 audit worker goroutines tick every 500ms. The compiled keyword matcher is
+// immutable, so clones must share the automaton built during Reload instead of
+// recompiling it per clone (production burned ~0.4 core on keywordmatcher.New
+// before this invariant).
+func TestConfigManagerActiveSharesCompiledKeywordMatcher(t *testing.T) {
+	storage := DefaultStorageConfig()
+	storage.ConfigVersion = 7
+	storage.BlockedKeywords = []string{"forbidden-needle"}
+	raw, err := json.Marshal(storage)
+	require.NoError(t, err)
+	manager := NewConfigManager(nil, staticSettingRepository{values: map[string]string{
+		SettingKeyPromptAuditConfig: string(raw),
+		SettingKeyRiskControl:       "false",
+	}}, nil, prefixEncryptor{}, testTotpKeyConfig())
+	require.NoError(t, manager.Reload(context.Background()))
+
+	first, ok := manager.Active()
+	require.True(t, ok)
+	require.NotNil(t, first.keywordMatcher, "Reload must install a compiled matcher")
+	keyword, hit := first.MatchBlockedKeyword("hello forbidden-needle world")
+	require.True(t, hit)
+	require.Equal(t, "forbidden-needle", keyword)
+
+	second, ok := manager.Active()
+	require.True(t, ok)
+	require.Same(t, first.keywordMatcher, second.keywordMatcher,
+		"clone must share the immutable matcher, not rebuild it per Active() call")
+}
