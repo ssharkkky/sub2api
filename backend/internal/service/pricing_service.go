@@ -174,6 +174,10 @@ type PricingService struct {
 	lastUpdated  time.Time
 	localHash    string
 
+	// 渠道模型目录运行态（fork 定价底稿文件 + 热加载，见 pricing_service_catalog.go）
+	catalogRuntime *catalogRuntime
+	catalogWatcherStarted bool
+
 	// 停止信号
 	lifecycleMu sync.Mutex
 	started     bool
@@ -185,10 +189,11 @@ type PricingService struct {
 // NewPricingService 创建价格服务
 func NewPricingService(cfg *config.Config, remoteClient PricingRemoteClient) *PricingService {
 	s := &PricingService{
-		cfg:          cfg,
-		remoteClient: remoteClient,
-		pricingData:  make(map[string]*LiteLLMModelPricing),
-		stopCh:       make(chan struct{}),
+		cfg:            cfg,
+		remoteClient:   remoteClient,
+		pricingData:    make(map[string]*LiteLLMModelPricing),
+		catalogRuntime: newCatalogRuntime(),
+		stopCh:         make(chan struct{}),
 	}
 	return s
 }
@@ -1468,6 +1473,7 @@ func (s *PricingService) GetStatus() map[string]any {
 		"model_count":  len(s.pricingData),
 		"last_updated": s.lastUpdated,
 		"local_hash":   s.localHash[:min(8, len(s.localHash))],
+		"catalog":      s.catalogStatus(),
 	}
 }
 

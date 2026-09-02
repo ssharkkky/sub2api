@@ -96,6 +96,7 @@ dockers_v2:
       - deploy/docker-entrypoint.sh
       - CONTROL-PLANE-MANIFEST.json
       - backend/resources
+      - backend/internal/modelcatalog/data/catalog.json
     platforms:
       - linux/amd64
       - linux/arm64

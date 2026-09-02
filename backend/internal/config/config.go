@@ -674,6 +674,10 @@ type PricingConfig struct {
 	FallbackFile string `mapstructure:"fallback_file"`
 	// 覆盖补丁文件路径（可选）：条目按字段浅合并覆盖目录/回退数据，优先级最高
 	OverrideFile string `mapstructure:"override_file"`
+	// 渠道模型目录文件（fork 定价底稿，仓库内维护）。存在时整体替换内嵌目录，
+	// 并随文件变化热加载（约 60s 轮询）。留空 = 自动发现 ./data/catalog.json、
+	// ./catalog.json；文件缺失或非法时回落到内嵌目录，不影响启动。
+	CatalogFile string `mapstructure:"catalog_file"`
 	// 更新间隔（小时）
 	UpdateIntervalHours int `mapstructure:"update_interval_hours"`
 	// 哈希校验间隔（分钟）
@@ -2301,6 +2305,7 @@ func setDefaults() {
 	viper.SetDefault("pricing.data_dir", "./data")
 	viper.SetDefault("pricing.fallback_file", "./resources/model-pricing/model_prices_and_context_window.json")
 	viper.SetDefault("pricing.override_file", "")
+	viper.SetDefault("pricing.catalog_file", "")
 	viper.SetDefault("pricing.update_interval_hours", 24)
 	viper.SetDefault("pricing.hash_check_interval_minutes", 10)
 

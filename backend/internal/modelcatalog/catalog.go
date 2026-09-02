@@ -3,9 +3,10 @@ package modelcatalog
 import (
 	"encoding/json"
 	"fmt"
+	"os"
 	"sort"
 	"strings"
-	"sync"
+	"sync/atomic"
 
 	"github.com/Wei-Shaw/sub2api/internal/modelcatalog/data"
 )
@@ -76,11 +77,21 @@ type Catalog struct {
 	entries map[string]*Entry
 }
 
-var (
-	defaultOnce  sync.Once
-	defaultIndex *Catalog
-	defaultErr   error
-)
+// current holds the active catalog. It starts from the embedded fork catalog
+// (the in-repo price book compiled into the binary) and can be atomically
+// replaced at runtime when the operator's catalog file on disk changes. All
+// readers go through Current(), so a swap is transparent to every call site.
+var current atomic.Pointer[Catalog]
+
+func init() {
+	cat, err := Load(data.CatalogJSON)
+	if err != nil {
+		// The embedded catalog ships with the build; a broken one is a
+		// build-time bug, so fail fast instead of serving empty prices.
+		panic(err)
+	}
+	current.Store(cat)
+}
 
 // Load parses a catalog document.
 func Load(raw []byte) (*Catalog, error) {
@@ -191,15 +202,40 @@ func (idx *Catalog) resolvePriceRefs() error {
 	return nil
 }
 
-// Default returns the embedded fork catalog.
-func Default() *Catalog {
-	defaultOnce.Do(func() {
-		defaultIndex, defaultErr = Load(data.CatalogJSON)
-	})
-	if defaultErr != nil {
-		panic(defaultErr)
+// Current returns the active catalog (embedded baseline, or the latest
+// successfully loaded runtime catalog file).
+func Current() *Catalog {
+	return current.Load()
+}
+
+// Replace atomically swaps in a fully validated catalog. Callers must pass
+// the result of Load/LoadFile; nil is a caller bug.
+func Replace(cat *Catalog) {
+	if cat == nil {
+		panic("modelcatalog: Replace(nil)")
 	}
-	return defaultIndex
+	current.Store(cat)
+}
+
+// LoadFile reads and validates a catalog document from disk. The document is
+// fully validated (version, duplicate IDs, price_ref closure) before it is
+// returned, so callers can swap it in without a second failure mode.
+func LoadFile(path string) (*Catalog, error) {
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		return nil, fmt.Errorf("read catalog file %s: %w", path, err)
+	}
+	cat, err := Load(raw)
+	if err != nil {
+		return nil, fmt.Errorf("catalog file %s: %w", path, err)
+	}
+	return cat, nil
+}
+
+// Default returns the active catalog. Kept for compatibility with existing
+// call sites; identical to Current.
+func Default() *Catalog {
+	return Current()
 }
 
 // Lookup returns the catalog entry for a public or alias model ID.

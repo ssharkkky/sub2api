@@ -1076,6 +1076,17 @@ pricing:
   # 字段值为 null 表示删除该字段。模型名须与目录键完全一致。
   # 修改后重启或下次目录下载时生效。
   # override_file: "./data/model_pricing_overrides.json"
+  # Channel model catalog file (fork price book, maintained in this repo).
+  # When present it REPLACES the embedded catalog wholesale and hot-reloads
+  # (~60s poll) when the file changes on disk — update it from your repo
+  # without rebuilding the image. Empty = auto-discover ./data/catalog.json,
+  # then ./catalog.json; missing/invalid file falls back to the embedded
+  # catalog. In the official image the build already copies the in-repo file
+  # to /app/data/catalog.json.
+  # 渠道模型目录文件（fork 定价底稿，仓库内维护）。存在时整体替换内嵌目录，
+  # 并随磁盘文件变化热加载（约 60s 轮询）——从仓库更新文件即可，无需重建镜像。
+  # 留空 = 自动发现 ./data/catalog.json、./catalog.json；缺失/非法时回落内嵌目录。
+  # catalog_file: "./data/catalog.json"
   # Update interval in hours
   # 更新间隔（小时）
   update_interval_hours: 24
