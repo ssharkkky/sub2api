@@ -3,12 +3,14 @@
 -- (automatically downgrade to the ceiling).
 --
 -- Compatibility review (managed blue-green deployment + image rollback):
--- the expansion stays nullable (plain nullable-column allowlist) so older
+-- the expansion starts nullable (plain nullable-column allowlist) so older
 -- binaries remain compatible. The reviewed-compatible default covers rows
--- inserted by older binaries that omit the column, and the one-time
--- backfill clears NULL on pre-existing rows, so the non-optional
--- application field never observes NULL. Older binaries ignore this
--- column entirely, so image rollback stays operational.
+-- inserted by older binaries that omit the column, the one-time backfill
+-- clears NULL on pre-existing rows, and the final SET NOT NULL (safe after
+-- the backfill, metadata-only on PostgreSQL 11+) restores the upstream
+-- NOT NULL DEFAULT 'downgrade' invariant, so the non-optional application
+-- field never observes NULL. Older binaries keep working through the
+-- default, so image rollback stays operational.
 ALTER TABLE groups
     ADD COLUMN IF NOT EXISTS max_reasoning_effort_over_limit VARCHAR(20);
 
@@ -20,3 +22,7 @@ ALTER TABLE groups
 UPDATE groups
     SET max_reasoning_effort_over_limit = 'downgrade'
     WHERE max_reasoning_effort_over_limit IS NULL;
+
+-- sub2api-managed-update: reviewed-compatible
+ALTER TABLE groups
+    ALTER COLUMN max_reasoning_effort_over_limit SET NOT NULL;

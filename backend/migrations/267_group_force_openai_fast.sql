@@ -1,12 +1,14 @@
 -- Group-level OpenAI Fast switch (upstream v0.2.0, #6443).
 --
 -- Compatibility review (managed blue-green deployment + image rollback):
--- the expansion stays nullable (plain nullable-column allowlist) so older
+-- the expansion starts nullable (plain nullable-column allowlist) so older
 -- binaries remain compatible. The reviewed-compatible default covers rows
--- inserted by older binaries that omit the column, and the one-time
--- backfill clears NULL on pre-existing rows, so the non-optional
--- application field never observes NULL. Older binaries ignore this
--- column entirely, so image rollback stays operational.
+-- inserted by older binaries that omit the column, the one-time backfill
+-- clears NULL on pre-existing rows, and the final SET NOT NULL (safe after
+-- the backfill, metadata-only on PostgreSQL 11+) restores the upstream
+-- NOT NULL DEFAULT FALSE invariant, so the non-optional application field
+-- never observes NULL. Older binaries keep working through the default,
+-- so image rollback stays operational.
 ALTER TABLE groups
     ADD COLUMN IF NOT EXISTS force_openai_fast BOOLEAN;
 
@@ -18,6 +20,10 @@ ALTER TABLE groups
 UPDATE groups
     SET force_openai_fast = false
     WHERE force_openai_fast IS NULL;
+
+-- sub2api-managed-update: reviewed-compatible
+ALTER TABLE groups
+    ALTER COLUMN force_openai_fast SET NOT NULL;
 
 -- sub2api-managed-update: reviewed-compatible
 COMMENT ON COLUMN groups.force_openai_fast IS
