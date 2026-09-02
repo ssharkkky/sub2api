@@ -285,7 +285,7 @@ func TestClassifySelectionFailureError_CallSiteChainKeepsModelNotFoundAttributio
 	fd := &fakeDiagnoser{resp: service.ModelAvailabilityDiagnosis{HasAccountsInPool: true, HasModelSupport: false}}
 	apiKey := &service.APIKey{GroupID: ptrInt64(43)}
 
-	cls := classifyNoAccountErrorFromGin(c, fd, apiKey, "gpt-5.3-codex", "gpt-5.3-codex", service.PlatformOpenAI)
+	cls := classifyNoAccountErrorFromGin(c, fd, apiKey, "gpt-5.3-codex", "gpt-5.3-codex", service.PlatformOpenAI, nil)
 	cls = classifySelectionFailureError(
 		fmt.Errorf("no available OpenAI accounts supporting model: gpt-5.3-codex "+
 			"(pool=9, filtered: model_not_supported=8 model_rate_limited=1)"),
