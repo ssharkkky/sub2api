@@ -677,7 +677,13 @@ type PricingConfig struct {
 	// 渠道模型目录文件（fork 定价底稿，仓库内维护）。存在时整体替换内嵌目录，
 	// 并随文件变化热加载（约 60s 轮询）。留空 = 自动发现 ./data/catalog.json、
 	// ./catalog.json；文件缺失或非法时回落到内嵌目录，不影响启动。
+	// 优先级（高→低）：本显式文件 > 远程 CatalogURL > 自动发现文件（远程缓存）> 内嵌。
 	CatalogFile string `mapstructure:"catalog_file"`
+	// 渠道模型目录远程 URL（本仓库 main 分支的目录文件，fork 权威源）。
+	// 与 CatalogHashURL 配合做 10 分钟级哈希比对，变化即下载、校验后原子换入。
+	CatalogURL string `mapstructure:"catalog_url"`
+	// 目录文件哈希锚点 URL（内容为目录文件 sha256 的纯 hex，单行）
+	CatalogHashURL string `mapstructure:"catalog_hash_url"`
 	// 更新间隔（小时）
 	UpdateIntervalHours int `mapstructure:"update_interval_hours"`
 	// 哈希校验间隔（分钟）
@@ -2299,13 +2305,17 @@ func setDefaults() {
 	viper.SetDefault("rate_limit.overload_cooldown_minutes", 10)
 	viper.SetDefault("rate_limit.oauth_401_cooldown_minutes", 10)
 
-	// Pricing - 从 model-price-repo main 分支同步模型定价和上下文窗口数据
-	viper.SetDefault("pricing.remote_url", "https://raw.githubusercontent.com/Wei-Shaw/model-price-repo/main/model_prices_and_context_window.json")
-	viper.SetDefault("pricing.hash_url", "https://raw.githubusercontent.com/Wei-Shaw/model-price-repo/main/model_prices_and_context_window.sha256")
+	// Pricing - 模型价表/目录默认从本仓库 main 分支同步（fork 权威源，仓库即数据源）。
+	// 需要上游 Wei-Shaw 文件时可在部署配置里显式覆盖 remote_url/hash_url 指回
+	// https://raw.githubusercontent.com/Wei-Shaw/model-price-repo/main/... 。
+	viper.SetDefault("pricing.remote_url", "https://raw.githubusercontent.com/ssharkkky/sub2api/refs/heads/main/deploy/data/model_prices.json")
+	viper.SetDefault("pricing.hash_url", "https://raw.githubusercontent.com/ssharkkky/sub2api/refs/heads/main/deploy/data/model_prices.sha256")
 	viper.SetDefault("pricing.data_dir", "./data")
 	viper.SetDefault("pricing.fallback_file", "./resources/model-pricing/model_prices_and_context_window.json")
 	viper.SetDefault("pricing.override_file", "")
 	viper.SetDefault("pricing.catalog_file", "")
+	viper.SetDefault("pricing.catalog_url", "https://raw.githubusercontent.com/ssharkkky/sub2api/refs/heads/main/backend/internal/modelcatalog/data/catalog.json")
+	viper.SetDefault("pricing.catalog_hash_url", "https://raw.githubusercontent.com/ssharkkky/sub2api/refs/heads/main/backend/internal/modelcatalog/data/catalog.sha256")
 	viper.SetDefault("pricing.update_interval_hours", 24)
 	viper.SetDefault("pricing.hash_check_interval_minutes", 10)
 

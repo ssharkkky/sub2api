@@ -1056,12 +1056,22 @@ plugins:
 # 定价数据源（可选）
 # =============================================================================
 pricing:
-  # URL to fetch model pricing data (default: model-price-repo main branch)
-  # 获取模型定价数据的 URL（默认：model-price-repo main 分支）
-  remote_url: "https://raw.githubusercontent.com/Wei-Shaw/model-price-repo/refs/heads/main//model_prices_and_context_window.json"
-  # Hash verification URL (optional)
-  # 哈希校验 URL（可选）
-  hash_url: "https://raw.githubusercontent.com/Wei-Shaw/model-price-repo/refs/heads/main//model_prices_and_context_window.sha256"
+  # URL to fetch model pricing data (default: this repo main branch = fork 权威价表)
+  # 获取模型价表的 URL（默认：本仓库 main 分支的 deploy/data/model_prices.json）
+  # 需要上游 Wei-Shaw 全量文件时，可显式指回：
+  # "https://raw.githubusercontent.com/Wei-Shaw/model-price-repo/main/model_prices_and_context_window.json"
+  remote_url: "https://raw.githubusercontent.com/ssharkkky/sub2api/refs/heads/main/deploy/data/model_prices.json"
+  # Hash anchor URL: bare hex sha256 of the price table, one line. 10-minute
+  # hash check short-circuits unchanged repos without downloading the body.
+  # 哈希锚点 URL：价表的纯 hex sha256（单行）。10min 级哈希比对，仓库没改就不下载正文。
+  hash_url: "https://raw.githubusercontent.com/ssharkkky/sub2api/refs/heads/main/deploy/data/model_prices.sha256"
+  # Channel model catalog remote (default: this repo main branch = fork 定价底稿)
+  # 渠道模型目录远程（默认：本仓库 main 分支的 backend/internal/modelcatalog/data/catalog.json）。
+  # 仓库 PR 合并后，运行实例在下一个 10min 哈希检查内自动换入（含列表/别名/上游重写/
+  # lock 价卡/共享卡），无需重建镜像。校验失败保留上一份有效目录。
+  catalog_url: "https://raw.githubusercontent.com/ssharkkky/sub2api/refs/heads/main/backend/internal/modelcatalog/data/catalog.json"
+  # 目录文件的哈希锚点 URL（纯 hex sha256，单行）
+  catalog_hash_url: "https://raw.githubusercontent.com/ssharkkky/sub2api/refs/heads/main/backend/internal/modelcatalog/data/catalog.sha256"
   # Local data directory for caching
   # 本地数据缓存目录
   data_dir: "./data"

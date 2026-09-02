@@ -174,9 +174,14 @@ type PricingService struct {
 	lastUpdated  time.Time
 	localHash    string
 
-	// 渠道模型目录运行态（fork 定价底稿文件 + 热加载，见 pricing_service_catalog.go）
+	// 渠道模型目录运行态（fork 定价底稿：本地文件 + 仓库远程同步，
+	// 见 pricing_service_catalog.go）
 	catalogRuntime *catalogRuntime
-	catalogWatcherStarted bool
+	// 两个远程同步目标的失败退避（10s 起步指数翻倍，上限 10min）
+	pricingRemoteBackoff remoteBackoff
+	catalogRemoteBackoff remoteBackoff
+	// 最近一次成功取到的价表远程锚点（仅状态可观测）
+	pricingRemoteHash string
 
 	// 停止信号
 	lifecycleMu sync.Mutex
@@ -244,13 +249,25 @@ func (s *PricingService) Stop() {
 	logger.LegacyPrintf("service.pricing", "%s", "[Pricing] Service stopped")
 }
 
-// startUpdateScheduler 启动定时更新调度器
+// startUpdateScheduler 启动统一的定时同步调度器：
+//  1. 远程价表（pricing.remote_url/hash_url）——10min 级哈希比对；
+//  2. 远程目录（pricing.catalog_url/catalog_hash_url）——同频、同构；
+//  3. 显式目录文件（pricing.catalog_file）——60s mtime/size 轮询热修复。
+//
+// 三个目标共用一个 goroutine 与 stopCh 生命周期；未启用的目标对应
+// nil ticker（select 中永久阻塞），零成本。
 func (s *PricingService) startUpdateScheduler() {
 	if s == nil {
 		return
 	}
-	if s.cfg == nil || strings.TrimSpace(s.cfg.Pricing.RemoteURL) == "" {
-		logger.LegacyPrintf("service.pricing", "%s", "[Pricing] Remote sync disabled: pricing remote URL is empty")
+	remoteEnabled := s.cfg != nil && strings.TrimSpace(s.cfg.Pricing.RemoteURL) != ""
+	catalogRemoteEnabled := s.cfg != nil && strings.TrimSpace(s.cfg.Pricing.CatalogURL) != ""
+	var explicitCatalogFile string
+	if s.cfg != nil {
+		explicitCatalogFile = strings.TrimSpace(s.cfg.Pricing.CatalogFile)
+	}
+	if !remoteEnabled && !catalogRemoteEnabled && explicitCatalogFile == "" {
+		logger.LegacyPrintf("service.pricing", "%s", "[Pricing] Sync disabled: no remote URLs and no explicit catalog file configured")
 		return
 	}
 	s.lifecycleMu.Lock()
@@ -262,7 +279,6 @@ func (s *PricingService) startUpdateScheduler() {
 	s.wg.Add(1)
 	s.lifecycleMu.Unlock()
 
-	// 定期检查哈希更新
 	hashInterval := time.Duration(s.cfg.Pricing.HashCheckIntervalMinutes) * time.Minute
 	if hashInterval < time.Minute {
 		hashInterval = 10 * time.Minute
@@ -270,22 +286,46 @@ func (s *PricingService) startUpdateScheduler() {
 
 	go func() {
 		defer s.wg.Done()
-		ticker := time.NewTicker(hashInterval)
-		defer ticker.Stop()
+		var remoteTicker, localTicker *time.Ticker
+		if remoteEnabled || catalogRemoteEnabled {
+			remoteTicker = time.NewTicker(hashInterval)
+			defer remoteTicker.Stop()
+		}
+		if explicitCatalogFile != "" {
+			localTicker = time.NewTicker(catalogFileCheckInterval)
+			defer localTicker.Stop()
+		}
 
 		for {
 			select {
-			case <-ticker.C:
-				if err := s.syncWithRemote(); err != nil {
-					logger.LegacyPrintf("service.pricing", "[Pricing] Sync failed: %v", err)
+			case <-remoteTicker.C:
+				now := time.Now()
+				if remoteEnabled && s.pricingRemoteBackoff.ready(now) {
+					if err := s.syncWithRemote(); err != nil {
+						logger.LegacyPrintf("service.pricing", "[Pricing] Sync failed: %v", err)
+						s.pricingRemoteBackoff.recordFailure(now)
+					} else {
+						s.pricingRemoteBackoff.recordSuccess()
+					}
 				}
+				if catalogRemoteEnabled && s.catalogRemoteBackoff.ready(now) {
+					if err := s.syncCatalogRemote(); err != nil {
+						logger.LegacyPrintf("service.pricing", "[Pricing] Catalog sync failed: %v", err)
+						s.catalogRemoteBackoff.recordFailure(now)
+					} else {
+						s.catalogRemoteBackoff.recordSuccess()
+					}
+				}
+			case <-localTicker.C:
+				s.pollCatalogFile(explicitCatalogFile)
 			case <-s.stopCh:
 				return
 			}
 		}
 	}()
 
-	logger.LegacyPrintf("service.pricing", "[Pricing] Update scheduler started (check every %v)", hashInterval)
+	logger.LegacyPrintf("service.pricing", "[Pricing] Update scheduler started (remote check every %v, local catalog file every %v)",
+		hashInterval, catalogFileCheckInterval)
 }
 
 // checkAndUpdatePricing 检查并更新价格数据
@@ -354,6 +394,9 @@ func (s *PricingService) syncWithRemote() error {
 			logger.LegacyPrintf("service.pricing", "[Pricing] Failed to fetch remote hash: %v", err)
 			return nil // 哈希获取失败不影响正常使用
 		}
+		s.mu.Lock()
+		s.pricingRemoteHash = remoteHash
+		s.mu.Unlock()
 
 		s.mu.RLock()
 		localHash := s.localHash
@@ -428,9 +471,9 @@ func (s *PricingService) downloadPricingData() error {
 	data = s.mergeFallbackPricingData(data)
 	data = mergeCatalogPricingData(s.mergeOverrideOnlyModels(data))
 
-	// 保存到本地文件
+	// 保存到本地文件（tmp+fsync+rename 原子落盘，避免半截文件）
 	pricingFile := s.getPricingFilePath()
-	if err := os.WriteFile(pricingFile, body, 0644); err != nil {
+	if err := writeAtomic(pricingFile, body, 0644); err != nil {
 		logger.LegacyPrintf("service.pricing", "[Pricing] Failed to save file: %v", err)
 	}
 
@@ -1469,10 +1512,12 @@ func (s *PricingService) GetStatus() map[string]any {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
+	remoteHash := s.pricingRemoteHash
 	return map[string]any{
 		"model_count":  len(s.pricingData),
 		"last_updated": s.lastUpdated,
 		"local_hash":   s.localHash[:min(8, len(s.localHash))],
+		"remote_hash":  remoteHash,
 		"catalog":      s.catalogStatus(),
 	}
 }

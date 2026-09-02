@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/Wei-Shaw/sub2api/internal/config"
+	"github.com/Wei-Shaw/sub2api/internal/modelcatalog"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/timezone"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/xai"
 )
@@ -306,9 +307,10 @@ func NewBillingService(cfg *config.Config, pricingService *PricingService) *Bill
 		fallbackPrices: make(map[string]*ModelPricing),
 	}
 
-	// 初始化硬编码回退价格（当动态价格不可用时使用）
+	// 初始化硬编码回退价格（当动态价格不可用时使用）。
+	// 目录 baseline 价不再在构造时快照进 map：改为在 lookupExactFallbackPricing
+	// 中从当前生效目录惰性解析（目录热换入后立即可见，无“假兑底”窗口）。
 	s.initFallbackPricing()
-	s.applyCatalogFallbackPricing()
 
 	return s
 }
@@ -1120,8 +1122,7 @@ func (s *BillingService) HasIdentifiedTokenPricing(model string) bool {
 			return true
 		}
 	}
-	pricing, ok := s.fallbackPrices[model]
-	return ok && pricing != nil
+	return s.lookupExactFallbackPricing(model) != nil
 }
 
 // GetModelPricing 获取模型价格配置
@@ -1826,10 +1827,25 @@ func (s *BillingService) CalculateCostWithConfig(model string, tokens UsageToken
 
 // ListSupportedModels 列出所有支持的模型（现在总是返回true，因为有模糊匹配）
 func (s *BillingService) ListSupportedModels() []string {
-	models := make([]string, 0)
+	seen := make(map[string]struct{}, len(s.fallbackPrices))
+	models := make([]string, 0, len(s.fallbackPrices))
 	// 返回回退价格支持的模型系列
 	for model := range s.fallbackPrices {
 		models = append(models, model)
+		seen[model] = struct{}{}
+	}
+	// 目录 baseline 价（含思考档基础卡）按当前生效目录补齐
+	if cat := modelcatalog.Current(); cat != nil {
+		for _, entry := range cat.Entries() {
+			if entry == nil || !entry.IsCanonical() {
+				continue
+			}
+			if _, dup := seen[entry.ID]; dup {
+				continue
+			}
+			models = append(models, entry.ID)
+			seen[entry.ID] = struct{}{}
+		}
 	}
 	return models
 }
@@ -1864,8 +1880,19 @@ func (s *BillingService) GetPricingServiceStatus() map[string]any {
 	if s.pricingService != nil {
 		return s.pricingService.GetStatus()
 	}
+	count := len(s.fallbackPrices)
+	if cat := modelcatalog.Current(); cat != nil {
+		for _, entry := range cat.Entries() {
+			if entry == nil || !entry.IsCanonical() {
+				continue
+			}
+			if _, ok := s.fallbackPrices[entry.ID]; !ok {
+				count++
+			}
+		}
+	}
 	return map[string]any{
-		"model_count":  len(s.fallbackPrices),
+		"model_count":  count,
 		"last_updated": "using fallback",
 		"local_hash":   "N/A",
 	}

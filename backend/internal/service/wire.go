@@ -50,9 +50,16 @@ func ProvidePricingService(cfg *config.Config, remoteClient PricingRemoteClient)
 		// Pricing service initialization failure should not block startup, use fallback prices
 		println("[Service] Warning: Pricing service initialization failed:", err.Error())
 	}
-	// 渠道模型目录：优先加载本仓库维护的目录文件（热加载），缺失/非法时回落内嵌目录
+	// 渠道模型目录：先加载本地文件（显式配置/自动发现），缺失/非法时回落内嵌目录；
+	// 再对仓库 main 做一次远程同步（仓库为权威源，PR 合并后启动即收敛到最新）。
+	// 任一步失败都不阻塞启动，统一调度器会按指数退避持续重试。
 	svc.loadRuntimeCatalogFile()
-	startProcessBackground("catalog_file", svc.startCatalogFileWatcher)
+	if err := svc.syncCatalogRemote(); err != nil {
+		println("[Service] Warning: pricing catalog remote sync failed:", err.Error())
+		svc.catalogRemoteBackoff.recordFailure(time.Now())
+	} else {
+		svc.catalogRemoteBackoff.recordSuccess()
+	}
 	startProcessBackground("pricing_update", svc.startUpdateScheduler)
 	return svc, nil
 }

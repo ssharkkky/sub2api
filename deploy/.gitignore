@@ -3,7 +3,11 @@
 # =============================================================================
 
 # Data directories (generated at runtime when using docker-compose.local.yml)
-data/
+# 用 data/* 而非 data/：允许对仓库维护的价表文件做 re-include
+data/*
+# 仓库维护的价表数据文件（非运行时产物，须入库）
+!data/model_prices.json
+!data/model_prices.sha256
 postgres_data/
 redis_data/
 

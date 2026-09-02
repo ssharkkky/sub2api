@@ -144,38 +144,48 @@ func catalogShouldWriteFallback(entry *modelcatalog.Entry) bool {
 	return entry.IsCanonical() || modelcatalog.SharedRateCardID(entry.ID) != ""
 }
 
-func (s *BillingService) applyCatalogFallbackPricing() {
-	if s == nil {
-		return
-	}
-	if s.fallbackPrices == nil {
-		s.fallbackPrices = make(map[string]*ModelPricing)
-	}
-	for _, entry := range modelcatalog.Default().Entries() {
-		if !catalogShouldWriteFallback(entry) {
-			continue
-		}
-		if existing, ok := s.fallbackPrices[entry.ID]; ok {
-			if entry.LockPrice {
-				overlayModelPricingFromCatalog(existing, entry.Price)
-			}
-			continue
-		}
-		s.fallbackPrices[entry.ID] = tokenRatesToModelPricing(entry.Rates())
-	}
-}
-
-func (s *BillingService) lookupExactFallbackPricing(model string) *ModelPricing {
-	if s == nil || s.fallbackPrices == nil {
+// catalogFallbackPricing 从当前生效目录（原子指针）惰性解析 baseline 价。
+// 硬编码回退 map 在构造后保持不变；目录条目按请求解析，因此目录热换入
+// （本地热加载/仓库远程同步）对计费回退立即可见，无需重建 map 或重启。
+func catalogFallbackPricing(model string) *ModelPricing {
+	cat := modelcatalog.Current()
+	if cat == nil {
 		return nil
 	}
-	if pricing, ok := s.fallbackPrices[model]; ok {
-		return pricing
+	// 思考档变体（-high/-low/-medium/-tiered）共享基础卡
+	if card := cat.SharedRateCardID(model); card != "" && card != model {
+		entry := cat.Lookup(card)
+		if entry == nil || entry.Price == nil {
+			return nil
+		}
+		return tokenRatesToModelPricing(entry.Rates())
 	}
-	if card := modelcatalog.SharedRateCardID(model); card != "" && card != model {
-		if pricing, ok := s.fallbackPrices[card]; ok {
+	entry := cat.Lookup(model)
+	if entry == nil || entry.Price == nil || !catalogShouldWriteFallback(entry) {
+		return nil
+	}
+	return tokenRatesToModelPricing(entry.Rates())
+}
+
+// lookupExactFallbackPricing 精确名回退（不走系列启发式）：
+//  1. 硬编码回退 map 命中：目录有 lock_price 卡时克隆后覆盖（最强覆盖，
+//     不改共享指针），否则原样返回；
+//  2. map 未命中：从当前生效目录惰性解析 baseline（含思考档共享卡）。
+func (s *BillingService) lookupExactFallbackPricing(model string) *ModelPricing {
+	if s == nil {
+		return nil
+	}
+	if s.fallbackPrices != nil {
+		if pricing, ok := s.fallbackPrices[model]; ok && pricing != nil {
+			if cat := modelcatalog.Current(); cat != nil {
+				if entry := cat.Lookup(model); entry != nil && entry.LockPrice && entry.Price != nil {
+					cloned := *pricing
+					overlayModelPricingFromCatalog(&cloned, entry.Price)
+					return &cloned
+				}
+			}
 			return pricing
 		}
 	}
-	return nil
+	return catalogFallbackPricing(model)
 }
