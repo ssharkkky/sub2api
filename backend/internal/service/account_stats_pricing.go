@@ -188,13 +188,14 @@ func calculateTokenStatsCost(pricing *ChannelModelPricing, tokens UsageTokens) *
 		totalTokens := tokens.InputTokens + tokens.OutputTokens + tokens.CacheCreationTokens + tokens.CacheReadTokens
 		if iv := FindMatchingInterval(pricing.Intervals, totalTokens); iv != nil {
 			p = &ChannelModelPricing{
-				InputPrice:       iv.InputPrice,
-				OutputPrice:      iv.OutputPrice,
-				CacheWritePrice:  iv.CacheWritePrice,
-				CacheReadPrice:   iv.CacheReadPrice,
-				ImageInputPrice:  pricing.ImageInputPrice,
-				ImageOutputPrice: pricing.ImageOutputPrice,
-				PerRequestPrice:  iv.PerRequestPrice,
+				InputPrice:        iv.InputPrice,
+				OutputPrice:       iv.OutputPrice,
+				CacheWritePrice:   iv.CacheWritePrice,
+				CacheWrite1hPrice: iv.CacheWrite1hPrice,
+				CacheReadPrice:    iv.CacheReadPrice,
+				ImageInputPrice:   pricing.ImageInputPrice,
+				ImageOutputPrice:  pricing.ImageOutputPrice,
+				PerRequestPrice:   iv.PerRequestPrice,
 			}
 		}
 	}
@@ -218,10 +219,18 @@ func calculateTokenStatsCost(pricing *ChannelModelPricing, tokens UsageTokens) *
 		imageOutputTokens = tokens.OutputTokens
 	}
 	textOutputTokens := tokens.OutputTokens - imageOutputTokens
+	cacheCreationCost := float64(tokens.CacheCreationTokens) * deref(p.CacheWritePrice)
+	if p.CacheWrite1hPrice != nil {
+		cache5m, cache1h := normalizeCacheCreationBreakdown(tokens)
+		if cache5m > 0 || cache1h > 0 {
+			cacheCreationCost = float64(cache5m)*deref(p.CacheWritePrice) +
+				float64(cache1h)*deref(p.CacheWrite1hPrice)
+		}
+	}
 	cost := float64(textInputTokens)*deref(p.InputPrice) +
 		float64(imageInputTokens)*imageInputPrice +
 		float64(textOutputTokens)*deref(p.OutputPrice) +
-		float64(tokens.CacheCreationTokens)*deref(p.CacheWritePrice) +
+		cacheCreationCost +
 		float64(tokens.CacheReadTokens)*deref(p.CacheReadPrice) +
 		float64(imageOutputTokens)*deref(p.ImageOutputPrice)
 	if cost <= 0 {

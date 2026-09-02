@@ -14,10 +14,11 @@ import (
 	"github.com/dgraph-io/ristretto"
 )
 
-// v21 adds Kiro cache emulation fields to the group snapshot. Rejecting
-// older versions is required because a cache hit on an older snapshot would
-// silently fall back to zero values and lose Kiro runtime settings.
-const apiKeyAuthSnapshotVersion = 21
+// v23 adds the group Fast fields (force_openai_fast / free_openai_fast,
+// upstream v0.2.0) on top of the v21 Kiro runtime fields. Rejecting
+// older versions is required because a cache hit on an older snapshot
+// would silently fall back to zero values and lose runtime settings.
+const apiKeyAuthSnapshotVersion = 23
 
 type apiKeyAuthCacheConfig struct {
 	l1Size        int
@@ -428,11 +429,14 @@ func (s *APIKeyService) snapshotFromAPIKey(ctx context.Context, apiKey *APIKey) 
 			SupportedModelScopes:              groupForSnapshot.SupportedModelScopes,
 			AllowMessagesDispatch:             groupForSnapshot.AllowMessagesDispatch,
 			AllowLive:                         groupForSnapshot.AllowLive,
+			ForceOpenAIFast:                   groupForSnapshot.ForceOpenAIFast,
+			FreeOpenAIFast:                    groupForSnapshot.FreeOpenAIFast,
 			DefaultMappedModel:                groupForSnapshot.DefaultMappedModel,
 			MessagesDispatchModelConfig:       groupForSnapshot.MessagesDispatchModelConfig,
 			ModelsListConfig:                  groupForSnapshot.ModelsListConfig,
 			RPMLimit:                          groupForSnapshot.RPMLimit,
 			MaxReasoningEffort:                groupForSnapshot.MaxReasoningEffort,
+			MaxReasoningEffortOverLimit:       groupForSnapshot.MaxReasoningEffortOverLimit,
 			ReasoningEffortMappings:           groupForSnapshot.ReasoningEffortMappings,
 			KiroCacheEmulationEnabled:         groupForSnapshot.EffectiveKiroCacheEmulationEnabled(),
 			KiroAutoStickyEnabled:             groupForSnapshot.EffectiveKiroAutoStickyEnabled(),
@@ -535,11 +539,14 @@ func (s *APIKeyService) snapshotToAPIKey(key string, snapshot *APIKeyAuthSnapsho
 			SupportedModelScopes:              snapshot.Group.SupportedModelScopes,
 			AllowMessagesDispatch:             snapshot.Group.AllowMessagesDispatch,
 			AllowLive:                         snapshot.Group.AllowLive,
+			ForceOpenAIFast:                   snapshot.Group.ForceOpenAIFast,
+			FreeOpenAIFast:                    snapshot.Group.FreeOpenAIFast,
 			DefaultMappedModel:                snapshot.Group.DefaultMappedModel,
 			MessagesDispatchModelConfig:       snapshot.Group.MessagesDispatchModelConfig,
 			ModelsListConfig:                  snapshot.Group.ModelsListConfig,
 			RPMLimit:                          snapshot.Group.RPMLimit,
 			MaxReasoningEffort:                snapshot.Group.MaxReasoningEffort,
+			MaxReasoningEffortOverLimit:       snapshot.Group.MaxReasoningEffortOverLimit,
 			ReasoningEffortMappings:           snapshot.Group.ReasoningEffortMappings,
 			KiroCacheEmulationEnabled:         snapshot.Group.KiroCacheEmulationEnabled,
 			KiroAutoStickyEnabled:             snapshot.Group.KiroAutoStickyEnabled,
