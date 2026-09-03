@@ -257,3 +257,55 @@ func TestSyncCatalogRemoteUsesConfiguredURLs(t *testing.T) {
 	require.Equal(t, remoteTestCatalogURL, remote.lastBodyURL)
 	require.Equal(t, remoteTestCatalogHashUR, remote.lastHashURL)
 }
+
+// 价表远程同步与目录侧同构的回归测试。
+const testPriceTableBody = `{"model-a": {"input_cost_per_token": 1e-6, "output_cost_per_token": 2e-6}}`
+
+func pricingLocalHash(t *testing.T, svc *PricingService) string {
+	t.Helper()
+	svc.mu.RLock()
+	defer svc.mu.RUnlock()
+	return svc.localHash
+}
+
+// P1 回归：价表同步锚点 = 实际加载正文的哈希（不是远程锚点原样入库）。
+// 锚点文件损坏（非 hex 垃圾）时只会每轮冗余下载 + 告警，不会把更新永久冻结；
+// 锚点修复后恢复短路。
+func TestSyncWithRemoteBadAnchorDoesNotFreezeUpdates(t *testing.T) {
+	body := []byte(testPriceTableBody)
+	bodyHash := sha256Hex(body)
+	remote := &fakeCatalogRemote{catalogBody: body, catalogHash: "not-a-valid-hex-!!"}
+	svc := newCatalogSyncTestService(t, remote, &config.Config{Pricing: config.PricingConfig{
+		RemoteURL: "https://invalid.example/prices.json",
+		HashURL:   "https://invalid.example/prices.sha256",
+	}})
+
+	// 首轮：localHash 为空 → 下载；本地锚点存正文哈希（而非垃圾锚点）。
+	require.NoError(t, svc.syncWithRemote())
+	require.Equal(t, 1, remote.bodyFetches)
+	require.Equal(t, bodyHash, pricingLocalHash(t, svc), "锚点必须与实际加载的正文一致")
+
+	// 次轮：垃圾锚点 ≠ 正文哈希 → 继续下载（不冻结）。
+	require.NoError(t, svc.syncWithRemote())
+	require.Equal(t, 2, remote.bodyFetches, "坏锚点不得把更新永久冻结")
+
+	// 锚点修复后：锚点 == 正文哈希 → 短路，不再下载。
+	remote.catalogHash = bodyHash
+	require.NoError(t, svc.syncWithRemote())
+	require.Equal(t, 2, remote.bodyFetches)
+}
+
+// P1 回归：哈希拉取失败必须返回错误（调度器据此计入指数退避，与目录侧一致），
+// 而不是吞掉记为成功。
+func TestSyncWithRemoteHashFetchFailureReturnsError(t *testing.T) {
+	remote := &fakeCatalogRemote{
+		catalogBody: []byte(testPriceTableBody),
+		failHash:    errors.New("hash endpoint down"),
+	}
+	svc := newCatalogSyncTestService(t, remote, &config.Config{Pricing: config.PricingConfig{
+		RemoteURL: "https://invalid.example/prices.json",
+		HashURL:   "https://invalid.example/prices.sha256",
+	}})
+
+	require.Error(t, svc.syncWithRemote())
+}

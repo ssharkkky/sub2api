@@ -17,3 +17,10 @@
 - [x] T15 CI 不变量：`pricing_catalog_consistency_test.go`（sha256 匹配 / 目录名全覆盖 / 卡价相等）
 - [x] T16 测试：远程同步 9 例（锚点短路/换入/坏体保留/下载失败/显式赢/无锚点回退/hash 失败/退避/URL 正确）+ lock 重放克隆 + billing 惰性热换入 4 例 + 一致性 3 例
 - [x] T17 验证：`go build ./...`、`internal/service` + `internal/modelcatalog` + `internal/config` 全量测试、`go vet`、`python3 tools/generate_model_prices.py --check`
+- [x] T18 独立审计（opencode agent）修复：
+  - **P0** 调度器 nil `*time.Ticker` 取 `.C` 在默认/air-gap 配置下启动即 panic → 改持 nil channel；回归测试 `TestPricingSchedulerMixedTargetsDoNotPanic`（remote-only / file-only / both）
+  - **P1** 价表本地锚点存不可信远程锚点 → 改存实际加载正文哈希（坏锚点不冻结更新）；测试 `TestSyncWithRemoteBadAnchorDoesNotFreezeUpdates`
+  - **P1** 价表哈希拉取失败被吞、退避不计数 → 改返回错误；测试 `TestSyncWithRemoteHashFetchFailureReturnsError`
+  - **P2** 显式文件轮询从 mtime/size 指纹改内容哈希指纹（免 mtime 粒度/TOCTOU）；文件与生效一致时清陈旧 `last_error`
+  - **P2** 启动期远程目录同步走 15s 总预算（`syncCatalogRemoteCtx`），不拖慢 boot
+  - 功能子集 `-race` 全绿；全量回归（service/modelcatalog/config）通过

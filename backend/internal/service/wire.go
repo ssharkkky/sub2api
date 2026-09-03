@@ -54,12 +54,16 @@ func ProvidePricingService(cfg *config.Config, remoteClient PricingRemoteClient)
 	// 再对仓库 main 做一次远程同步（仓库为权威源，PR 合并后启动即收敛到最新）。
 	// 任一步失败都不阻塞启动，统一调度器会按指数退避持续重试。
 	svc.loadRuntimeCatalogFile()
-	if err := svc.syncCatalogRemote(); err != nil {
+	// 启动期 best-effort 同步：15s 总预算避免拖慢 boot；失败后统一调度器
+	// 按指数退避持续重试，不会卡死在内嵌目录。
+	syncCtx, cancelSync := context.WithTimeout(context.Background(), 15*time.Second)
+	if err := svc.syncCatalogRemoteCtx(syncCtx); err != nil {
 		println("[Service] Warning: pricing catalog remote sync failed:", err.Error())
 		svc.catalogRemoteBackoff.recordFailure(time.Now())
 	} else {
 		svc.catalogRemoteBackoff.recordSuccess()
 	}
+	cancelSync()
 	startProcessBackground("pricing_update", svc.startUpdateScheduler)
 	return svc, nil
 }

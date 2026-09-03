@@ -255,7 +255,8 @@ func (s *PricingService) Stop() {
 //  3. 显式目录文件（pricing.catalog_file）——60s mtime/size 轮询热修复。
 //
 // 三个目标共用一个 goroutine 与 stopCh 生命周期；未启用的目标对应
-// nil ticker（select 中永久阻塞），零成本。
+// nil channel（select 中永久阻塞），零成本。注意必须把 channel 存成接口
+// 变量（nil *time.Ticker 取 .C 字段会在 select 求值时 panic）。
 func (s *PricingService) startUpdateScheduler() {
 	if s == nil {
 		return
@@ -286,19 +287,25 @@ func (s *PricingService) startUpdateScheduler() {
 
 	go func() {
 		defer s.wg.Done()
-		var remoteTicker, localTicker *time.Ticker
+		// 未启用的目标保持 nil channel：select 对 nil channel 永久阻塞，零成本。
+		var (
+			remoteCh <-chan time.Time
+			localCh  <-chan time.Time
+		)
 		if remoteEnabled || catalogRemoteEnabled {
-			remoteTicker = time.NewTicker(hashInterval)
-			defer remoteTicker.Stop()
+			ticker := time.NewTicker(hashInterval)
+			defer ticker.Stop()
+			remoteCh = ticker.C
 		}
 		if explicitCatalogFile != "" {
-			localTicker = time.NewTicker(catalogFileCheckInterval)
-			defer localTicker.Stop()
+			ticker := time.NewTicker(catalogFileCheckInterval)
+			defer ticker.Stop()
+			localCh = ticker.C
 		}
 
 		for {
 			select {
-			case <-remoteTicker.C:
+			case <-remoteCh:
 				now := time.Now()
 				if remoteEnabled && s.pricingRemoteBackoff.ready(now) {
 					if err := s.syncWithRemote(); err != nil {
@@ -309,14 +316,14 @@ func (s *PricingService) startUpdateScheduler() {
 					}
 				}
 				if catalogRemoteEnabled && s.catalogRemoteBackoff.ready(now) {
+					// 失败详情已由 syncCatalogRemote 内部按「相同错误只告警一次」记录
 					if err := s.syncCatalogRemote(); err != nil {
-						logger.LegacyPrintf("service.pricing", "[Pricing] Catalog sync failed: %v", err)
 						s.catalogRemoteBackoff.recordFailure(now)
 					} else {
 						s.catalogRemoteBackoff.recordSuccess()
 					}
 				}
-			case <-localTicker.C:
+			case <-localCh:
 				s.pollCatalogFile(explicitCatalogFile)
 			case <-s.stopCh:
 				return
@@ -391,8 +398,10 @@ func (s *PricingService) syncWithRemote() error {
 	if s.cfg.Pricing.HashURL != "" {
 		remoteHash, err := s.fetchRemoteHash()
 		if err != nil {
+			// 返回错误让调度器计入指数退避（与目录侧一致）；本次跳过
+			// 不影响既有数据，下一轮恢复后自动收敛。
 			logger.LegacyPrintf("service.pricing", "[Pricing] Failed to fetch remote hash: %v", err)
-			return nil // 哈希获取失败不影响正常使用
+			return err
 		}
 		s.mu.Lock()
 		s.pricingRemoteHash = remoteHash
@@ -477,14 +486,10 @@ func (s *PricingService) downloadPricingData() error {
 		logger.LegacyPrintf("service.pricing", "[Pricing] Failed to save file: %v", err)
 	}
 
-	// 使用远程哈希作为同步锚点，防止重复下载
-	// 当远程哈希不可用时，回退到数据本身的哈希
-	syncHash := dataHashStr
-	if remoteHash != "" {
-		syncHash = remoteHash
-	}
+	// 同步锚点 = 本次实际加载正文的哈希（与目录侧同语义）：锚点文件损坏/过期
+	// 时只会导致每轮冗余下载并告警，不会把更新永久冻结；锚点匹配时短路。
 	hashFile := s.getHashFilePath()
-	if err := os.WriteFile(hashFile, []byte(syncHash+"\n"), 0644); err != nil {
+	if err := os.WriteFile(hashFile, []byte(dataHashStr+"\n"), 0644); err != nil {
 		logger.LegacyPrintf("service.pricing", "[Pricing] Failed to save hash: %v", err)
 	}
 
@@ -493,7 +498,7 @@ func (s *PricingService) downloadPricingData() error {
 	warnDroppedLongContextLadders(s.pricingData, data)
 	s.pricingData = data
 	s.lastUpdated = time.Now()
-	s.localHash = syncHash
+	s.localHash = dataHashStr
 	s.mu.Unlock()
 
 	logger.LegacyPrintf("service.pricing", "[Pricing] Downloaded %d models successfully", len(data))

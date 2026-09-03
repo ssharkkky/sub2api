@@ -46,9 +46,6 @@ type catalogRuntime struct {
 	remoteHash string
 	// conflictWarnedHash 记录已告警过的「显式文件 vs 远程」分歧组合，去重告警。
 	conflictWarnedHash string
-	// 显式本地文件的热加载变更检测指纹。
-	lastMod  time.Time
-	lastSize int64
 }
 
 func newCatalogRuntime() *catalogRuntime {
@@ -139,19 +136,18 @@ func (s *PricingService) applyCatalogFile(path string) error {
 	if err != nil {
 		return fmt.Errorf("read catalog file %s: %w", path, err)
 	}
+	return s.applyCatalogFileContent(path, body)
+}
+
+// applyCatalogFileContent 对已读出的目录内容做完整校验并原子换入。
+func (s *PricingService) applyCatalogFileContent(path string, body []byte) error {
 	cat, err := modelcatalog.Load(body)
 	if err != nil {
 		return fmt.Errorf("validate catalog file %s: %w", path, err)
 	}
-	info, err := os.Stat(path)
-	if err != nil {
-		return fmt.Errorf("stat catalog file %s: %w", path, err)
+	if err := s.swapInCatalog(cat, nil, sha256Hex(body), path, path); err != nil {
+		return err
 	}
-	s.swapInCatalog(cat, nil, sha256Hex(body), path, path)
-	s.catalogRuntime.mu.Lock()
-	s.catalogRuntime.lastMod = info.ModTime()
-	s.catalogRuntime.lastSize = info.Size()
-	s.catalogRuntime.mu.Unlock()
 	return nil
 }
 
@@ -159,6 +155,12 @@ func (s *PricingService) applyCatalogFile(path string) error {
 // 节奏同步本仓库 main 分支的目录文件（仓库即权威源）。
 // 任何一步失败都保留上一份有效目录并返回错误，由调用方记录退避。
 func (s *PricingService) syncCatalogRemote() error {
+	return s.syncCatalogRemoteCtx(context.Background())
+}
+
+// syncCatalogRemoteCtx 同上，但允许调用方通过 parent 限制总预算
+// （启动期用较短超时避免拖慢 boot；失败后调度器会按退避重试）。
+func (s *PricingService) syncCatalogRemoteCtx(parent context.Context) error {
 	if s == nil || s.cfg == nil {
 		return nil
 	}
@@ -173,7 +175,7 @@ func (s *PricingService) syncCatalogRemote() error {
 	// 1) 远程哈希锚点（可缺省；缺省时靠正文哈希兜底比较）。
 	var remoteHash string
 	if strings.TrimSpace(s.cfg.Pricing.CatalogHashURL) != "" {
-		remoteHash, err = s.fetchCatalogRemoteHash()
+		remoteHash, err = s.fetchCatalogRemoteHash(parent)
 		if err != nil {
 			return fmt.Errorf("fetch catalog remote hash: %w", err)
 		}
@@ -196,7 +198,7 @@ func (s *PricingService) syncCatalogRemote() error {
 	}
 
 	// 4) 下载正文并做二次指纹比较（覆盖哈希文件缺失/CDN 缓存延迟）。
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	ctx, cancel := context.WithTimeout(parent, 30*time.Second)
 	defer cancel()
 	body, err := s.remoteClient.FetchPricingJSON(ctx, catalogURL)
 	if err != nil {
@@ -232,21 +234,25 @@ func (s *PricingService) syncCatalogRemote() error {
 }
 
 // pollCatalogFile 执行一次显式目录文件的变更检测 + 热加载。
+// 变更指纹 = 生效目录内容的 sha256（所有来源同一口径，swapInCatalog 维护）：
+// 文件未变 → 跳过；变了 → 校验 + 热换入。相比 mtime/size 比对，
+// 不受文件系统时间粒度（FAT 2s）与「读文件/stat」交错的影响。
+// 文件只有几 KB，每 60s 读一次 + 哈希开销可忽略。
 // 文件消失或内容非法时保留上一份有效目录，下一轮继续重试。
 // 由统一调度器每 60s 调用一次（见 startUpdateScheduler）。
 func (s *PricingService) pollCatalogFile(path string) {
-	info, err := os.Stat(path)
+	body, err := os.ReadFile(path)
 	if err != nil {
-		s.setCatalogError(fmt.Errorf("stat catalog file: %w", err))
+		s.setCatalogError(fmt.Errorf("read catalog file: %w", err))
 		return
 	}
-	s.catalogRuntime.mu.RLock()
-	unchanged := info.ModTime().Equal(s.catalogRuntime.lastMod) && info.Size() == s.catalogRuntime.lastSize
-	s.catalogRuntime.mu.RUnlock()
-	if unchanged {
+	if strings.EqualFold(sha256Hex(body), s.catalogHashLocked()) {
+		// 文件与生效目录一致 = 健康态：顺手清掉陈旧错误记录（例如文件曾坏、
+		// 现已修回当前生效内容）；无错误时是零成本 no-op。
+		s.setCatalogError(nil)
 		return
 	}
-	if err := s.applyCatalogFile(path); err != nil {
+	if err := s.applyCatalogFileContent(path, body); err != nil {
 		logger.L().Warn("pricing catalog hot reload failed, keeping previous catalog",
 			zap.String("path", path), zap.Error(err))
 		s.setCatalogError(err)
@@ -256,13 +262,14 @@ func (s *PricingService) pollCatalogFile(path string) {
 		zap.String("path", path), zap.Int("models", s.catalogModelCountLocked()))
 }
 
-// fetchCatalogRemoteHash 拉取目录文件的远程哈希锚点（纯 hex 单行）。
-func (s *PricingService) fetchCatalogRemoteHash() (string, error) {
+// fetchCatalogRemoteHash 拉取目录文件的远程哈希锚点（纯 hex 单行），
+// parent 是调用方的总预算（其上再叠 10s 拉取超时）。
+func (s *PricingService) fetchCatalogRemoteHash(parent context.Context) (string, error) {
 	hashURL, err := s.validatePricingURL(s.cfg.Pricing.CatalogHashURL)
 	if err != nil {
 		return "", err
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	ctx, cancel := context.WithTimeout(parent, 10*time.Second)
 	defer cancel()
 	hash, err := s.remoteClient.FetchHashText(ctx, hashURL)
 	if err != nil {

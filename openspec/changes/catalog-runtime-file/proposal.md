@@ -16,8 +16,10 @@
 - **配置**：`pricing.catalog_url` / `pricing.catalog_hash_url`（默认本仓库 main 分支 raw 路径）；`pricing.remote_url` / `pricing.hash_url` 默认从 Wei-Shaw 切到本仓库（显式覆盖仍可用）；`pricing.catalog_file`（显式文件，优先级最高）。
 - **PricingService**：
   - `syncCatalogRemote()`：哈希锚点比对 → 变化才下载 → `modelcatalog.Load` 完整校验 → `swapInCatalog`（`Replace` + 价表 lock 覆盖重放 + tmp/fsync/rename 原子落缓存，同一事务内）；
-  - 统一 10min ticker 同时调度价表/目录两个远程目标；60s mtime/size 轮询仅保留给显式 `catalog_file`；
-  - 拉取失败指数退避（10s×2ⁿ cap 10min）+ 保留上一份有效版本 + 去重告警；
+  - 统一 10min ticker 同时调度价表/目录两个远程目标（未启用目标 = nil channel）；60s 内容哈希轮询仅保留给显式 `catalog_file`；
+  - 拉取失败指数退避（首次 10s 逐次翻倍 cap 10min，哈希/正文层失败都计数）+ 保留上一份有效版本 + 去重告警；
+  - 价表本地同步锚点 = 实际加载正文的哈希（与目录侧同语义），坏锚点不冻结更新；
+  - 启动期远程目录同步走 15s 总预算的 `syncCatalogRemoteCtx`（不拖慢 boot），失败后调度器退避重试。
   - 四级优先级：显式文件 > 远程 > 自动发现缓存 > 内嵌；显式与远程分歧时本地赢 + 一次性告警 + `GetStatus` 暴露双 hash。
 - **BillingService**：目录 baseline 回退从「构造时一次性快照进 map」改为**惰性解析**（`lookupExactFallbackPricing` 命中当前生效目录）——目录热换入后计费回退立即可见，修复「假兜底」（需重启才生效）缺口；lock 卡对硬编码条目的覆盖走克隆，不污染共享指针。
 - `GetStatus()`：`catalog{source, path, models, loaded_at, hash, remote_hash, last_error}` + 顶层 `remote_hash`。
