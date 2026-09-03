@@ -67,6 +67,7 @@
 - **P2 已修**：畸形合并文档 `models 数组 + prices 非对象` 被静默降级为 catalog-only（prices 段无声丢弃，违背整份拒收契约）→ `classifyModelData` 收紧：section 键存在但形态不符 → `shapeUnknown` 整份拒收；11 例形态契约测试固化。
 - **P3 已修**：兜底拷贝改 `writeAtomic`（崩溃不留半截缓存）；docker 资源测试补 4 处 `models.json` 种子断言 + 种子文件存在性检查。
 - **门禁缺口补记（CI 首跑发现，实现与审计均漏）**：实现侧验证与第②轮审计均只跑 `go build`/`go vet`/`go test`（含 `-race`），未跑仓库真实门禁 `golangci-lint 2.13.2`（`backend/.golangci.yml`，额外含 errcheck/gofmt/unused）→ CI 抓到 9 项（gofmt 3 / errcheck 5 / unused 1，全部为本分支新代码）→ 已全部修复（`writeSyncClose` 收拢 close 错误检查、测试类型断言改双值 + require、gofmt 对齐、删除未用 `getHashFilePath`），本地 golangci-lint 2.13.2 对提交后文件集复查为 0，全量测试回归通过。教训：**「全绿」的判定标准是仓库 CI 门禁本身，不是本地等价感命令**。
+- **门禁缺口补记 2（CI 二跑发现：handler 包目录回归）**：删除 go:embed 后 `modelcatalog` 初始为空目录，`service`/`modelcatalog` 测试包已加 TestMain 从 `deploy/data/models.json` 播种，但 **`internal/handler` 包漏播**——gateway `/v1/models` 经 PricingService 间接消费全局目录，`TestGatewayModels_AnthropicCustomModelsListIncludesOAuthClaudeWithoutMappings`（缺 `claude-opus-4-6-thinking`）与 `TestGatewayModels_FallbackIncludesCatalogModels`（缺 `gemini-3.7-flash`）CI 失败。此前本地只验证了 service/modelcatalog/config 三个包，handler 包从未本地跑过 → 已补 `internal/handler/testdata_test.go`（同款生产解析路径播种），并改用 CI 同款口径全仓验证：`go test -tags=unit ./...`（`make test-unit`，全仓含 handler 40s）+ `golangci-lint run` 均 0 失败。
 
 ## 兼容性 / 回滚
 

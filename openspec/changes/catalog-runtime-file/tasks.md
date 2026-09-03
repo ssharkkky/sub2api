@@ -39,3 +39,4 @@
   - **P3** 兜底拷贝改 `writeAtomic`（崩溃不留半截缓存）；docker 资源测试补 4 处 models.json 种子断言 + 种子文件存在性检查
   - 验证：`go build`、service/modelcatalog/config 全量测试（含 4 个新回归测试）、`go vet`、生成器 `--check`、docker 资源测试（新断言）全绿
   - **补修（CI 门禁首跑）**：golangci-lint 2.13.2 抓到 9 项（gofmt 3 / errcheck 5 / unused 1）→ 全修，本地同版本 lint 对提交文件集 0 issues，全量测试回归通过（实现与审计此前都只跑 build/vet/test，漏了仓库门禁本身）
+  - **补修（CI 门禁二跑）**：handler 包目录回归（删 embed 后 handler 测试包未播种全局目录，2 个 gateway 模型列表测试失败）→ 补 `internal/handler/testdata_test.go` 播种；本地改按 CI 同款口径验证：`go test -tags=unit ./...`（全仓）+ `golangci-lint run` 0 失败
