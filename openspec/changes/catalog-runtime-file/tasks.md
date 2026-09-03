@@ -32,3 +32,9 @@
   - 配置默认收敛为一个 URL/哈希对（合并文档）；`catalog_url` 降级为默认关闭的兼容路径
   - 生成器 v2：上游基线 ∪ 当前 prices 段（fork-owned 47 名）∪ `FORK_OVERRIDES` 显式决议表 + lock 卡；CI 不变量升级为 4 条且全走生产路径；测试包 TestMain 从仓库合并文档播种目录
   - 验证：`go build`、service/modelcatalog/config 全量测试、`go vet`、生成器 `--check`、docker 资源测试全绿
+- [x] T20 第二轮独立审计（opencode agent，2026-09-03，对象 = 含合并单文档的 5 提交）修复：
+  - 无 P0（三锁无重入/无反转，-race 功能子集 116 断言 0 FAIL；276 条价表 vs 旧表逐字段 0 差异；生成器幂等；前轮修复无回归）
+  - **P1** boot 窗口本地赢失效（显式文件先加载、随后本地探测以 path≠"" 覆盖显式目录，≤60s 窗口）→ wire.go 顺序对调：InitializeCtx → 独立 catalog_url 同步 → 显式文件最后；回归测试走真实 `ProvidePricingService` 路径（显式赢过种子 / 显式缺失保留种子）
+  - **P2** 畸形合并文档 `models 数组 + prices 非对象` 被静默降级为 catalog-only → classify 收紧：section 键存在但形态不符 → shapeUnknown 整份拒收；11 例形态契约测试
+  - **P3** 兜底拷贝改 `writeAtomic`（崩溃不留半截缓存）；docker 资源测试补 4 处 models.json 种子断言 + 种子文件存在性检查
+  - 验证：`go build`、service/modelcatalog/config 全量测试（含 4 个新回归测试）、`go vet`、生成器 `--check`、docker 资源测试（新断言）全绿

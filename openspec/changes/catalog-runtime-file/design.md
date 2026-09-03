@@ -49,7 +49,9 @@
 11. **schema 只增不改**：新数据配旧代码安全（未知字段忽略），回滚 = 回滚 PR 或清空 `remote_url`。
 12. **fork 决议值显式化**：非 lock 模型不带价卡（价格全部由 prices 段承载）；fork 侧高于上游的决议值集中在生成器 `FORK_OVERRIDES` 表，机器校验、漂移必被抓；lock 卡（2 条）留在 models 段，CI 不变量强制价表字段与卡相等。
 
-## 审计记录（2026-09-03，opencode 独立审计 agent，结论「需修复后合入」→ 已全部修复）
+## 审计记录
+
+### 第一轮（2026-09-03，opencode 独立审计 agent，双文件版本，结论「需修复后合入」→ 已全部修复）
 
 - **P0**：`startUpdateScheduler` 用 nil `*time.Ticker` 取 `.C` 进 select（默认配置 localTicker=nil / air-gap 配置 remoteTicker=nil 均启动即 panic 杀进程）→ 改持 nil channel（`<-chan time.Time`）；独立小程序实证 + 三形态回归测试。
 - **P1**：`downloadPricingData` 把不可信远程锚点原样存为 `localHash` 同步锚点，坏锚点（非 hex/过期）会让价表更新永久冻结（目录侧存正文哈希，无此问题）→ 统一为「实际加载正文的哈希」；坏锚点最多每轮冗余下载 + 告警，自愈。
@@ -57,6 +59,13 @@
 - **P2 已修**：显式文件轮询 mtime/size 指纹 → 内容哈希指纹（免 FAT 2s 粒度漏检与 read/stat TOCTOU），文件与生效一致时清陈旧 last_error；启动期目录同步 15s 总预算（`syncCatalogRemoteCtx`）。
 - **P2/P3 记录不改**：`Initialize()` 无生产调用者（保留兼容入口）；replay 只 upsert 不删除（下架 lock 模型在下次价表同步重建后自然消失，≤1 个同步周期）；无 hash URL 时每轮全量下载（默认已配 hash URL，文档化）；全包 `-race` 的 `gin.SetMode` 旧测试并发问题与本功能无关（功能子集 -race 全绿）。
 - **确认无误**：审计逐条核对了设计 1-7（双文件/四级优先级/远程同构/单 ticker/惰性回退/CI 不变量/配置默认）+ 全仓残留快照搜索（无）+ 价表切换风险（276 表对目录 83 名全覆盖，旧 198 键 0 缺失，38 处覆盖方向已列）。
+
+### 第二轮（2026-09-03，opencode 独立审计 agent，对象 = 含合并单文档的 5 提交，结论「修复后可合并」→ 已全部修复）
+
+- **无 P0**：三锁（s.mu / catalogRuntime.mu / atomic.Pointer）逐行核对无嵌套重入、无反转；读者路径全旧或全新且 nil-safe；`-race` 功能子集 116 断言 0 FAIL；276 条价表 vs 旧表逐键逐字段 0 差异；生成器幂等（committed == 生成输出）；前轮 6 项修复无回归。
+- **P1 已修**：boot 窗口本地赢失效——显式 `catalog_file` 先加载、随后 `InitializeCtx` 本地探测以 `path=种子路径(≠"")` 换入绕过让位判定，每次重启 ≤60s 内货架/别名/重写/lock 价按种子而非运维意图生效 → wire.go 顺序对调（InitializeCtx → 独立 catalog_url 同步 → 显式文件最后应用）；回归测试走真实 `ProvidePricingService` 路径。
+- **P2 已修**：畸形合并文档 `models 数组 + prices 非对象` 被静默降级为 catalog-only（prices 段无声丢弃，违背整份拒收契约）→ `classifyModelData` 收紧：section 键存在但形态不符 → `shapeUnknown` 整份拒收；11 例形态契约测试固化。
+- **P3 已修**：兜底拷贝改 `writeAtomic`（崩溃不留半截缓存）；docker 资源测试补 4 处 `models.json` 种子断言 + 种子文件存在性检查。
 
 ## 兼容性 / 回滚
 

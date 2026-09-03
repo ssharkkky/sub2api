@@ -218,3 +218,68 @@ func TestPricingServiceGetStatusIncludesCatalog(t *testing.T) {
 	require.Equal(t, "none", catalog["source"], "未配置显式文件且未加载任何数据 = none")
 	require.NotEmpty(t, catalog["models"], "播种目录的模型数必须可见")
 }
+
+// mergedSeedWithTestModels 模拟镜像构建时 COPY 进容器的合并文档种子
+// （目录段 + 价表段各带一个测试模型）。
+const mergedSeedWithTestModels = `{
+  "version": 1,
+  "models": [
+    {"id": "seed-catalog-model", "platforms": ["openai"], "kind": "chat", "billing_mode": "token"}
+  ],
+  "prices": {
+    "seed-priced-model": {"input_cost_per_token": 1e-06, "output_cost_per_token": 2e-06}
+  }
+}`
+
+// TestBootSequenceExplicitCatalogWinsOverLocalSeed 启动顺序回归（P1-1）：
+// wire.go 的装配顺序是 InitializeCtx（本地探测 → 种子/缓存生效）→
+// loadRuntimeCatalogFile（显式文件最后应用）。若顺序颠倒，种子会整体
+// 覆盖刚生效的显式目录，「本地赢」在重启后 ≤60s 窗口内失效。
+func TestBootSequenceExplicitCatalogWinsOverLocalSeed(t *testing.T) {
+	orig := modelcatalog.Current()
+	t.Cleanup(func() { modelcatalog.Replace(orig) })
+
+	dir := t.TempDir()
+	explicit := writeCatalogFile(t, dir, "explicit.json", runtimeCatalogWithTestModel)
+	dataDir := filepath.Join(dir, "data")
+	writeCatalogFile(t, dataDir, "models.json", mergedSeedWithTestModels)
+
+	cfg := &config.Config{}
+	cfg.Pricing.DataDir = dataDir
+	cfg.Pricing.CatalogFile = explicit
+
+	// 走真实的 wire 装配路径（ProvidePricingService）：若启动顺序被改回
+	// 「显式文件 → InitializeCtx」，本地种子会覆盖显式目录，本测试变红。
+	svc, err := ProvidePricingService(cfg, nil)
+	require.NoError(t, err)
+	t.Cleanup(svc.Stop)
+
+	require.NotNil(t, modelcatalog.Lookup("catalog-file-model"), "显式文件的模型必须在启动最终态生效")
+	require.Nil(t, modelcatalog.Lookup("seed-catalog-model"), "种子目录被显式文件整体替换（最高优先级）")
+	require.Equal(t, explicit, svc.catalogStatus()["source"], "source 必须是显式路径（后续远程目录段让位的判定依据）")
+	require.NotNil(t, svc.getModelPricingLocked("seed-priced-model"),
+		"种子的价表段照常生效（同时证明 boot 期本地探测确实命中过种子）")
+}
+
+// TestBootSequenceMissingExplicitFileKeepsSeed 启动期显式文件尚未就位：
+// 保留种子目录（pending 状态），调度器/轮询会持续重试，不阻塞启动。
+func TestBootSequenceMissingExplicitFileKeepsSeed(t *testing.T) {
+	orig := modelcatalog.Current()
+	t.Cleanup(func() { modelcatalog.Replace(orig) })
+
+	dir := t.TempDir()
+	missing := filepath.Join(dir, "not-deployed-yet.json")
+	dataDir := filepath.Join(dir, "data")
+	writeCatalogFile(t, dataDir, "models.json", mergedSeedWithTestModels)
+
+	cfg := &config.Config{}
+	cfg.Pricing.DataDir = dataDir
+	cfg.Pricing.CatalogFile = missing
+
+	svc, err := ProvidePricingService(cfg, nil)
+	require.NoError(t, err)
+	t.Cleanup(svc.Stop)
+
+	require.NotNil(t, modelcatalog.Lookup("seed-catalog-model"), "显式文件缺失时种子目录保持生效")
+	require.NotEqual(t, missing, svc.catalogStatus()["source"], "未加载成功不得标记为显式生效（不锁死远程）")
+}

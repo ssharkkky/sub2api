@@ -68,7 +68,16 @@ func classifyModelData(body []byte) modelDataShape {
 	case isModelsArray && isPricesObject:
 		return shapeMerged
 	case isModelsArray:
+		// models 是 section 键（数组）：prices 键存在但非对象 = 畸形合并文档，
+		// 整份拒收（不静默降级为 catalog-only 丢弃 prices 段）。
+		if len(p.Prices) > 0 {
+			return shapeUnknown
+		}
 		return shapeCatalogOnly
+	case len(p.Prices) > 0 && !isPricesObject:
+		// models 键缺席而 prices 键存在但非对象：扁平价表条目值必为对象，
+		// 此处只能是畸形文档（名为 "prices" 的合法条目值是对象，不受影响）。
+		return shapeUnknown
 	default:
 		return shapePricesOnly
 	}

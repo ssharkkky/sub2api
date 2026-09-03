@@ -178,7 +178,7 @@ Composite 分组没有自己的模型目录。它只是按请求把流量分到�
 
 ### 来源优先级（高 → 低）
 
-1. `pricing.catalog_file` 显式文件（运维意图 / air-gap）。其目录段加载成功后**赢过所有远程目录段**（本地赢；判定 = 「当前目录确实来自该文件」——文件损坏/未放入不锁死远程）；hash 分歧时一次性告警 + `GetStatus` 暴露双方 `hash`；60s **内容哈希**轮询热修复；运维移除文件时解除本地赢锁，远程目录段重新接管。
+1. `pricing.catalog_file` 显式文件（运维意图 / air-gap）。其目录段加载成功后**赢过所有远程目录段**（本地赢；判定 = 「当前目录确实来自该文件」——文件损坏/未放入不锁死远程）；hash 分歧时一次性告警 + `GetStatus` 暴露双方 `hash`；60s **内容哈希**轮询热修复；运维移除文件时解除本地赢锁，远程目录段重新接管。**boot 时序**：显式文件在启动序列中最后应用（本地探测 → 远程同步 → 显式文件），本地赢在启动窗口内即生效，不被种子/远程覆盖（回归测试 `TestBootSequenceExplicitCatalogWinsOverLocalSeed` 走真实 wire 路径）。
 2. `pricing.remote_url` 合并文档（默认 = 仓库 main 分支 `deploy/data/models.json`，权威源）：哈希锚点比对（相等 = 无变化，连正文都不下载）→ 变化才下载 → 形态识别（merged / 独立目录 / 扁平价表）→ 目录段 `modelcatalog.Load` 完整校验 + 价表段 `parsePricingData` 完整校验 → **同一临界区原子双换入**（`modelcatalog.Replace` + 价表 map 整体替换）→ 正文 + 锚点经 tmp+fsync+rename 原子落盘 `./data/models.json`。
 3. 启动期本地探测（高 → 低）：`./data/models.json`（远程缓存 / 官方镜像种子，构建时 COPY）→ `./data/catalog.json`（旧独立目录缓存）→ `./data/model_pricing.json`（旧价表缓存）——后两者保留探测只为从两文件时代部署平滑迁移，首次远程同步成功后自动收敛到合并文档。
 4. 兜底价表（`fallback_file`，镜像内置 198 条）+ 空目录——最后防线：价目表永不为空（计费 fail-closed），目录空只影响货架展示，远程恢复后自动收敛。
