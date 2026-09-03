@@ -21,7 +21,6 @@ import (
 // 所有卷类型都可用。
 const catalogFileCheckInterval = 60 * time.Second
 
-
 // catalogRuntime 记录渠道模型目录的运行态（面向运维的状态）。
 // 真正生效的 *modelcatalog.Catalog 在 modelcatalog 包的原子指针后面，
 // 本结构只负责记录「当前目录来自哪里、何时加载、内容指纹、最近一次错误」。
@@ -344,7 +343,6 @@ func (s *PricingService) catalogModelCountLocked() int {
 	defer s.catalogRuntime.mu.RUnlock()
 	return s.catalogRuntime.models
 }
-
 
 // setCatalogError 记录目录问题；相同错误只告警一次，避免刷屏。
 // 传 nil 表示恢复正常。

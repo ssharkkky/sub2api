@@ -85,13 +85,13 @@ func classifyModelData(body []byte) modelDataShape {
 
 // modelDataDoc 是一份通过形态识别的数据文档，携带各段正文与整文档指纹。
 type modelDataDoc struct {
-	shape  modelDataShape
-	body   []byte // 原始正文（落盘缓存用）
-	hash   string // 整文档 sha256（远程锚点比较口径）
+	shape       modelDataShape
+	body        []byte // 原始正文（落盘缓存用）
+	hash        string // 整文档 sha256（远程锚点比较口径）
 	catalogBody []byte
-	hasCatalog bool
-	pricesBody []byte
-	hasPrices  bool
+	hasCatalog  bool
+	pricesBody  []byte
+	hasPrices   bool
 }
 
 // decodeModelData 识别形态并切分各段正文。形态不可识别时返回错误（整体拒收）。

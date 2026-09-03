@@ -1523,11 +1523,6 @@ func (s *PricingService) getPricingFilePath() string {
 	return filepath.Join(s.cfg.Pricing.DataDir, "model_pricing.json")
 }
 
-// getHashFilePath 获取哈希文件路径
-func (s *PricingService) getHashFilePath() string {
-	return filepath.Join(s.cfg.Pricing.DataDir, "model_pricing.sha256")
-}
-
 // ListModelNamesByProvider returns all model names in the catalog whose
 // LiteLLMProvider matches the given provider string (case-insensitive).
 // The returned slice is sorted alphabetically.

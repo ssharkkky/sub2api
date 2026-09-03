@@ -66,6 +66,7 @@
 - **P1 已修**：boot 窗口本地赢失效——显式 `catalog_file` 先加载、随后 `InitializeCtx` 本地探测以 `path=种子路径(≠"")` 换入绕过让位判定，每次重启 ≤60s 内货架/别名/重写/lock 价按种子而非运维意图生效 → wire.go 顺序对调（InitializeCtx → 独立 catalog_url 同步 → 显式文件最后应用）；回归测试走真实 `ProvidePricingService` 路径。
 - **P2 已修**：畸形合并文档 `models 数组 + prices 非对象` 被静默降级为 catalog-only（prices 段无声丢弃，违背整份拒收契约）→ `classifyModelData` 收紧：section 键存在但形态不符 → `shapeUnknown` 整份拒收；11 例形态契约测试固化。
 - **P3 已修**：兜底拷贝改 `writeAtomic`（崩溃不留半截缓存）；docker 资源测试补 4 处 `models.json` 种子断言 + 种子文件存在性检查。
+- **门禁缺口补记（CI 首跑发现，实现与审计均漏）**：实现侧验证与第②轮审计均只跑 `go build`/`go vet`/`go test`（含 `-race`），未跑仓库真实门禁 `golangci-lint 2.13.2`（`backend/.golangci.yml`，额外含 errcheck/gofmt/unused）→ CI 抓到 9 项（gofmt 3 / errcheck 5 / unused 1，全部为本分支新代码）→ 已全部修复（`writeSyncClose` 收拢 close 错误检查、测试类型断言改双值 + require、gofmt 对齐、删除未用 `getHashFilePath`），本地 golangci-lint 2.13.2 对提交后文件集复查为 0，全量测试回归通过。教训：**「全绿」的判定标准是仓库 CI 门禁本身，不是本地等价感命令**。
 
 ## 兼容性 / 回滚
 

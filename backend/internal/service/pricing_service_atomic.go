@@ -22,17 +22,7 @@ func writeAtomic(path string, data []byte, mode os.FileMode) error {
 			_ = os.Remove(tmpName)
 		}
 	}()
-	if _, err := tmp.Write(data); err != nil {
-		tmp.Close()
-		tmpName = ""
-		return err
-	}
-	if err := tmp.Sync(); err != nil {
-		tmp.Close()
-		tmpName = ""
-		return err
-	}
-	if err := tmp.Close(); err != nil {
+	if err := writeSyncClose(tmp, data); err != nil {
 		tmpName = ""
 		return err
 	}
@@ -45,4 +35,18 @@ func writeAtomic(path string, data []byte, mode os.FileMode) error {
 	}
 	tmpName = ""
 	return nil
+}
+
+// writeSyncClose 顺序执行 写入 → fsync → close；close 只发生一次，
+// 前序失败时的 close 错误被有意忽略（真实错误是前序环节）。
+func writeSyncClose(tmp *os.File, data []byte) error {
+	if _, err := tmp.Write(data); err != nil {
+		_ = tmp.Close()
+		return err
+	}
+	if err := tmp.Sync(); err != nil {
+		_ = tmp.Close()
+		return err
+	}
+	return tmp.Close()
 }

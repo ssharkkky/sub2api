@@ -22,14 +22,14 @@ const (
 
 // fakeCatalogRemote 实现 PricingRemoteClient，只为目录同步提供可编排的响应。
 type fakeCatalogRemote struct {
-	catalogBody   []byte
-	catalogHash   string
-	failBody      error
-	failHash      error
-	bodyFetches   int
-	hashFetches   int
-	lastBodyURL   string
-	lastHashURL   string
+	catalogBody []byte
+	catalogHash string
+	failBody    error
+	failHash    error
+	bodyFetches int
+	hashFetches int
+	lastBodyURL string
+	lastHashURL string
 }
 
 func (f *fakeCatalogRemote) FetchPricingJSON(ctx context.Context, url string) ([]byte, error) {
@@ -95,8 +95,8 @@ func TestSyncCatalogRemoteNoopWhenAnchorMatchesActive(t *testing.T) {
 func TestSyncCatalogRemoteSwapsWhenAnchorDiffers(t *testing.T) {
 	restoreEmbeddedCatalog(t)
 	remote := &fakeCatalogRemote{
-		catalogBody:   []byte(runtimeCatalogWithTestModel),
-		catalogHash:   "deadbeef", // 与内嵌目录 hash 必然不同
+		catalogBody: []byte(runtimeCatalogWithTestModel),
+		catalogHash: "deadbeef", // 与内嵌目录 hash 必然不同
 	}
 	svc := newCatalogSyncTestService(t, remote, nil)
 
@@ -111,8 +111,11 @@ func TestSyncCatalogRemoteSwapsWhenAnchorDiffers(t *testing.T) {
 	require.Equal(t, remote.catalogBody, cached)
 
 	status := svc.GetStatus()
-	catalog := status["catalog"].(map[string]any)
-	require.True(t, catalog["remote_enabled"].(bool))
+	catalog, ok := status["catalog"].(map[string]any)
+	require.True(t, ok)
+	remoteEnabled, ok := catalog["remote_enabled"].(bool)
+	require.True(t, ok)
+	require.True(t, remoteEnabled)
 	require.Equal(t, "deadbeef", catalog["remote_hash"])
 	require.NotEmpty(t, catalog["hash"])
 }
@@ -121,8 +124,8 @@ func TestSyncCatalogRemoteInvalidBodyKeepsLastGood(t *testing.T) {
 	restoreEmbeddedCatalog(t)
 	before := modelcatalog.Current()
 	remote := &fakeCatalogRemote{
-		catalogBody:   []byte(`{"version": 99, "models": []}`), // 非法版本
-		catalogHash:   "deadbeef",
+		catalogBody: []byte(`{"version": 99, "models": []}`), // 非法版本
+		catalogHash: "deadbeef",
 	}
 	svc := newCatalogSyncTestService(t, remote, nil)
 
@@ -136,9 +139,9 @@ func TestSyncCatalogRemoteDownloadFailureKeepsLastGood(t *testing.T) {
 	restoreEmbeddedCatalog(t)
 	before := modelcatalog.Current()
 	remote := &fakeCatalogRemote{
-		catalogBody:   []byte(runtimeCatalogWithTestModel),
-		catalogHash:   "deadbeef",
-		failBody:      errors.New("github 429"),
+		catalogBody: []byte(runtimeCatalogWithTestModel),
+		catalogHash: "deadbeef",
+		failBody:    errors.New("github 429"),
 	}
 	svc := newCatalogSyncTestService(t, remote, nil)
 
@@ -152,8 +155,8 @@ func TestSyncCatalogRemoteExplicitFileWinsOverRemote(t *testing.T) {
 	explicit := writeCatalogFile(t, dir, "explicit.json", runtimeCatalogWithOtherModel)
 
 	remote := &fakeCatalogRemote{
-		catalogBody:   []byte(runtimeCatalogWithTestModel),
-		catalogHash:   "cafe0001", // 与显式文件 hash 不同
+		catalogBody: []byte(runtimeCatalogWithTestModel),
+		catalogHash: "cafe0001", // 与显式文件 hash 不同
 	}
 	cfg := &config.Config{Pricing: config.PricingConfig{
 		DataDir:     dir,
@@ -168,7 +171,8 @@ func TestSyncCatalogRemoteExplicitFileWinsOverRemote(t *testing.T) {
 	require.NotNil(t, modelcatalog.Current().Lookup("catalog-file-model-v2"), "explicit catalog_file must win over remote")
 	require.Nil(t, modelcatalog.Current().Lookup("catalog-file-model"))
 
-	catalog := svc.GetStatus()["catalog"].(map[string]any)
+	catalog, ok := svc.GetStatus()["catalog"].(map[string]any)
+	require.True(t, ok)
 	require.Equal(t, "cafe0001", catalog["remote_hash"], "remote anchor must stay observable even when local wins")
 }
 
@@ -177,8 +181,8 @@ func TestSyncCatalogRemoteNoHashURLUsesBodyHash(t *testing.T) {
 	body := []byte(runtimeCatalogWithTestModel)
 	remote := &fakeCatalogRemote{catalogBody: body}
 	cfg := &config.Config{Pricing: config.PricingConfig{
-		DataDir:      t.TempDir(),
-		CatalogURL:   remoteTestCatalogURL,
+		DataDir:        t.TempDir(),
+		CatalogURL:     remoteTestCatalogURL,
 		CatalogHashURL: "", // 锚点缺失
 	}}
 	svc := newCatalogSyncTestService(t, remote, cfg)
@@ -221,8 +225,8 @@ func TestRemoteBackoffSchedule(t *testing.T) {
 
 	// 连续失败指数翻倍：10s → 20s
 	b.recordFailure(now.Add(20 * time.Minute))
-	require.False(t, b.ready(now.Add(20*time.Minute + 19*time.Second)))
-	require.True(t, b.ready(now.Add(20*time.Minute + 21*time.Second)))
+	require.False(t, b.ready(now.Add(20*time.Minute+19*time.Second)))
+	require.True(t, b.ready(now.Add(20*time.Minute+21*time.Second)))
 
 	b.recordSuccess()
 	require.True(t, b.ready(time.Now()), "success must clear the backoff")

@@ -38,3 +38,4 @@
   - **P2** 畸形合并文档 `models 数组 + prices 非对象` 被静默降级为 catalog-only → classify 收紧：section 键存在但形态不符 → shapeUnknown 整份拒收；11 例形态契约测试
   - **P3** 兜底拷贝改 `writeAtomic`（崩溃不留半截缓存）；docker 资源测试补 4 处 models.json 种子断言 + 种子文件存在性检查
   - 验证：`go build`、service/modelcatalog/config 全量测试（含 4 个新回归测试）、`go vet`、生成器 `--check`、docker 资源测试（新断言）全绿
+  - **补修（CI 门禁首跑）**：golangci-lint 2.13.2 抓到 9 项（gofmt 3 / errcheck 5 / unused 1）→ 全修，本地同版本 lint 对提交文件集 0 issues，全量测试回归通过（实现与审计此前都只跑 build/vet/test，漏了仓库门禁本身）
