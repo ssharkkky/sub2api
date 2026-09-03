@@ -39,7 +39,7 @@ func TestIsBlockedIP_LoopbackAndPrivate(t *testing.T) {
 		// public
 		{"8.8.8.8", false},
 		{"1.1.1.1", false},
-		{"203.0.113.1", false}, // TEST-NET-3 is not in our blocklist; should be considered public for this client
+		{"203.0.113.1", false},   // TEST-NET-3 is not in our blocklist; should be considered public for this client
 		{"93.184.216.34", false}, // example.com
 		{"2606:4700:4700::1111", false},
 		{"::ffff:8.8.8.8", false},
@@ -75,7 +75,7 @@ func TestValidateImageURLScheme(t *testing.T) {
 func TestNewSSRFSafeClient_BlocksLoopbackServer(t *testing.T) {
 	// Integration: httptest.NewServer binds to 127.0.0.1 — safe client must refuse.
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Write([]byte("should not be reached"))
+		_, _ = w.Write([]byte("should not be reached"))
 	}))
 	defer srv.Close()
 
@@ -112,7 +112,7 @@ func TestNewSSRFSafeClient_BlocksPrivateIPLiteral(t *testing.T) {
 func TestNewSSRFSafeClient_RedirectToPrivateBlocked(t *testing.T) {
 	// Server B is the final private target.
 	srvB := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Write([]byte("B"))
+		_, _ = w.Write([]byte("B"))
 	}))
 	defer srvB.Close()
 	// Server A redirects to B. Even though A itself is private, the redirect hop to B must also be blocked.
@@ -157,7 +157,7 @@ func TestSSRFSafeDialContext_MockPublicAllowAndPrivateBlock(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer ln.Close()
+	defer func() { _ = ln.Close() }()
 	go func() {
 		for {
 			c, err := ln.Accept()
@@ -207,7 +207,7 @@ func TestNewSSRFSafeClient_AllowsPublicViaAllowlist(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer ln.Close()
+	defer func() { _ = ln.Close() }()
 	go func() {
 		for {
 			c, err := ln.Accept()
