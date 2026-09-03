@@ -174,6 +174,15 @@ type PricingService struct {
 	lastUpdated  time.Time
 	localHash    string
 
+	// 渠道模型目录运行态（fork 定价底稿：本地文件 + 仓库远程同步，
+	// 见 pricing_service_catalog.go）
+	catalogRuntime *catalogRuntime
+	// 两个远程同步目标的失败退避（10s 起步指数翻倍，上限 10min）
+	pricingRemoteBackoff remoteBackoff
+	catalogRemoteBackoff remoteBackoff
+	// 最近一次成功取到的价表远程锚点（仅状态可观测）
+	pricingRemoteHash string
+
 	// 停止信号
 	lifecycleMu sync.Mutex
 	started     bool
@@ -185,38 +194,48 @@ type PricingService struct {
 // NewPricingService 创建价格服务
 func NewPricingService(cfg *config.Config, remoteClient PricingRemoteClient) *PricingService {
 	s := &PricingService{
-		cfg:          cfg,
-		remoteClient: remoteClient,
-		pricingData:  make(map[string]*LiteLLMModelPricing),
-		stopCh:       make(chan struct{}),
+		cfg:            cfg,
+		remoteClient:   remoteClient,
+		pricingData:    make(map[string]*LiteLLMModelPricing),
+		catalogRuntime: newCatalogRuntime(),
+		stopCh:         make(chan struct{}),
 	}
 	return s
 }
 
-// Initialize 初始化价格服务
+// Initialize 初始化价格服务（不限时；内部路径均可独立失败并回落）。
 func (s *PricingService) Initialize() error {
-	if err := s.initializeData(); err != nil {
+	return s.InitializeCtx(context.Background())
+}
+
+// InitializeCtx 同上，但允许调用方通过 parent 限制启动预算（建议 15s）：
+// 超时的远程步骤直接放弃，由兜底价表 + 调度器退避重试接管，不拖慢 boot。
+func (s *PricingService) InitializeCtx(parent context.Context) error {
+	if err := s.initializeData(parent); err != nil {
 		return err
 	}
 	s.startUpdateScheduler()
 	return nil
 }
 
-func (s *PricingService) initializeData() error {
+func (s *PricingService) initializeData(parent context.Context) error {
 	// 确保数据目录存在
 	if err := os.MkdirAll(s.cfg.Pricing.DataDir, 0755); err != nil {
 		logger.LegacyPrintf("service.pricing", "[Pricing] Failed to create data directory: %v", err)
 	}
 
-	// 首次加载价格数据
-	if err := s.checkAndUpdatePricing(); err != nil {
+	// 首次加载模型数据（本地探测 → 远程合并文档 → 兜底价表）
+	if err := s.checkAndUpdatePricing(parent); err != nil {
 		logger.LegacyPrintf("service.pricing", "[Pricing] Initial load failed, using fallback: %v", err)
 		if err := s.useFallbackPricing(); err != nil {
 			return fmt.Errorf("failed to load pricing data: %w", err)
 		}
 	}
 
-	logger.LegacyPrintf("service.pricing", "[Pricing] Service initialized with %d models", len(s.pricingData))
+	s.mu.RLock()
+	count := len(s.pricingData)
+	s.mu.RUnlock()
+	logger.LegacyPrintf("service.pricing", "[Pricing] Service initialized with %d models", count)
 	return nil
 }
 
@@ -239,13 +258,26 @@ func (s *PricingService) Stop() {
 	logger.LegacyPrintf("service.pricing", "%s", "[Pricing] Service stopped")
 }
 
-// startUpdateScheduler 启动定时更新调度器
+// startUpdateScheduler 启动统一的定时同步调度器：
+//  1. 远程价表（pricing.remote_url/hash_url）——10min 级哈希比对；
+//  2. 远程目录（pricing.catalog_url/catalog_hash_url）——同频、同构；
+//  3. 显式目录文件（pricing.catalog_file）——60s mtime/size 轮询热修复。
+//
+// 三个目标共用一个 goroutine 与 stopCh 生命周期；未启用的目标对应
+// nil channel（select 中永久阻塞），零成本。注意必须把 channel 存成接口
+// 变量（nil *time.Ticker 取 .C 字段会在 select 求值时 panic）。
 func (s *PricingService) startUpdateScheduler() {
 	if s == nil {
 		return
 	}
-	if s.cfg == nil || strings.TrimSpace(s.cfg.Pricing.RemoteURL) == "" {
-		logger.LegacyPrintf("service.pricing", "%s", "[Pricing] Remote sync disabled: pricing remote URL is empty")
+	remoteEnabled := s.cfg != nil && strings.TrimSpace(s.cfg.Pricing.RemoteURL) != ""
+	catalogRemoteEnabled := s.cfg != nil && strings.TrimSpace(s.cfg.Pricing.CatalogURL) != ""
+	var explicitCatalogFile string
+	if s.cfg != nil {
+		explicitCatalogFile = strings.TrimSpace(s.cfg.Pricing.CatalogFile)
+	}
+	if !remoteEnabled && !catalogRemoteEnabled && explicitCatalogFile == "" {
+		logger.LegacyPrintf("service.pricing", "%s", "[Pricing] Sync disabled: no remote URLs and no explicit catalog file configured")
 		return
 	}
 	s.lifecycleMu.Lock()
@@ -257,7 +289,6 @@ func (s *PricingService) startUpdateScheduler() {
 	s.wg.Add(1)
 	s.lifecycleMu.Unlock()
 
-	// 定期检查哈希更新
 	hashInterval := time.Duration(s.cfg.Pricing.HashCheckIntervalMinutes) * time.Minute
 	if hashInterval < time.Minute {
 		hashInterval = 10 * time.Minute
@@ -265,109 +296,138 @@ func (s *PricingService) startUpdateScheduler() {
 
 	go func() {
 		defer s.wg.Done()
-		ticker := time.NewTicker(hashInterval)
-		defer ticker.Stop()
+		// 未启用的目标保持 nil channel：select 对 nil channel 永久阻塞，零成本。
+		var (
+			remoteCh <-chan time.Time
+			localCh  <-chan time.Time
+		)
+		if remoteEnabled || catalogRemoteEnabled {
+			ticker := time.NewTicker(hashInterval)
+			defer ticker.Stop()
+			remoteCh = ticker.C
+		}
+		if explicitCatalogFile != "" {
+			ticker := time.NewTicker(catalogFileCheckInterval)
+			defer ticker.Stop()
+			localCh = ticker.C
+		}
 
 		for {
 			select {
-			case <-ticker.C:
-				if err := s.syncWithRemote(); err != nil {
-					logger.LegacyPrintf("service.pricing", "[Pricing] Sync failed: %v", err)
+			case <-remoteCh:
+				now := time.Now()
+				if remoteEnabled && s.pricingRemoteBackoff.ready(now) {
+					if err := s.syncWithRemote(context.Background()); err != nil {
+						logger.LegacyPrintf("service.pricing", "[Pricing] Sync failed: %v", err)
+						s.pricingRemoteBackoff.recordFailure(now)
+					} else {
+						s.pricingRemoteBackoff.recordSuccess()
+					}
 				}
+				if catalogRemoteEnabled && s.catalogRemoteBackoff.ready(now) {
+					// 失败详情已由 syncCatalogRemote 内部按「相同错误只告警一次」记录
+					if err := s.syncCatalogRemote(); err != nil {
+						s.catalogRemoteBackoff.recordFailure(now)
+					} else {
+						s.catalogRemoteBackoff.recordSuccess()
+					}
+				}
+			case <-localCh:
+				s.pollCatalogFile(explicitCatalogFile)
 			case <-s.stopCh:
 				return
 			}
 		}
 	}()
 
-	logger.LegacyPrintf("service.pricing", "[Pricing] Update scheduler started (check every %v)", hashInterval)
+	logger.LegacyPrintf("service.pricing", "[Pricing] Update scheduler started (remote check every %v, local catalog file every %v)",
+		hashInterval, catalogFileCheckInterval)
 }
 
-// checkAndUpdatePricing 检查并更新价格数据
-func (s *PricingService) checkAndUpdatePricing() error {
-	pricingFile := s.getPricingFilePath()
-
-	// 检查本地文件是否存在
-	if _, err := os.Stat(pricingFile); os.IsNotExist(err) {
-		logger.LegacyPrintf("service.pricing", "%s", "[Pricing] Local pricing file not found, downloading...")
-		return s.downloadPricingData()
-	}
-
-	// 先加载本地文件（确保服务可用），再检查是否需要更新
-	if err := s.loadPricingData(pricingFile); err != nil {
-		logger.LegacyPrintf("service.pricing", "[Pricing] Failed to load local file, downloading: %v", err)
-		return s.downloadPricingData()
-	}
-
-	// 如果配置了哈希URL，通过远程哈希检查是否有更新
-	if s.cfg.Pricing.HashURL != "" {
-		remoteHash, err := s.fetchRemoteHash()
-		if err != nil {
-			logger.LegacyPrintf("service.pricing", "[Pricing] Failed to fetch remote hash on startup: %v", err)
-			return nil // 已加载本地文件，哈希获取失败不影响启动
+// checkAndUpdatePricing 启动期模型数据初始化：
+//  1. 本地探测（合并文档缓存/镜像种子 → 旧独立目录缓存 → 旧价表缓存），
+//     形态自动识别，坏文件跳过继续探测下一个；
+//  2. 本地加载成功后，若配置了锚点 URL，立即比对一次远程锚点：不一致立即拉取
+//     （覆盖「仓库已更新 + 容器重启」场景，不等 10min 首轮 tick）；拉取失败
+//     保留本地数据并计入退避，调度器会重试；
+//  3. 无任何本地数据 → 直接拉取远程；
+//  4. 远程也失败 → 调用方回落到兜底价表（目录可为空，见 initializeData）。
+func (s *PricingService) checkAndUpdatePricing(parent context.Context) error {
+	if err := s.loadLocalModelData(); err != nil {
+		logger.LegacyPrintf("service.pricing", "[Pricing] Local model data not found, downloading... (%v)", err)
+		if derr := s.downloadPricingData(parent); derr != nil {
+			s.pricingRemoteBackoff.recordFailure(time.Now())
+			return derr
 		}
+		s.pricingRemoteBackoff.recordSuccess()
+		return nil
+	}
+
+	// 本地数据已就绪。配置了锚点 URL 时做一次即时远程比对（锚点相等 = 无变化，
+	// 连正文都不下载；这也是从旧两文件部署收敛到合并文档的通道）。
+	if strings.TrimSpace(s.cfg.Pricing.HashURL) != "" {
+		remoteHash, err := s.fetchRemoteHash(parent)
+		if err != nil {
+			logger.LegacyPrintf("service.pricing", "[Pricing] Failed to fetch remote hash on startup: %v (local data stays active, scheduler will retry)", err)
+			return nil
+		}
+		s.mu.Lock()
+		s.pricingRemoteHash = remoteHash
+		s.mu.Unlock()
 
 		s.mu.RLock()
 		localHash := s.localHash
 		s.mu.RUnlock()
 
-		if localHash == "" || remoteHash != localHash {
-			logger.LegacyPrintf("service.pricing", "[Pricing] Remote hash differs on startup (local=%s remote=%s), downloading...",
+		if localHash == "" || !strings.EqualFold(remoteHash, localHash) {
+			logger.LegacyPrintf("service.pricing", "[Pricing] Remote model data differs on startup (local=%s remote=%s), downloading...",
 				localHash[:min(8, len(localHash))], remoteHash[:min(8, len(remoteHash))])
-			if err := s.downloadPricingData(); err != nil {
-				logger.LegacyPrintf("service.pricing", "[Pricing] Download failed, using existing file: %v", err)
+			if derr := s.downloadPricingData(parent); derr != nil {
+				s.pricingRemoteBackoff.recordFailure(time.Now())
+				logger.LegacyPrintf("service.pricing", "[Pricing] Download failed, using local data: %v", derr)
+			} else {
+				s.pricingRemoteBackoff.recordSuccess()
 			}
 		}
-		return nil
 	}
-
-	// 没有哈希URL时，基于文件年龄检查
-	info, err := os.Stat(pricingFile)
-	if err != nil {
-		return nil // 已加载本地文件
-	}
-
-	fileAge := time.Since(info.ModTime())
-	maxAge := time.Duration(s.cfg.Pricing.UpdateIntervalHours) * time.Hour
-
-	if fileAge > maxAge {
-		logger.LegacyPrintf("service.pricing", "[Pricing] Local file is %v old, updating...", fileAge.Round(time.Hour))
-		if err := s.downloadPricingData(); err != nil {
-			logger.LegacyPrintf("service.pricing", "[Pricing] Download failed, using existing file: %v", err)
-		}
-	}
-
 	return nil
 }
 
-// syncWithRemote 与远程同步（基于哈希校验）
-func (s *PricingService) syncWithRemote() error {
-	// 如果配置了哈希URL，从远程获取哈希进行比对
-	if s.cfg.Pricing.HashURL != "" {
-		remoteHash, err := s.fetchRemoteHash()
+// syncWithRemote 一轮周期性同步（哈希锚点 → 变化才下载 → 完整校验 → 原子双换入）。
+// 默认配置下 remote_url 指向仓库的合并文档 deploy/data/models.json：
+// 目录（模型列表/alias/lock 卡）与价表（计费数字）一次 fetch、一次校验、一次换入。
+func (s *PricingService) syncWithRemote(parent context.Context) error {
+	if strings.TrimSpace(s.cfg.Pricing.HashURL) != "" {
+		remoteHash, err := s.fetchRemoteHash(parent)
 		if err != nil {
+			// 返回错误让调度器计入指数退避（与目录侧一致）；本次跳过
+			// 不影响既有数据，下一轮恢复后自动收敛。
 			logger.LegacyPrintf("service.pricing", "[Pricing] Failed to fetch remote hash: %v", err)
-			return nil // 哈希获取失败不影响正常使用
+			return err
 		}
+		s.mu.Lock()
+		s.pricingRemoteHash = remoteHash
+		s.mu.Unlock()
 
 		s.mu.RLock()
 		localHash := s.localHash
 		s.mu.RUnlock()
 
-		if localHash == "" || remoteHash != localHash {
-			logger.LegacyPrintf("service.pricing", "[Pricing] Remote hash differs (local=%s remote=%s), downloading new version...",
-				localHash[:min(8, len(localHash))], remoteHash[:min(8, len(remoteHash))])
-			return s.downloadPricingData()
+		if localHash != "" && strings.EqualFold(remoteHash, localHash) {
+			// 无变化：连正文都不下载（本地锚点为空 = 本地来自非远程来源，
+			// 如显式文件或兜底价表，此时拉取一次以对齐仓库状态）。
+			return nil
 		}
-		logger.LegacyPrintf("service.pricing", "%s", "[Pricing] Hash check passed, no update needed")
-		return nil
+		logger.LegacyPrintf("service.pricing", "[Pricing] Remote model data changed (local=%s remote=%s), downloading new version...",
+			localHash[:min(8, len(localHash))], remoteHash[:min(8, len(remoteHash))])
+		return s.downloadPricingData(parent)
 	}
 
-	// 没有哈希URL时，基于时间检查
-	pricingFile := s.getPricingFilePath()
+	// 没有锚点 URL（运维显式禁用锚点）时，基于本地缓存文件年龄检查（旧行为保留）。
+	pricingFile := s.getModelDataCachePath()
 	info, err := os.Stat(pricingFile)
 	if err != nil {
-		return s.downloadPricingData()
+		return s.downloadPricingData(parent)
 	}
 
 	fileAge := time.Since(info.ModTime())
@@ -375,27 +435,29 @@ func (s *PricingService) syncWithRemote() error {
 
 	if fileAge > maxAge {
 		logger.LegacyPrintf("service.pricing", "[Pricing] File is %v old, downloading...", fileAge.Round(time.Hour))
-		return s.downloadPricingData()
+		return s.downloadPricingData(parent)
 	}
 
 	return nil
 }
 
-// downloadPricingData 从远程下载价格数据
-func (s *PricingService) downloadPricingData() error {
+// downloadPricingData 从远程下载模型数据文档（默认 = 合并文档：目录+价表一次到位；
+// 兼容旧扁平价表文档）。形态识别 + 两段完整校验全部通过后原子双换入并落盘；
+// 任何一步失败都保留上一份有效数据并返回错误，由调用方计入退避。
+func (s *PricingService) downloadPricingData(parent context.Context) error {
 	remoteURL, err := s.validatePricingURL(s.cfg.Pricing.RemoteURL)
 	if err != nil {
 		return err
 	}
 	logger.LegacyPrintf("service.pricing", "[Pricing] Downloading from %s", remoteURL)
 
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	ctx, cancel := context.WithTimeout(parent, 30*time.Second)
 	defer cancel()
 
 	// 获取远程哈希（用于同步锚点，不作为完整性校验）
 	var remoteHash string
 	if strings.TrimSpace(s.cfg.Pricing.HashURL) != "" {
-		remoteHash, err = s.fetchRemoteHash()
+		remoteHash, err = s.fetchRemoteHash(ctx)
 		if err != nil {
 			logger.LegacyPrintf("service.pricing", "[Pricing] Failed to fetch remote hash (continuing): %v", err)
 		}
@@ -408,47 +470,23 @@ func (s *PricingService) downloadPricingData() error {
 
 	// 哈希校验：不匹配时仅告警，不阻止更新
 	// 远程哈希文件可能与数据文件不同步（如维护者更新了数据但未更新哈希文件）
-	dataHash := sha256.Sum256(body)
-	dataHashStr := hex.EncodeToString(dataHash[:])
-	if remoteHash != "" && !strings.EqualFold(remoteHash, dataHashStr) {
+	bodyHash := sha256Hex(body)
+	if remoteHash != "" && !strings.EqualFold(remoteHash, bodyHash) {
 		logger.LegacyPrintf("service.pricing", "[Pricing] Hash mismatch warning: remote=%s data=%s (hash file may be out of sync)",
-			remoteHash[:min(8, len(remoteHash))], dataHashStr[:8])
+			remoteHash[:min(8, len(remoteHash))], bodyHash[:8])
 	}
 
-	// 解析JSON数据（使用灵活的解析方式）
-	data, err := s.parsePricingData(body)
+	doc, err := decodeModelData(body)
 	if err != nil {
-		return fmt.Errorf("parse pricing data: %w", err)
+		s.setCatalogError(err)
+		return err
 	}
-	data = s.mergeFallbackPricingData(data)
-	data = mergeCatalogPricingData(s.mergeOverrideOnlyModels(data))
-
-	// 保存到本地文件
-	pricingFile := s.getPricingFilePath()
-	if err := os.WriteFile(pricingFile, body, 0644); err != nil {
-		logger.LegacyPrintf("service.pricing", "[Pricing] Failed to save file: %v", err)
+	if err := s.applyModelData(doc, "remote", "", body); err != nil {
+		s.setCatalogError(err)
+		return err
 	}
-
-	// 使用远程哈希作为同步锚点，防止重复下载
-	// 当远程哈希不可用时，回退到数据本身的哈希
-	syncHash := dataHashStr
-	if remoteHash != "" {
-		syncHash = remoteHash
-	}
-	hashFile := s.getHashFilePath()
-	if err := os.WriteFile(hashFile, []byte(syncHash+"\n"), 0644); err != nil {
-		logger.LegacyPrintf("service.pricing", "[Pricing] Failed to save hash: %v", err)
-	}
-
-	// 更新内存数据
-	s.mu.Lock()
-	warnDroppedLongContextLadders(s.pricingData, data)
-	s.pricingData = data
-	s.lastUpdated = time.Now()
-	s.localHash = syncHash
-	s.mu.Unlock()
-
-	logger.LegacyPrintf("service.pricing", "[Pricing] Downloaded %d models successfully", len(data))
+	s.setCatalogError(nil)
+	logger.LegacyPrintf("service.pricing", "[Pricing] Downloaded model data successfully (shape=%s)", doc.shape)
 	return nil
 }
 
@@ -950,21 +988,22 @@ func (s *PricingService) useFallbackPricing() error {
 	}
 
 	pricingFile := s.getPricingFilePath()
-	if err := os.WriteFile(pricingFile, data, 0644); err != nil { //nolint:gosec // G703: 路径为配置的数据目录 + 硬编码文件名，非请求输入
+	// 原子落盘（tmp+fsync+rename），崩溃窗口不留半截缓存
+	if err := writeAtomic(pricingFile, data, 0644); err != nil {
 		logger.LegacyPrintf("service.pricing", "[Pricing] Failed to copy fallback: %v", err)
 	}
 
 	return s.loadPricingData(fallbackFile)
 }
 
-// fetchRemoteHash 从远程获取哈希值
-func (s *PricingService) fetchRemoteHash() (string, error) {
+// fetchRemoteHash 从远程获取锚点哈希（parent 是调用方的总预算，其上叠 10s 拉取超时）
+func (s *PricingService) fetchRemoteHash(parent context.Context) (string, error) {
 	hashURL, err := s.validatePricingURL(s.cfg.Pricing.HashURL)
 	if err != nil {
 		return "", err
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	ctx, cancel := context.WithTimeout(parent, 10*time.Second)
 	defer cancel()
 
 	hash, err := s.remoteClient.FetchHashText(ctx, hashURL)
@@ -1464,26 +1503,24 @@ func (s *PricingService) GetStatus() map[string]any {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
+	remoteHash := s.pricingRemoteHash
 	return map[string]any{
 		"model_count":  len(s.pricingData),
 		"last_updated": s.lastUpdated,
 		"local_hash":   s.localHash[:min(8, len(s.localHash))],
+		"remote_hash":  remoteHash,
+		"catalog":      s.catalogStatus(),
 	}
 }
 
-// ForceUpdate 强制更新
+// ForceUpdate 强制更新（绕过锚点短路，立即拉取远程文档并全量校验换入）
 func (s *PricingService) ForceUpdate() error {
-	return s.downloadPricingData()
+	return s.downloadPricingData(context.Background())
 }
 
 // getPricingFilePath 获取价格文件路径
 func (s *PricingService) getPricingFilePath() string {
 	return filepath.Join(s.cfg.Pricing.DataDir, "model_pricing.json")
-}
-
-// getHashFilePath 获取哈希文件路径
-func (s *PricingService) getHashFilePath() string {
-	return filepath.Join(s.cfg.Pricing.DataDir, "model_pricing.sha256")
 }
 
 // ListModelNamesByProvider returns all model names in the catalog whose

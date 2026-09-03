@@ -25,10 +25,22 @@ assert_count() {
 
 test -s backend/resources/model-pricing/model_prices_and_context_window.json || \
   fail 'fallback pricing data is missing or empty'
+test -s deploy/data/models.json || \
+  fail 'merged model data document is missing or empty'
+test -s deploy/data/models.json.sha256 || \
+  fail 'merged model data hash anchor is missing or empty'
 
 assert_line Dockerfile.goreleaser 'COPY --chown=sub2api:sub2api backend/resources /app/resources'
 assert_line deploy/Dockerfile 'COPY --from=backend-builder --chown=sub2api:sub2api /app/backend/resources /app/resources'
 assert_count .goreleaser.yaml '      - backend/resources' 1
+
+# Merged model data document seed: every image build must carry the repo
+# catalog+prices document so a fresh container starts with a non-empty catalog
+# before the first remote sync (binary carries no embedded model data).
+assert_line Dockerfile 'COPY --chown=sub2api:sub2api deploy/data/models.json /app/data/models.json'
+assert_line Dockerfile.goreleaser 'COPY --chown=sub2api:sub2api deploy/data/models.json /app/data/models.json'
+assert_line deploy/Dockerfile 'COPY --chown=sub2api:sub2api deploy/data/models.json /app/data/models.json'
+assert_count .goreleaser.yaml '      - deploy/data/models.json' 1
 test ! -e .goreleaser.simple.yaml || \
   fail '.goreleaser.simple.yaml must remain removed; release builds use the single dockers_v2 definition'
 

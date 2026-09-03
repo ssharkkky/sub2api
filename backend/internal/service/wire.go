@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"os"
+	"strings"
 	"time"
 
 	dbent "github.com/Wei-Shaw/sub2api/ent"
@@ -46,11 +47,35 @@ func startProcessBackground(name string, start func()) {
 // ProvidePricingService creates and initializes PricingService
 func ProvidePricingService(cfg *config.Config, remoteClient PricingRemoteClient) (*PricingService, error) {
 	svc := NewPricingService(cfg, remoteClient)
-	if err := svc.initializeData(); err != nil {
+
+	// 启动期 best-effort 初始化（15s 总预算避免拖慢 boot）：
+	// 本地探测（缓存/镜像种子）→ 远程锚点即时比对 → 变化则拉取合并文档
+	// （目录+价表一次到位）→ 失败回落兜底价表；随后启动统一同步调度器。
+	// 优先级语义：低优先级源先应用，最高优先级的显式目录文件最后应用，
+	// 避免启动窗口内种子/远程覆盖刚生效的运维目录（P1-1 回归）。
+	syncCtx, cancelSync := context.WithTimeout(context.Background(), 15*time.Second)
+	if err := svc.InitializeCtx(syncCtx); err != nil {
 		// Pricing service initialization failure should not block startup, use fallback prices
 		println("[Service] Warning: Pricing service initialization failed:", err.Error())
 	}
-	startProcessBackground("pricing_update", svc.startUpdateScheduler)
+
+	// 独立 catalog_url 兼容路径（默认配置不启用；目录段由合并文档承载）：
+	// 同预算下 best-effort 同步一次，失败按退避重试。
+	if strings.TrimSpace(cfg.Pricing.CatalogURL) != "" {
+		if err := svc.syncCatalogRemoteCtx(syncCtx); err != nil {
+			println("[Service] Warning: pricing catalog remote sync failed:", err.Error())
+			svc.catalogRemoteBackoff.recordFailure(time.Now())
+		} else {
+			svc.catalogRemoteBackoff.recordSuccess()
+		}
+	}
+
+	// 渠道模型目录：最后加载显式目录文件（pricing.catalog_file，最高优先级，
+	// 运维意图/air-gap）；它生效后后续远程目录段让位（本地赢），60s 内容哈希
+	// 轮询负责后续热修复。文件缺失/损坏不阻塞启动：保留已生效的
+	// 种子/远程目录，调度器按指数退避持续重试。
+	svc.loadRuntimeCatalogFile()
+	cancelSync()
 	return svc, nil
 }
 

@@ -1,0 +1,42 @@
+# Tasks: catalog-runtime-file
+
+- [x] T1 `modelcatalog`：atomic.Pointer 激活目录 + `Current()`/`Replace()`/`LoadFile()`，`Default()` 兼容
+- [x] T2 `config`：`pricing.catalog_file` 字段与默认值
+- [x] T3 `service`：`catalogRuntime` 状态 + `loadRuntimeCatalogFile` / `pollCatalogFile`（校验先于换入、坏文件保留旧目录、告警去重）
+- [x] T4 `wire.go`：`ProvidePricingService` 接入启动加载与调度生命周期
+- [x] T5 `GetStatus()`：`catalog` 来源/模型数/加载时间/最近错误
+- [x] T6 镜像：三个 Dockerfile + `.goreleaser.yaml` 携带仓库目录文件到 `/app/data/catalog.json`
+- [x] T7 配置样例与文档：`config.example.yaml`、`MODEL_CATALOG_AND_CHANNEL_STOREFRONT.md`
+- [x] T8 测试：modelcatalog 换入/LoadFile；service 路径解析/启动加载/热加载/坏文件/状态
+- [x] T9 数据迁移：`tools/generate_model_prices.py`（上游 229 基线 + 83 目录名全覆盖 + 47 合成 + 38 处卡价覆盖报告）→ `deploy/data/model_prices.json` (276) + 双 `.sha256` 锚点；`--check` 供 CI 复核
+- [x] T10 `config`：`pricing.catalog_url`/`catalog_hash_url`；`remote_url`/`hash_url` 默认切到本仓库
+- [x] T11 `service`：`syncCatalogRemote()`（锚点短路 → 下载 → 校验 → `swapInCatalog`：Replace + lock 重放 + 原子落缓存）+ `fetchCatalogRemoteHash` + 四级优先级（显式文件赢 + 分歧告警）
+- [x] T12 `service`：统一 10min ticker 双远程目标；60s 轮询仅显式文件；`remoteBackoff` 指数退避（10s×2ⁿ cap 10min）；`writeAtomic`（tmp+fsync+rename）用于价表/目录缓存落盘
+- [x] T13 `billing`：目录 baseline 回退改惰性解析（热换入即时可见，修假兜底）；lock 卡覆盖走克隆；`ListSupportedModels`/`HasIdentifiedTokenPricing`/status 同步口径
+- [x] T14 `GetStatus()`：`catalog{hash, remote_hash, remote_enabled}` + 顶层价表 `remote_hash`
+- [x] T15 CI 不变量：`pricing_catalog_consistency_test.go`（sha256 匹配 / 目录名全覆盖 / 卡价相等）
+- [x] T16 测试：远程同步 9 例（锚点短路/换入/坏体保留/下载失败/显式赢/无锚点回退/hash 失败/退避/URL 正确）+ lock 重放克隆 + billing 惰性热换入 4 例 + 一致性 3 例
+- [x] T17 验证：`go build ./...`、`internal/service` + `internal/modelcatalog` + `internal/config` 全量测试、`go vet`、`python3 tools/generate_model_prices.py --check`
+- [x] T18 独立审计（opencode agent）修复：
+  - **P0** 调度器 nil `*time.Ticker` 取 `.C` 在默认/air-gap 配置下启动即 panic → 改持 nil channel；回归测试 `TestPricingSchedulerMixedTargetsDoNotPanic`（remote-only / file-only / both）
+  - **P1** 价表本地锚点存不可信远程锚点 → 改存实际加载正文哈希（坏锚点不冻结更新）；测试 `TestSyncWithRemoteBadAnchorDoesNotFreezeUpdates`
+  - **P1** 价表哈希拉取失败被吞、退避不计数 → 改返回错误；测试 `TestSyncWithRemoteHashFetchFailureReturnsError`
+  - **P2** 显式文件轮询从 mtime/size 指纹改内容哈希指纹（免 mtime 粒度/TOCTOU）；文件与生效一致时清陈旧 `last_error`
+  - **P2** 启动期远程目录同步走 15s 总预算（`syncCatalogRemoteCtx`），不拖慢 boot
+  - 功能子集 `-race` 全绿；全量回归（service/modelcatalog/config）通过
+- [x] T19 合并单文档（用户确认三点：删 go:embed / 删 52 条非 lock 基线卡 / `deploy/data/models.json`）：
+  - 生成 `deploy/data/models.json`（models 段 56 模型 + prices 段 276 条，与旧价表零差异）+ `models.json.sha256`；删除旧 `model_prices.json` 双文件与包内 `catalog.json`/`embed.go`/`catalog.sha256`
+  - `classifyModelData` 形态识别（merged / 独立目录 / 扁平价表）+ `applyModelData` 统一原子双换入事务（同临界区 `Replace` + 价表 map 替换，lock 重放走 Locked 变体免重入死锁）
+  - 别名价卡引用仅在 canonical 带卡时隐式共享（非 lock 无卡不产生悬空 price_ref）；移除文档中 2 处死 `price_ref`
+  - 启动期本地探测（models.json → 旧 catalog.json → 旧 model_pricing.json）+ 锚点即时比对 + `InitializeCtx` 15s 预算；`loadRuntimeCatalogFile` 仅显式文件（source-based 本地赢判定，坏文件不锁死远程，文件移除解除锁）
+  - 配置默认收敛为一个 URL/哈希对（合并文档）；`catalog_url` 降级为默认关闭的兼容路径
+  - 生成器 v2：上游基线 ∪ 当前 prices 段（fork-owned 47 名）∪ `FORK_OVERRIDES` 显式决议表 + lock 卡；CI 不变量升级为 4 条且全走生产路径；测试包 TestMain 从仓库合并文档播种目录
+  - 验证：`go build`、service/modelcatalog/config 全量测试、`go vet`、生成器 `--check`、docker 资源测试全绿
+- [x] T20 第二轮独立审计（opencode agent，2026-09-03，对象 = 含合并单文档的 5 提交）修复：
+  - 无 P0（三锁无重入/无反转，-race 功能子集 116 断言 0 FAIL；276 条价表 vs 旧表逐字段 0 差异；生成器幂等；前轮修复无回归）
+  - **P1** boot 窗口本地赢失效（显式文件先加载、随后本地探测以 path≠"" 覆盖显式目录，≤60s 窗口）→ wire.go 顺序对调：InitializeCtx → 独立 catalog_url 同步 → 显式文件最后；回归测试走真实 `ProvidePricingService` 路径（显式赢过种子 / 显式缺失保留种子）
+  - **P2** 畸形合并文档 `models 数组 + prices 非对象` 被静默降级为 catalog-only → classify 收紧：section 键存在但形态不符 → shapeUnknown 整份拒收；11 例形态契约测试
+  - **P3** 兜底拷贝改 `writeAtomic`（崩溃不留半截缓存）；docker 资源测试补 4 处 models.json 种子断言 + 种子文件存在性检查
+  - 验证：`go build`、service/modelcatalog/config 全量测试（含 4 个新回归测试）、`go vet`、生成器 `--check`、docker 资源测试（新断言）全绿
+  - **补修（CI 门禁首跑）**：golangci-lint 2.13.2 抓到 9 项（gofmt 3 / errcheck 5 / unused 1）→ 全修，本地同版本 lint 对提交文件集 0 issues，全量测试回归通过（实现与审计此前都只跑 build/vet/test，漏了仓库门禁本身）
+  - **补修（CI 门禁二跑）**：handler 包目录回归（删 embed 后 handler 测试包未播种全局目录，2 个 gateway 模型列表测试失败）→ 补 `internal/handler/testdata_test.go` 播种；本地改按 CI 同款口径验证：`go test -tags=unit ./...`（全仓）+ `golangci-lint run` 0 失败

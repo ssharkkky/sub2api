@@ -29,6 +29,48 @@ func TestPricingSchedulerBlankRemoteURLDoesNotStart(t *testing.T) {
 	}
 }
 
+// P0 回归：混合配置（远程启用 + 无显式文件 / 显式文件 + 无远程）下，
+// 调度器 goroutine 首次 select 求值不得 panic。nil *time.Ticker 取 .C
+// 字段是空指针解引用（会杀进程），必须持 nil channel。
+func TestPricingSchedulerMixedTargetsDoNotPanic(t *testing.T) {
+	remoteOnly := &config.Config{Pricing: config.PricingConfig{
+		RemoteURL: "https://invalid.example/prices.json",
+		HashURL:   "https://invalid.example/prices.sha256",
+	}}
+
+	t.Run("remote_only", func(t *testing.T) {
+		svc := NewPricingService(remoteOnly, &fakeCatalogRemote{})
+		svc.startUpdateScheduler()
+		time.Sleep(300 * time.Millisecond) // 若 panic，测试进程已死
+		require.NotNil(t, svc.GetStatus())
+		svc.Stop()
+	})
+
+	t.Run("explicit_file_only", func(t *testing.T) {
+		dir := t.TempDir()
+		catalogFile := filepath.Join(dir, "catalog.json")
+		require.NoError(t, os.WriteFile(catalogFile, []byte(runtimeCatalogWithTestModel), 0o644))
+		svc := NewPricingService(&config.Config{Pricing: config.PricingConfig{CatalogFile: catalogFile}}, &fakeCatalogRemote{})
+		svc.startUpdateScheduler()
+		time.Sleep(300 * time.Millisecond)
+		require.NotNil(t, svc.GetStatus())
+		svc.Stop()
+	})
+
+	t.Run("both", func(t *testing.T) {
+		dir := t.TempDir()
+		catalogFile := filepath.Join(dir, "catalog.json")
+		require.NoError(t, os.WriteFile(catalogFile, []byte(runtimeCatalogWithTestModel), 0o644))
+		cfg := *remoteOnly
+		cfg.Pricing.CatalogFile = catalogFile
+		svc := NewPricingService(&cfg, &fakeCatalogRemote{})
+		svc.startUpdateScheduler()
+		time.Sleep(300 * time.Millisecond)
+		require.NotNil(t, svc.GetStatus())
+		svc.Stop()
+	})
+}
+
 func TestPricingNonEmptyInvalidRemoteURLStillReturnsValidationError(t *testing.T) {
 	svc := NewPricingService(&config.Config{Pricing: config.PricingConfig{
 		RemoteURL: "://invalid",

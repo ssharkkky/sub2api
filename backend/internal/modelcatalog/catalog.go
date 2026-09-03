@@ -3,11 +3,10 @@ package modelcatalog
 import (
 	"encoding/json"
 	"fmt"
+	"os"
 	"sort"
 	"strings"
-	"sync"
-
-	"github.com/Wei-Shaw/sub2api/internal/modelcatalog/data"
+	"sync/atomic"
 )
 
 // Price is a human-authored rate card. Amounts are USD per million tokens
@@ -76,11 +75,20 @@ type Catalog struct {
 	entries map[string]*Entry
 }
 
-var (
-	defaultOnce  sync.Once
-	defaultIndex *Catalog
-	defaultErr   error
-)
+// current holds the active catalog. It starts empty (no models, no aliases) —
+// nothing catalog-related is compiled into the binary anymore; the first
+// catalog comes from the repo-owned data file at startup (explicit catalog
+// file, local cache/seed, or remote fetch). All readers go through Current(),
+// so a runtime swap is transparent to every call site, and every consumer
+// degrades gracefully on an empty catalog (empty lists / nil lookups).
+var current atomic.Pointer[Catalog]
+
+func init() { current.Store(emptyCatalog()) }
+
+// emptyCatalog is the pre-load initial state: structurally valid, zero models.
+func emptyCatalog() *Catalog {
+	return &Catalog{entries: make(map[string]*Entry)}
+}
 
 // Load parses a catalog document.
 func Load(raw []byte) (*Catalog, error) {
@@ -141,6 +149,13 @@ func (idx *Catalog) addModel(model Model) error {
 		if len(platforms) == 0 {
 			platforms = model.Platforms
 		}
+		// 别名的价卡引用：显式 price_ref 优先；否则仅当 canonical 自带价卡时
+		// 才隐式共享（lock 卡 thinking 分层即靠此机制）。合并文档里非 lock
+		// 模型不带卡，别名随之无卡（价格由价表段承载），不设悬空引用。
+		aliasPriceRef := normalizeID(model.PriceRef)
+		if aliasPriceRef == "" && model.Price != nil {
+			aliasPriceRef = canonical
+		}
 		idx.entries[aliasID] = &Entry{
 			ID:          aliasID,
 			DisplayName: entry.DisplayName,
@@ -148,7 +163,7 @@ func (idx *Catalog) addModel(model Model) error {
 			Kind:        entry.Kind,
 			BillingMode: entry.BillingMode,
 			Upstream:    normalizeID(firstNonEmpty(alias.Upstream, model.Upstream, alias.ID)),
-			PriceRef:    firstNonEmpty(entry.PriceRef, canonical),
+			PriceRef:    aliasPriceRef,
 			LockPrice:   entry.LockPrice,
 			CanonicalID: canonical,
 		}
@@ -191,15 +206,40 @@ func (idx *Catalog) resolvePriceRefs() error {
 	return nil
 }
 
-// Default returns the embedded fork catalog.
-func Default() *Catalog {
-	defaultOnce.Do(func() {
-		defaultIndex, defaultErr = Load(data.CatalogJSON)
-	})
-	if defaultErr != nil {
-		panic(defaultErr)
+// Current returns the active catalog (embedded baseline, or the latest
+// successfully loaded runtime catalog file).
+func Current() *Catalog {
+	return current.Load()
+}
+
+// Replace atomically swaps in a fully validated catalog. Callers must pass
+// the result of Load/LoadFile; nil is a caller bug.
+func Replace(cat *Catalog) {
+	if cat == nil {
+		panic("modelcatalog: Replace(nil)")
 	}
-	return defaultIndex
+	current.Store(cat)
+}
+
+// LoadFile reads and validates a catalog document from disk. The document is
+// fully validated (version, duplicate IDs, price_ref closure) before it is
+// returned, so callers can swap it in without a second failure mode.
+func LoadFile(path string) (*Catalog, error) {
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		return nil, fmt.Errorf("read catalog file %s: %w", path, err)
+	}
+	cat, err := Load(raw)
+	if err != nil {
+		return nil, fmt.Errorf("catalog file %s: %w", path, err)
+	}
+	return cat, nil
+}
+
+// Default returns the active catalog. Kept for compatibility with existing
+// call sites; identical to Current.
+func Default() *Catalog {
+	return Current()
 }
 
 // Lookup returns the catalog entry for a public or alias model ID.

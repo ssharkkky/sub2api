@@ -1056,12 +1056,24 @@ plugins:
 # 定价数据源（可选）
 # =============================================================================
 pricing:
-  # URL to fetch model pricing data (default: model-price-repo main branch)
-  # 获取模型定价数据的 URL（默认：model-price-repo main 分支）
-  remote_url: "https://raw.githubusercontent.com/Wei-Shaw/model-price-repo/refs/heads/main//model_prices_and_context_window.json"
-  # Hash verification URL (optional)
-  # 哈希校验 URL（可选）
-  hash_url: "https://raw.githubusercontent.com/Wei-Shaw/model-price-repo/refs/heads/main//model_prices_and_context_window.sha256"
+  # URL of the merged model data document (catalog + price table in one file,
+  # default: this repo main branch — nothing model/price-related is compiled
+  # into the binary; the app converges to the latest repo version via this URL).
+  # 合并模型数据文档 URL（目录 + 价表同一文件；默认：本仓库 main 分支）。
+  # 需要上游 Wei-Shaw 全量价表时，可显式指回（此时目录段缺失，目录保持现状）：
+  # "https://raw.githubusercontent.com/Wei-Shaw/model-price-repo/main/model_prices_and_context_window.json"
+  remote_url: "https://raw.githubusercontent.com/ssharkkky/sub2api/refs/heads/main/deploy/data/models.json"
+  # Hash anchor URL: bare hex sha256 of the document, one line. 10-minute
+  # hash check short-circuits unchanged repos without downloading the body.
+  # 哈希锚点 URL：文档的纯 hex sha256（单行）。10min 级哈希比对，仓库没改就不下载正文。
+  hash_url: "https://raw.githubusercontent.com/ssharkkky/sub2api/refs/heads/main/deploy/data/models.json.sha256"
+  # Standalone catalog document remote (compatibility path; empty by default —
+  # the catalog section is carried by the merged document above). Set only when
+  # hosting the catalog at a separate address.
+  # 独立目录文档远程（兼容路径；默认留空——目录段由上面的合并文档承载）。
+  # 仅当需要把目录单独托管到另一个地址时才设置。
+  # catalog_url: ""
+  # catalog_hash_url: ""
   # Local data directory for caching
   # 本地数据缓存目录
   data_dir: "./data"
@@ -1076,6 +1088,14 @@ pricing:
   # 字段值为 null 表示删除该字段。模型名须与目录键完全一致。
   # 修改后重启或下次目录下载时生效。
   # override_file: "./data/model_pricing_overrides.json"
+  # Explicit catalog file (operator intent / air-gap; highest priority).
+  # When its catalog section loads successfully it wins over every remote
+  # catalog section (local wins), and hot-reloads (~60s content-hash poll)
+  # when the file changes on disk. The official image seeds
+  # /app/data/models.json at build time; this file overrides that catalog.
+  # 显式目录文件（运维意图/air-gap，优先级最高）。其目录段加载成功后赢过所有
+  # 远程目录段（本地赢），并随磁盘文件变化热加载（约 60s 内容哈希轮询）。
+  # catalog_file: "./data/catalog.json"
   # Update interval in hours
   # 更新间隔（小时）
   update_interval_hours: 24

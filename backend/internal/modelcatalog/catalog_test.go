@@ -1,6 +1,8 @@
 package modelcatalog
 
 import (
+	"os"
+	"path/filepath"
 	"testing"
 
 	"github.com/stretchr/testify/require"
@@ -47,6 +49,42 @@ func TestGeminiFlashTiersShareBasePriceCard(t *testing.T) {
 	require.InDelta(t, 0.75e-6, flash37.Input, 1e-12)
 	require.InDelta(t, 3.75e-6, flash37.Output, 1e-12)
 	require.InDelta(t, 0.075e-6, flash37.CacheRead, 1e-12)
+}
+
+func TestReplaceSwapsActiveCatalogForAllAccessors(t *testing.T) {
+	orig := Current()
+	t.Cleanup(func() { Replace(orig) })
+
+	cat, err := Load([]byte(`{"version":1,"models":[{"id":"test-model","platforms":["openai"],"kind":"chat","billing_mode":"token","lock_price":true,"price":{"input_per_mtok":1,"output_per_mtok":2}}]}`))
+	require.NoError(t, err)
+	Replace(cat)
+
+	require.NotNil(t, Lookup("test-model"))
+	require.True(t, Locked("test-model"))
+	require.NotNil(t, Default().Lookup("test-model"))
+	require.Empty(t, Lookup("gemini-3.6-flash"), "换入的目录里没有内嵌模型")
+
+	Replace(orig)
+	require.NotNil(t, Lookup("gemini-3.6-flash"), "恢复内嵌目录后原有模型必须回来")
+	require.Nil(t, Lookup("test-model"))
+}
+
+func TestLoadFile(t *testing.T) {
+	dir := t.TempDir()
+
+	path := filepath.Join(dir, "catalog.json")
+	require.NoError(t, os.WriteFile(path, []byte(`{"version":1,"models":[{"id":"m1","price":{"input_per_mtok":1}}]}`), 0o644))
+	cat, err := LoadFile(path)
+	require.NoError(t, err)
+	require.NotNil(t, cat.Lookup("m1"))
+
+	_, err = LoadFile(filepath.Join(dir, "missing.json"))
+	require.Error(t, err)
+
+	bad := filepath.Join(dir, "bad.json")
+	require.NoError(t, os.WriteFile(bad, []byte(`{"version":9}`), 0o644))
+	_, err = LoadFile(bad)
+	require.Error(t, err)
 }
 
 func TestCatalogRejectsDuplicateAndMissingPriceRef(t *testing.T) {
