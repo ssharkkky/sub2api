@@ -1056,22 +1056,24 @@ plugins:
 # 定价数据源（可选）
 # =============================================================================
 pricing:
-  # URL to fetch model pricing data (default: this repo main branch = fork 权威价表)
-  # 获取模型价表的 URL（默认：本仓库 main 分支的 deploy/data/model_prices.json）
-  # 需要上游 Wei-Shaw 全量文件时，可显式指回：
+  # URL of the merged model data document (catalog + price table in one file,
+  # default: this repo main branch — nothing model/price-related is compiled
+  # into the binary; the app converges to the latest repo version via this URL).
+  # 合并模型数据文档 URL（目录 + 价表同一文件；默认：本仓库 main 分支）。
+  # 需要上游 Wei-Shaw 全量价表时，可显式指回（此时目录段缺失，目录保持现状）：
   # "https://raw.githubusercontent.com/Wei-Shaw/model-price-repo/main/model_prices_and_context_window.json"
-  remote_url: "https://raw.githubusercontent.com/ssharkkky/sub2api/refs/heads/main/deploy/data/model_prices.json"
-  # Hash anchor URL: bare hex sha256 of the price table, one line. 10-minute
+  remote_url: "https://raw.githubusercontent.com/ssharkkky/sub2api/refs/heads/main/deploy/data/models.json"
+  # Hash anchor URL: bare hex sha256 of the document, one line. 10-minute
   # hash check short-circuits unchanged repos without downloading the body.
-  # 哈希锚点 URL：价表的纯 hex sha256（单行）。10min 级哈希比对，仓库没改就不下载正文。
-  hash_url: "https://raw.githubusercontent.com/ssharkkky/sub2api/refs/heads/main/deploy/data/model_prices.sha256"
-  # Channel model catalog remote (default: this repo main branch = fork 定价底稿)
-  # 渠道模型目录远程（默认：本仓库 main 分支的 backend/internal/modelcatalog/data/catalog.json）。
-  # 仓库 PR 合并后，运行实例在下一个 10min 哈希检查内自动换入（含列表/别名/上游重写/
-  # lock 价卡/共享卡），无需重建镜像。校验失败保留上一份有效目录。
-  catalog_url: "https://raw.githubusercontent.com/ssharkkky/sub2api/refs/heads/main/backend/internal/modelcatalog/data/catalog.json"
-  # 目录文件的哈希锚点 URL（纯 hex sha256，单行）
-  catalog_hash_url: "https://raw.githubusercontent.com/ssharkkky/sub2api/refs/heads/main/backend/internal/modelcatalog/data/catalog.sha256"
+  # 哈希锚点 URL：文档的纯 hex sha256（单行）。10min 级哈希比对，仓库没改就不下载正文。
+  hash_url: "https://raw.githubusercontent.com/ssharkkky/sub2api/refs/heads/main/deploy/data/models.json.sha256"
+  # Standalone catalog document remote (compatibility path; empty by default —
+  # the catalog section is carried by the merged document above). Set only when
+  # hosting the catalog at a separate address.
+  # 独立目录文档远程（兼容路径；默认留空——目录段由上面的合并文档承载）。
+  # 仅当需要把目录单独托管到另一个地址时才设置。
+  # catalog_url: ""
+  # catalog_hash_url: ""
   # Local data directory for caching
   # 本地数据缓存目录
   data_dir: "./data"
@@ -1086,16 +1088,13 @@ pricing:
   # 字段值为 null 表示删除该字段。模型名须与目录键完全一致。
   # 修改后重启或下次目录下载时生效。
   # override_file: "./data/model_pricing_overrides.json"
-  # Channel model catalog file (fork price book, maintained in this repo).
-  # When present it REPLACES the embedded catalog wholesale and hot-reloads
-  # (~60s poll) when the file changes on disk — update it from your repo
-  # without rebuilding the image. Empty = auto-discover ./data/catalog.json,
-  # then ./catalog.json; missing/invalid file falls back to the embedded
-  # catalog. In the official image the build already copies the in-repo file
-  # to /app/data/catalog.json.
-  # 渠道模型目录文件（fork 定价底稿，仓库内维护）。存在时整体替换内嵌目录，
-  # 并随磁盘文件变化热加载（约 60s 轮询）——从仓库更新文件即可，无需重建镜像。
-  # 留空 = 自动发现 ./data/catalog.json、./catalog.json；缺失/非法时回落内嵌目录。
+  # Explicit catalog file (operator intent / air-gap; highest priority).
+  # When its catalog section loads successfully it wins over every remote
+  # catalog section (local wins), and hot-reloads (~60s content-hash poll)
+  # when the file changes on disk. The official image seeds
+  # /app/data/models.json at build time; this file overrides that catalog.
+  # 显式目录文件（运维意图/air-gap，优先级最高）。其目录段加载成功后赢过所有
+  # 远程目录段（本地赢），并随磁盘文件变化热加载（约 60s 内容哈希轮询）。
   # catalog_file: "./data/catalog.json"
   # Update interval in hours
   # 更新间隔（小时）

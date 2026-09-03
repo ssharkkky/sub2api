@@ -4,30 +4,35 @@
 
 ```
 本仓库（唯一权威，PR 评审 + CI 不变量）
-├─ deploy/data/model_prices.json (+ .sha256)      LiteLLM 全量价表，运行时单一权威价源
-└─ backend/internal/modelcatalog/data/catalog.json (+ .sha256)
-                                                  列表/结构层 + 底稿价卡（兜底 + CI 锚点）
+└─ deploy/data/models.json (+ .sha256)      单一合并文档：
+                                            models 段（目录：id/alias/重写/lock 卡）
+                                            + prices 段（LiteLLM 全量价表，运行时单一权威价源）
    │
-   ├─ 构建时：go:embed → 内嵌目录（终极兜底，永不缺失）
-   │          COPY → /app/data/catalog.json（镜像离线种子）
+   ├─ 构建时：COPY → /app/data/models.json（镜像离线种子；二进制零模型/价格数据，无 go:embed）
    │
    └─ 运行时（自动拉取，PR 合并后 ≤10min 生效）：
-        10min ticker → fetch hash_url → 锚点 == 生效内容 hash？
+        10min ticker → fetch hash_url → 锚点 == 本地已加载正文 hash？
           ├─ 是 → 短路（连正文都不下载）
-          └─ 否 → 下载正文 → sha256 二次比对 → Load/parsePricingData 完整校验
-                → 原子换入（Replace + lock 覆盖重放 / 价表 merge）
-                → tmp+fsync+rename 落本地缓存（data_dir）
-        失败 → 保留上一份有效版本 + 指数退避（首次 10s 逐次翻倍 cap 10min，哈希/正文层失败都计数）+ 去重告警
+          └─ 否 → 下载正文 → sha256 二次比对 → 形态识别（merged/目录/扁平价表）
+                → 目录段 modelcatalog.Load + 价表段 parsePricingData 完整校验
+                → 同一临界区原子双换入（Replace + 价表 map 整体替换）
+                → tmp+fsync+rename 落本地缓存 + 锚点（data_dir/models.json）
+        失败 → 整文档拒收，保留上一份有效版本 + 指数退避（首次 10s 逐次翻倍 cap 10min，哈希/正文层失败都计数）+ 去重告警
 ```
 
-## 来源优先级（catalog，高 → 低）
+## 来源优先级（高 → 低）
 
-1. `pricing.catalog_file` 显式文件（运维意图/air-gap；存在时远程不覆盖，分歧只告警）
-2. `pricing.catalog_url` 远程（仓库 main 分支）
-3. `./data/catalog.json` 自动发现（= 远程本地缓存/镜像种子）
-4. 内嵌目录（`go:embed`）
+1. `pricing.catalog_file` 显式文件（运维意图/air-gap；目录段加载成功后赢过所有远程目录段，
+   判定 = 「目录确实来自该文件」——文件损坏/未放入不锁死远程；60s 内容哈希轮询热修复；
+   文件被移除时解除本地赢锁，远程重新接管）
+2. `pricing.remote_url` 合并文档（默认 = 仓库 main 分支 `deploy/data/models.json`；目录+价表一次到位）
+3. 启动期本地探测：`./data/models.json`（远程缓存/镜像种子）→ `./data/catalog.json`（旧独立目录缓存）
+   → `./data/model_pricing.json`（旧价表缓存；后两者只为两文件时代部署平滑迁移而保留）
+4. 兜底价表（`fallback_file`，镜像内置 198 条）+ 空目录——价目表永不为空（计费 fail-closed），
+   目录空只影响货架展示，远程恢复后自动收敛
 
-价表同构：`remote_url`（默认本仓库）→ 本地缓存 → `fallback_file` → 硬编码回退。
+`pricing.catalog_url` / `catalog_hash_url` 独立目录文档 = 兼容路径（默认关闭），
+与合并文档同一套「锚点 → 变化才下载 → 校验 → 原子换入」节奏。
 
 ## 关键决策
 
@@ -38,9 +43,11 @@
 5. **单一 10min ticker 双目标**：一次 select 同时决策价表/目录同步（未启用目标 = nil channel，nil `*time.Ticker` 取 `.C` 会 panic，必须持 channel 变量），无竞态、生命周期单一；60s 内容哈希轮询仅保留给显式 `catalog_file`（热修复，免 mtime 粒度/TOCTOU 问题），自动发现文件不再轮询（它是缓存，由同步器写）。
 6. **指数退避**：持续失败（GitHub 429/断网）时 10s→20s→…→10min，不再每 tick 敲 GitHub；成功即清零。
 7. **BillingService 目录回退改惰性解析**：硬编码 map 构造后不变；目录条目按请求从当前生效目录解析（`lookupExactFallbackPricing` 第二层 + 思考档共享卡）。修复「构造时一次性快照 → 热换入后假兜底、需重启才生效」的缺口，且不引入跨服务钩子。
-8. **两文件而非一文件**：价表（LiteLLM 格式，`parsePricingData` 生产解析路径）与目录（列表/结构/重写/共享卡，扁平价表表达不了）格式与消费者不同；合并要动生产解析路径，风险大于收益。CI 三不变量把两者绑死，防漂移。
-9. **仓库默认、上游可选**：代码默认值指向本仓库 raw 路径（fork 数据是 fork 身份）；Wei-Shaw 文件降级为迁移/发现输入，显式覆盖仍可切回。
-10. **schema 只增不改**：新数据配旧代码安全（未知字段忽略），回滚 = 回滚 PR 或清空 `catalog_url`。
+8. **单一合并文档（models + prices）**：目录与价表同文档、同校验、同事务原子换入，从机制上消除两文件时代的「反向 skew 窗口」（新目录 + 旧价表）。形态识别兼容三种文档（merged / 独立目录 / 扁平价表），旧两文件部署的本地缓存可被探测加载并随首次远程同步收敛。`parsePricingData` 生产解析路径不变（prices 段就是 LiteLLM map）。
+9. **删除 go:embed**：二进制零模型/价格数据。所有目录消费者 nil-safe（空目录 = 货架暂空，计费走价表/兜底）；官方镜像种子 `/app/data/models.json` 在 HTTP 服务前加载，消除启动空目录窗口；裸二进制无种子时目录从首次远程同步起生效（价表有 198 条兜底）。
+10. **仓库默认、上游可选**：代码默认值指向本仓库 raw 路径（fork 数据是 fork 身份）；Wei-Shaw 文件降级为迁移/发现输入（生成器的上游基线），显式覆盖仍可切回。
+11. **schema 只增不改**：新数据配旧代码安全（未知字段忽略），回滚 = 回滚 PR 或清空 `remote_url`。
+12. **fork 决议值显式化**：非 lock 模型不带价卡（价格全部由 prices 段承载）；fork 侧高于上游的决议值集中在生成器 `FORK_OVERRIDES` 表，机器校验、漂移必被抓；lock 卡（2 条）留在 models 段，CI 不变量强制价表字段与卡相等。
 
 ## 审计记录（2026-09-03，opencode 独立审计 agent，结论「需修复后合入」→ 已全部修复）
 

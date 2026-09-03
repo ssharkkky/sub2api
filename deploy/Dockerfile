@@ -110,10 +110,11 @@ COPY --from=backend-builder --chown=sub2api:sub2api /app/backend/resources /app/
 # Create data directory
 RUN mkdir -p /app/data && chown -R sub2api:sub2api /app
 
-# Fork-owned channel model catalog (price book). Ships the same in-repo file
-# the embedded fallback was built from; deployments can mount a newer repo
-# copy at /app/data/catalog.json and hot reload applies it without rebuild.
-COPY --chown=sub2api:sub2api backend/internal/modelcatalog/data/catalog.json /app/data/catalog.json
+# Fork-owned merged model data document (catalog + price table in one file).
+# Nothing model/price-related is compiled into the binary: this seed file is
+# loaded at startup (first local probe) and the app converges to the latest
+# repo version via remote sync (sha256 anchor, hot swap, no restart).
+COPY --chown=sub2api:sub2api deploy/data/models.json /app/data/models.json
 
 # Copy entrypoint script (fixes volume permissions then drops to sub2api)
 COPY deploy/docker-entrypoint.sh /app/docker-entrypoint.sh

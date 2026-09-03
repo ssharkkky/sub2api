@@ -24,3 +24,11 @@
   - **P2** 显式文件轮询从 mtime/size 指纹改内容哈希指纹（免 mtime 粒度/TOCTOU）；文件与生效一致时清陈旧 `last_error`
   - **P2** 启动期远程目录同步走 15s 总预算（`syncCatalogRemoteCtx`），不拖慢 boot
   - 功能子集 `-race` 全绿；全量回归（service/modelcatalog/config）通过
+- [x] T19 合并单文档（用户确认三点：删 go:embed / 删 52 条非 lock 基线卡 / `deploy/data/models.json`）：
+  - 生成 `deploy/data/models.json`（models 段 56 模型 + prices 段 276 条，与旧价表零差异）+ `models.json.sha256`；删除旧 `model_prices.json` 双文件与包内 `catalog.json`/`embed.go`/`catalog.sha256`
+  - `classifyModelData` 形态识别（merged / 独立目录 / 扁平价表）+ `applyModelData` 统一原子双换入事务（同临界区 `Replace` + 价表 map 替换，lock 重放走 Locked 变体免重入死锁）
+  - 别名价卡引用仅在 canonical 带卡时隐式共享（非 lock 无卡不产生悬空 price_ref）；移除文档中 2 处死 `price_ref`
+  - 启动期本地探测（models.json → 旧 catalog.json → 旧 model_pricing.json）+ 锚点即时比对 + `InitializeCtx` 15s 预算；`loadRuntimeCatalogFile` 仅显式文件（source-based 本地赢判定，坏文件不锁死远程，文件移除解除锁）
+  - 配置默认收敛为一个 URL/哈希对（合并文档）；`catalog_url` 降级为默认关闭的兼容路径
+  - 生成器 v2：上游基线 ∪ 当前 prices 段（fork-owned 47 名）∪ `FORK_OVERRIDES` 显式决议表 + lock 卡；CI 不变量升级为 4 条且全走生产路径；测试包 TestMain 从仓库合并文档播种目录
+  - 验证：`go build`、service/modelcatalog/config 全量测试、`go vet`、生成器 `--check`、docker 资源测试全绿

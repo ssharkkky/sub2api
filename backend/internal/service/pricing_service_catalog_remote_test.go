@@ -129,7 +129,7 @@ func TestSyncCatalogRemoteInvalidBodyKeepsLastGood(t *testing.T) {
 	err := svc.syncCatalogRemote()
 	require.Error(t, err)
 	require.Same(t, before, modelcatalog.Current(), "invalid remote body must keep the previous catalog")
-	require.Equal(t, "embedded", svc.catalogRuntime.source)
+	require.Equal(t, "none", svc.catalogRuntime.source, "无内嵌基线：失败时保持初始空目录状态")
 }
 
 func TestSyncCatalogRemoteDownloadFailureKeepsLastGood(t *testing.T) {
@@ -281,17 +281,17 @@ func TestSyncWithRemoteBadAnchorDoesNotFreezeUpdates(t *testing.T) {
 	}})
 
 	// 首轮：localHash 为空 → 下载；本地锚点存正文哈希（而非垃圾锚点）。
-	require.NoError(t, svc.syncWithRemote())
+	require.NoError(t, svc.syncWithRemote(context.Background()))
 	require.Equal(t, 1, remote.bodyFetches)
 	require.Equal(t, bodyHash, pricingLocalHash(t, svc), "锚点必须与实际加载的正文一致")
 
 	// 次轮：垃圾锚点 ≠ 正文哈希 → 继续下载（不冻结）。
-	require.NoError(t, svc.syncWithRemote())
+	require.NoError(t, svc.syncWithRemote(context.Background()))
 	require.Equal(t, 2, remote.bodyFetches, "坏锚点不得把更新永久冻结")
 
 	// 锚点修复后：锚点 == 正文哈希 → 短路，不再下载。
 	remote.catalogHash = bodyHash
-	require.NoError(t, svc.syncWithRemote())
+	require.NoError(t, svc.syncWithRemote(context.Background()))
 	require.Equal(t, 2, remote.bodyFetches)
 }
 
@@ -307,5 +307,5 @@ func TestSyncWithRemoteHashFetchFailureReturnsError(t *testing.T) {
 		HashURL:   "https://invalid.example/prices.sha256",
 	}})
 
-	require.Error(t, svc.syncWithRemote())
+	require.Error(t, svc.syncWithRemote(context.Background()))
 }

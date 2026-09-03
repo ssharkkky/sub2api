@@ -2305,17 +2305,22 @@ func setDefaults() {
 	viper.SetDefault("rate_limit.overload_cooldown_minutes", 10)
 	viper.SetDefault("rate_limit.oauth_401_cooldown_minutes", 10)
 
-	// Pricing - 模型价表/目录默认从本仓库 main 分支同步（fork 权威源，仓库即数据源）。
-	// 需要上游 Wei-Shaw 文件时可在部署配置里显式覆盖 remote_url/hash_url 指回
-	// https://raw.githubusercontent.com/Wei-Shaw/model-price-repo/main/... 。
-	viper.SetDefault("pricing.remote_url", "https://raw.githubusercontent.com/ssharkkky/sub2api/refs/heads/main/deploy/data/model_prices.json")
-	viper.SetDefault("pricing.hash_url", "https://raw.githubusercontent.com/ssharkkky/sub2api/refs/heads/main/deploy/data/model_prices.sha256")
+	// Pricing - 模型数据默认从本仓库 main 分支同步（fork 权威源，仓库即数据源）。
+	// 单一合并文档 deploy/data/models.json 同时承载目录（模型列表/alias/lock 卡）
+	// 与价表（计费数字），一次 fetch / 一次校验 / 一次原子换入，从机制上消除
+	// 两文件不同步的漂移窗口。需要上游 Wei-Shaw 文件时可在部署配置里显式覆盖
+	// remote_url/hash_url 指回 https://raw.githubusercontent.com/Wei-Shaw/model-price-repo/main/... 。
+	viper.SetDefault("pricing.remote_url", "https://raw.githubusercontent.com/ssharkkky/sub2api/refs/heads/main/deploy/data/models.json")
+	viper.SetDefault("pricing.hash_url", "https://raw.githubusercontent.com/ssharkkky/sub2api/refs/heads/main/deploy/data/models.json.sha256")
 	viper.SetDefault("pricing.data_dir", "./data")
 	viper.SetDefault("pricing.fallback_file", "./resources/model-pricing/model_prices_and_context_window.json")
 	viper.SetDefault("pricing.override_file", "")
 	viper.SetDefault("pricing.catalog_file", "")
-	viper.SetDefault("pricing.catalog_url", "https://raw.githubusercontent.com/ssharkkky/sub2api/refs/heads/main/backend/internal/modelcatalog/data/catalog.json")
-	viper.SetDefault("pricing.catalog_hash_url", "https://raw.githubusercontent.com/ssharkkky/sub2api/refs/heads/main/backend/internal/modelcatalog/data/catalog.sha256")
+	// 独立目录文档（catalog_url/catalog_hash_url）为兼容路径：默认留空，
+	// 目录段由上面的合并文档（remote_url）承载。仅当需要把目录单独托管到
+	// 另一个地址时才设置。
+	viper.SetDefault("pricing.catalog_url", "")
+	viper.SetDefault("pricing.catalog_hash_url", "")
 	viper.SetDefault("pricing.update_interval_hours", 24)
 	viper.SetDefault("pricing.hash_check_interval_minutes", 10)
 

@@ -7,8 +7,6 @@ import (
 	"sort"
 	"strings"
 	"sync/atomic"
-
-	"github.com/Wei-Shaw/sub2api/internal/modelcatalog/data"
 )
 
 // Price is a human-authored rate card. Amounts are USD per million tokens
@@ -77,20 +75,19 @@ type Catalog struct {
 	entries map[string]*Entry
 }
 
-// current holds the active catalog. It starts from the embedded fork catalog
-// (the in-repo price book compiled into the binary) and can be atomically
-// replaced at runtime when the operator's catalog file on disk changes. All
-// readers go through Current(), so a swap is transparent to every call site.
+// current holds the active catalog. It starts empty (no models, no aliases) —
+// nothing catalog-related is compiled into the binary anymore; the first
+// catalog comes from the repo-owned data file at startup (explicit catalog
+// file, local cache/seed, or remote fetch). All readers go through Current(),
+// so a runtime swap is transparent to every call site, and every consumer
+// degrades gracefully on an empty catalog (empty lists / nil lookups).
 var current atomic.Pointer[Catalog]
 
-func init() {
-	cat, err := Load(data.CatalogJSON)
-	if err != nil {
-		// The embedded catalog ships with the build; a broken one is a
-		// build-time bug, so fail fast instead of serving empty prices.
-		panic(err)
-	}
-	current.Store(cat)
+func init() { current.Store(emptyCatalog()) }
+
+// emptyCatalog is the pre-load initial state: structurally valid, zero models.
+func emptyCatalog() *Catalog {
+	return &Catalog{entries: make(map[string]*Entry)}
 }
 
 // Load parses a catalog document.
@@ -152,6 +149,13 @@ func (idx *Catalog) addModel(model Model) error {
 		if len(platforms) == 0 {
 			platforms = model.Platforms
 		}
+		// 别名的价卡引用：显式 price_ref 优先；否则仅当 canonical 自带价卡时
+		// 才隐式共享（lock 卡 thinking 分层即靠此机制）。合并文档里非 lock
+		// 模型不带卡，别名随之无卡（价格由价表段承载），不设悬空引用。
+		aliasPriceRef := normalizeID(model.PriceRef)
+		if aliasPriceRef == "" && model.Price != nil {
+			aliasPriceRef = canonical
+		}
 		idx.entries[aliasID] = &Entry{
 			ID:          aliasID,
 			DisplayName: entry.DisplayName,
@@ -159,7 +163,7 @@ func (idx *Catalog) addModel(model Model) error {
 			Kind:        entry.Kind,
 			BillingMode: entry.BillingMode,
 			Upstream:    normalizeID(firstNonEmpty(alias.Upstream, model.Upstream, alias.ID)),
-			PriceRef:    firstNonEmpty(entry.PriceRef, canonical),
+			PriceRef:    aliasPriceRef,
 			LockPrice:   entry.LockPrice,
 			CanonicalID: canonical,
 		}

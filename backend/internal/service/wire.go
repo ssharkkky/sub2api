@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"os"
+	"strings"
 	"time"
 
 	dbent "github.com/Wei-Shaw/sub2api/ent"
@@ -46,25 +47,33 @@ func startProcessBackground(name string, start func()) {
 // ProvidePricingService creates and initializes PricingService
 func ProvidePricingService(cfg *config.Config, remoteClient PricingRemoteClient) (*PricingService, error) {
 	svc := NewPricingService(cfg, remoteClient)
-	if err := svc.initializeData(); err != nil {
+
+	// 渠道模型目录：先加载显式目录文件（pricing.catalog_file，最高优先级，
+	// 运维意图/air-gap）；它生效时后续远程目录段让位（本地赢）。本地缓存/
+	// 镜像种子（/app/data/models.json）与远程合并文档由 InitializeCtx 的本地
+	// 探测负责。任一步失败都不阻塞启动：统一调度器会按指数退避持续重试。
+	svc.loadRuntimeCatalogFile()
+
+	// 启动期 best-effort 初始化（15s 总预算避免拖慢 boot）：
+	// 本地探测 → 远程锚点即时比对 → 变化则拉取合并文档（目录+价表一次到位）→
+	// 失败回落兜底价表；随后启动统一同步调度器。
+	syncCtx, cancelSync := context.WithTimeout(context.Background(), 15*time.Second)
+	if err := svc.InitializeCtx(syncCtx); err != nil {
 		// Pricing service initialization failure should not block startup, use fallback prices
 		println("[Service] Warning: Pricing service initialization failed:", err.Error())
 	}
-	// 渠道模型目录：先加载本地文件（显式配置/自动发现），缺失/非法时回落内嵌目录；
-	// 再对仓库 main 做一次远程同步（仓库为权威源，PR 合并后启动即收敛到最新）。
-	// 任一步失败都不阻塞启动，统一调度器会按指数退避持续重试。
-	svc.loadRuntimeCatalogFile()
-	// 启动期 best-effort 同步：15s 总预算避免拖慢 boot；失败后统一调度器
-	// 按指数退避持续重试，不会卡死在内嵌目录。
-	syncCtx, cancelSync := context.WithTimeout(context.Background(), 15*time.Second)
-	if err := svc.syncCatalogRemoteCtx(syncCtx); err != nil {
-		println("[Service] Warning: pricing catalog remote sync failed:", err.Error())
-		svc.catalogRemoteBackoff.recordFailure(time.Now())
-	} else {
-		svc.catalogRemoteBackoff.recordSuccess()
+
+	// 独立 catalog_url 兼容路径（默认配置不启用；目录段由合并文档承载）：
+	// 同预算下 best-effort 同步一次，失败按退避重试。
+	if strings.TrimSpace(cfg.Pricing.CatalogURL) != "" {
+		if err := svc.syncCatalogRemoteCtx(syncCtx); err != nil {
+			println("[Service] Warning: pricing catalog remote sync failed:", err.Error())
+			svc.catalogRemoteBackoff.recordFailure(time.Now())
+		} else {
+			svc.catalogRemoteBackoff.recordSuccess()
+		}
 	}
 	cancelSync()
-	startProcessBackground("pricing_update", svc.startUpdateScheduler)
 	return svc, nil
 }
 

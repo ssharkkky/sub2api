@@ -1,23 +1,36 @@
 #!/usr/bin/env python3
-"""Generate deploy/data/model_prices.json (fork-owned LiteLLM-format price table).
+"""Generate deploy/data/models.json (fork-owned merged model data document).
+
+The merged document is the single repo-maintained source of model + price
+data; the app fetches it (with a sha256 anchor) and swaps catalog + price
+table atomically. Nothing model/price-related is compiled into the binary.
+
+Document shape:
+  {
+    "version": 1,
+    "models": [ ...catalog: id/aliases/upstream rewrites/lock cards... ],
+    "prices": { ...LiteLLM-format price map (USD per token)... }
+  }
 
 Sources (priority):
-  1. Catalog baseline price cards (backend/internal/modelcatalog/data/catalog.json)
-     - authoritative for EVERY catalog id/alias (CI enforces the invariant).
-  2. Upstream Wei-Shaw model-price-repo file
-     - discovery baseline for everything else (context windows, provider
-       metadata, extra cost fields) and the copy base for overlapping names.
+  1. Upstream Wei-Shaw model-price-repo file
+     - copy base for every name present upstream (context windows, provider
+       metadata, extra cost fields).
+  2. Current prices section (fork-owned)
+     - authoritative for every catalog name missing upstream (47 synthesized
+       names); the fork owns their full entries.
+  3. FORK_OVERRIDES table below
+     - explicit, machine-checked fork-side values that differ from upstream
+       (operator decisions, 2026-08: every divergence resolved to the
+       higher price).
+  4. Lock cards (models section, lock_price=true)
+     - authoritative for their card cost fields; inherited *_priority
+       fields rescale by the base-input ratio (upstream convention).
 
-Rules:
-  - Every catalog id/alias ends up with an explicit entry.
-  - Name present upstream: copy the upstream entry, then overlay the catalog
-    card's cost fields (USD per MTok -> USD per token).
-  - Name missing upstream: synthesize a minimal entry from the card.
-  - Locked cards (lock_price=true) may rescale inherited *_priority fields by
-    the same ratio as the base input change (upstream convention: priority
-    tier keeps its base ratio), reported in the diff output.
-  - Output is sorted by key; the .sha256 file contains the bare hex digest
-    (no filename), matching the runtime hash-comparison convention.
+Invariants enforced in --check mode (CI):
+  - committed models.json equals generated output;
+  - models.json.sha256 matches the committed document;
+  - every catalog id/alias has a prices entry.
 
 Usage:
   python3 tools/generate_model_prices.py [--upstream FILE] [--check]
@@ -35,21 +48,74 @@ import urllib.request
 from pathlib import Path
 
 REPO = Path(__file__).resolve().parent.parent
-CATALOG_PATH = REPO / "backend/internal/modelcatalog/data/catalog.json"
-CATALOG_SHA_PATH = REPO / "backend/internal/modelcatalog/data/catalog.sha256"
-OUT_PATH = REPO / "deploy/data/model_prices.json"
-OUT_SHA_PATH = REPO / "deploy/data/model_prices.sha256"
+DOC_PATH = REPO / "deploy/data/models.json"
+DOC_SHA_PATH = REPO / "deploy/data/models.json.sha256"
 UPSTREAM_URL = (
     "https://raw.githubusercontent.com/Wei-Shaw/model-price-repo/"
     "main/model_prices_and_context_window.json"
 )
 
-def infer_provider(name: str, platform: str) -> str:
-    """litellm_provider for synthesized entries, by model ID family.
+# ---------------------------------------------------------------------------
+# Explicit fork-side values that differ from upstream. Every entry here is an
+# operator decision (kept or raised to the higher price, 2026-08); the table
+# is machine-checked by --check so it can never drift silently.
+# Values are USD per token.
+# ---------------------------------------------------------------------------
+FORK_OVERRIDES: dict[str, dict[str, float]] = {
+    # Fork-owned additions (field absent upstream):
+    "claude-opus-4-8": {
+        "input_cost_per_token_priority": 1e-05,
+        "output_cost_per_token_priority": 5e-05,
+        "cache_read_input_token_cost_priority": 1e-06,
+        "cache_creation_input_token_cost_priority": 1.25e-05,
+    },
+    "claude-opus-5": {
+        "input_cost_per_token_priority": 1e-05,
+        "output_cost_per_token_priority": 5e-05,
+        "cache_read_input_token_cost_priority": 1e-06,
+        "cache_creation_input_token_cost_priority": 1.25e-05,
+    },
+    "gpt-5.2": {"cache_creation_input_token_cost": 1.75e-06},
+    "gpt-5.3-codex": {"cache_creation_input_token_cost": 1.5e-06},
+    "gpt-5.3-codex-spark": {"cache_creation_input_token_cost": 1.5e-06},
+    "gpt-5.4": {"cache_creation_input_token_cost": 2.5e-06},
+    # Operator decision: fork prices higher than upstream list:
+    "gpt-5.6": {
+        "input_cost_per_token": 5e-06,
+        "input_cost_per_token_priority": 1e-05,
+        "output_cost_per_token": 3e-05,
+        "output_cost_per_token_priority": 6e-05,
+        "cache_read_input_token_cost": 5e-07,
+        "cache_read_input_token_cost_priority": 1e-06,
+        "cache_creation_input_token_cost": 6.25e-06,
+        "cache_creation_input_token_cost_priority": 1.25e-05,
+    },
+    "kimi-k2.5": {"output_cost_per_token": 3e-06},
+    "kimi-k2.6": {"output_cost_per_token": 4e-06},
+}
 
-    (Catalog `platforms` is the list of sales platforms, not the upstream
-    provider, so the ID prefix is the reliable signal.)
-    """
+# (catalog card field, LiteLLM table field)
+COST_FIELDS = [
+    ("input_per_mtok", "input_cost_per_token"),
+    ("output_per_mtok", "output_cost_per_token"),
+    ("input_priority_per_mtok", "input_cost_per_token_priority"),
+    ("output_priority_per_mtok", "output_cost_per_token_priority"),
+    ("cache_write_per_mtok", "cache_creation_input_token_cost"),
+    ("cache_write_priority_per_mtok", "cache_creation_input_token_cost_priority"),
+    ("cache_read_per_mtok", "cache_read_input_token_cost"),
+    ("cache_read_priority_per_mtok", "cache_read_input_token_cost_priority"),
+]
+
+PRIORITY_FIELDS = {
+    "input_cost_per_token_priority",
+    "output_cost_per_token_priority",
+    "cache_creation_input_token_cost_priority",
+    "cache_read_input_token_cost_priority",
+}
+
+
+def infer_provider(name: str, platform: str) -> str:
+    """litellm_provider for brand-new synthesized entries, by model ID family."""
     if name.startswith("claude-"):
         return "anthropic"
     if name.startswith("gpt-"):
@@ -69,31 +135,6 @@ def infer_provider(name: str, platform: str) -> str:
     return {"anthropic": "anthropic", "openai": "openai", "google": "gemini", "antigravity": "gemini", "zai": "zhipu", "kimi": "moonshot", "minimax": "minimax"}.get(
         platform, "openai"
     )
-
-# (catalog card field, LiteLLM table field)
-COST_FIELDS = [
-    ("input_per_mtok", "input_cost_per_token"),
-    ("output_per_mtok", "output_cost_per_token"),
-    ("input_priority_per_mtok", "input_cost_per_token_priority"),
-    ("output_priority_per_mtok", "output_cost_per_token_priority"),
-    ("cache_write_per_mtok", "cache_creation_input_token_cost"),
-    ("cache_write_priority_per_mtok", "cache_creation_input_token_cost_priority"),
-    ("cache_read_per_mtok", "cache_read_input_token_cost"),
-    ("cache_read_priority_per_mtok", "cache_read_input_token_cost_priority"),
-]
-
-BASE_FIELDS = {
-    "input_cost_per_token",
-    "input_cost_per_token_priority",
-    "output_cost_per_token",
-    "output_cost_per_token_priority",
-}
-PRIORITY_FIELDS = {
-    "input_cost_per_token_priority",
-    "output_cost_per_token_priority",
-    "cache_creation_input_token_cost_priority",
-    "cache_read_input_token_cost_priority",
-}
 
 
 def per_token(mtok: float) -> float:
@@ -116,12 +157,13 @@ def load_upstream(arg: str | None) -> dict:
     return data
 
 
-def load_catalog() -> list[dict]:
-    doc = json.loads(CATALOG_PATH.read_text())
-    models = doc.get("models")
-    if not isinstance(models, list) or not models:
-        raise SystemExit("catalog.json has no models")
-    return models
+def load_doc() -> dict:
+    doc = json.loads(DOC_PATH.read_text())
+    if not isinstance(doc.get("models"), list) or not doc["models"]:
+        raise SystemExit("models.json has no models section")
+    if not isinstance(doc.get("prices"), dict) or not doc["prices"]:
+        raise SystemExit("models.json has no prices section")
+    return doc
 
 
 def card_price(model: dict, by_id: dict) -> dict | None:
@@ -145,49 +187,59 @@ def main() -> int:
     args = ap.parse_args()
 
     upstream = load_upstream(args.upstream)
-    models = load_catalog()
+    doc = load_doc()
+    models = doc["models"]
+    current_prices: dict[str, dict] = doc["prices"]
     by_id = {m["id"]: m for m in models}
 
     table: dict[str, dict] = {k: dict(v) for k, v in upstream.items()}
     overrides: list[str] = []
     synthesized: list[str] = []
-    covered: set[str] = set()
 
     for model in models:
         name = model["id"]
         price = card_price(model, by_id)
-        if price is None:
-            raise SystemExit(f"catalog model {name} has no resolvable price card")
         locked = bool(model.get("lock_price"))
+        # 非 lock 模型不带卡是常态（价格由 prices 段承载，上游/仓库生成）；
+        # lock 模型必须带卡（卡即该模型的权威价格，CI 强制）。
+        if price is None and locked:
+            raise SystemExit(f"locked catalog model {name} has no resolvable price card")
         platform = (model.get("platforms") or ["openai"])[0]
 
         for nm in entry_names(model):
-            covered.add(nm)
             entry = table.get(nm)
             if entry is None:
-                entry = {
-                    "mode": "chat",
-                    "litellm_provider": infer_provider(nm, platform),
-                }
-                synthesized.append(nm)
-                table[nm] = entry
+                # Catalog name missing upstream: the fork owns the full entry.
+                if nm in current_prices:
+                    entry = dict(current_prices[nm])
+                    table[nm] = entry
+                    synthesized.append(nm)
+                else:
+                    entry = {
+                        "mode": "chat",
+                        "litellm_provider": infer_provider(nm, platform),
+                    }
+                    table[nm] = entry
+                    synthesized.append(nm)
 
             base_input = entry.get("input_cost_per_token")
-            for card_field, table_field in COST_FIELDS:
-                if price.get(card_field) is None:
-                    continue
-                new = per_token(float(price[card_field]))
-                old = entry.get(table_field)
-                if old is not None and not close(float(old), new):
-                    overrides.append(
-                        f"{nm}: {table_field} {float(old):.10g} -> {new:.10g}"
-                        f"{' [lock]' if locked else ''}"
-                    )
-                entry[table_field] = new
 
-            # Locked cards: keep the priority tier's base ratio when the card
-            # does not set the priority fields explicitly.
-            if locked and price.get("input_per_mtok") is not None:
+            # 1) Card overrides (lock cards: authoritative for their fields).
+            if price is not None:
+                for card_field, table_field in COST_FIELDS:
+                    if price.get(card_field) is None:
+                        continue
+                    new = per_token(float(price[card_field]))
+                    old = entry.get(table_field)
+                    if old is not None and not close(float(old), new):
+                        overrides.append(
+                            f"{nm}: {table_field} {float(old):.10g} -> {new:.10g} [lock]"
+                        )
+                    entry[table_field] = new
+
+            # 2) Locked cards: keep the priority tier's base ratio when the
+            #    card does not set the priority fields explicitly.
+            if price is not None and locked and price.get("input_per_mtok") is not None:
                 new_base = per_token(float(price["input_per_mtok"]))
                 old_base = base_input
                 if old_base and not close(float(old_base), new_base):
@@ -205,42 +257,54 @@ def main() -> int:
                                     f"{nm}: {pf} rescaled x{ratio:.4f} (lock base change)"
                                 )
 
-    out_bytes = (json.dumps(table, indent=2, sort_keys=True, ensure_ascii=False) + "\n").encode()
+            # 3) Explicit fork-side overrides (operator decisions).
+            if nm in FORK_OVERRIDES:
+                for table_field, value in FORK_OVERRIDES[nm].items():
+                    old = entry.get(table_field)
+                    if old is not None and not close(float(old), value):
+                        overrides.append(
+                            f"{nm}: {table_field} {float(old):.10g} -> {value:.10g} [fork]"
+                        )
+                    entry[table_field] = value
+
+    new_prices = {k: table[k] for k in sorted(table)}
+    out_doc = {"version": doc.get("version", 1), "models": models, "prices": new_prices}
+    out_bytes = (json.dumps(out_doc, indent=2, ensure_ascii=False, sort_keys=False) + "\n").encode()
     sha = hashlib.sha256(out_bytes).hexdigest()
 
     if args.check:
         ok = True
-        for path, expected in ((OUT_PATH, out_bytes), (OUT_SHA_PATH, (sha + "\n").encode())):
-            if not path.exists():
-                print(f"[check] FAIL missing {path.relative_to(REPO)}")
-                ok = False
-            elif path.read_bytes() != expected:
-                print(f"[check] FAIL stale {path.relative_to(REPO)} (regenerate)")
-                ok = False
-        cat_sha = hashlib.sha256(CATALOG_PATH.read_bytes()).hexdigest()
-        if not CATALOG_SHA_PATH.exists() or CATALOG_SHA_PATH.read_text().strip() != cat_sha:
-            print("[check] FAIL stale catalog.sha256 (regenerate)")
+        if not DOC_PATH.exists() or DOC_PATH.read_bytes() != out_bytes:
+            print(f"[check] FAIL {DOC_PATH.relative_to(REPO)} does not match generated output (regenerate)")
+            ok = False
+        if not DOC_SHA_PATH.exists() or DOC_SHA_PATH.read_text().strip() != sha:
+            print("[check] FAIL stale models.json.sha256 (regenerate)")
+            ok = False
+        covered = set()
+        for model in models:
+            covered.update(entry_names(model))
+        missing = [n for n in covered if n not in new_prices]
+        if missing:
+            print(f"[check] FAIL catalog names missing from prices: {sorted(missing)}")
             ok = False
         if ok:
-            print(f"[check] OK ({len(table)} entries, sha256 {sha[:12]}...)")
+            print(f"[check] OK ({len(new_prices)} price entries, {len(covered)} catalog names covered, sha256 {sha[:12]}...)")
         return 0 if ok else 1
 
-    OUT_PATH.parent.mkdir(parents=True, exist_ok=True)
-    OUT_PATH.write_bytes(out_bytes)
-    OUT_SHA_PATH.write_text(sha + "\n")
-    CATALOG_SHA_PATH.write_text(hashlib.sha256(CATALOG_PATH.read_bytes()).hexdigest() + "\n")
+    DOC_PATH.parent.mkdir(parents=True, exist_ok=True)
+    DOC_PATH.write_bytes(out_bytes)
+    DOC_SHA_PATH.write_text(sha + "\n")
 
-    print(f"entries total:      {len(table)}")
-    print(f"catalog names:      {len(covered)} (all covered)")
-    print(f"synthesized:        {len(synthesized)}")
+    print(f"price entries:      {len(new_prices)}")
+    print(f"catalog names:      {sum(len(entry_names(m)) for m in models)} (all covered)")
+    print(f"synthesized (fork-owned, not upstream): {len(synthesized)}")
     for nm in sorted(synthesized):
         print(f"  + {nm}")
-    print(f"overridden vs upstream: {len(overrides)}")
+    print(f"overridden vs base: {len(overrides)}")
     for line in overrides:
         print(f"  ~ {line}")
-    print(f"wrote {OUT_PATH.relative_to(REPO)} (sha256 {sha[:12]}...)")
-    print(f"wrote {OUT_SHA_PATH.relative_to(REPO)}")
-    print(f"wrote {CATALOG_SHA_PATH.relative_to(REPO)}")
+    print(f"wrote {DOC_PATH.relative_to(REPO)} (sha256 {sha[:12]}...)")
+    print(f"wrote {DOC_SHA_PATH.relative_to(REPO)}")
     return 0
 
 

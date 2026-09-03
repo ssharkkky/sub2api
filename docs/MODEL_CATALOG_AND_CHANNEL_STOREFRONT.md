@@ -30,7 +30,7 @@
 | 账号映射 | 把请求名改成上游名 | 当白名单 |
 | 分组自定义模型列表 | 下线 | 再维护一套用户可见名单 |
 | 分组定价 | 后续改成停用，或只做渠道价上的加价 | 再当第三套价表 |
-| Wei-Shaw / LiteLLM 远程价 | 「发现新官方模型」与迁移基线的输入（`tools/generate_model_prices.py`） | 运行时主价格源（主价源 = 本仓库 `deploy/data/model_prices.json`，自动拉取） |
+| Wei-Shaw / LiteLLM 远程价 | 「发现新官方模型」与迁移基线的输入（`tools/generate_model_prices.py`） | 运行时主价格源（主价源 = 本仓库 `deploy/data/models.json` 的 prices 段，自动拉取） |
 
 Composite 分组没有自己的模型目录。它只是按请求把流量分到上面这些具体平台；货架和价格仍按落地主平台的渠道配置走。
 
@@ -166,48 +166,54 @@ Composite 分组没有自己的模型目录。它只是按请求把流量分到�
 
 ## 9. 数据文件（本仓库维护，CI 绑定）
 
-- `deploy/data/model_prices.json`（+ `model_prices.sha256`）：全量 LiteLLM 格式价表，**运行时单一权威价源**（由 `tools/generate_model_prices.py` 从上游发现基线 + 目录价卡生成/校验）。
-- `backend/internal/modelcatalog/data/catalog.json`（+ `catalog.sha256`）：列表/结构层 + 底稿价卡（兜底层 + CI 一致性锚点）+ `lock_price` 最强覆盖 + 上游重写 + 思考档共享卡。
+- `deploy/data/models.json`（+ `models.json.sha256`）：**单一合并文档**，两段：
+  - `models`：目录段——列表/结构层（id/alias/上游重写/platforms/kind/billing_mode）+ `lock_price` 卡（仅 2 条：gemini-3.6/3.7-flash，最强覆盖）。非 lock 模型不带卡：价格全部由 prices 段承载。
+  - `prices`：全量 LiteLLM 格式价表，**运行时单一权威价源**（上游 Wei-Shaw 基线 ∪ 本 fork 全部目录名；fork 侧高于上游的决议值在生成器 `FORK_OVERRIDES` 显式表中机器校验）。
 
-目录价卡用「每百万 token 美元」书写，程序再换算成现有计费用的「每 token 美元」；两文件的一致由 CI 不变量强制（见 §10）。
+由 `tools/generate_model_prices.py` 生成/校验（`--check` 供 CI 复核）；目录价卡用「每百万 token 美元」书写，程序换算为计费用的「每 token 美元」。模型/价格数据**不再编译进二进制**（无 `go:embed`），二进制零硬编码数据。
 
-## 10. 运行时加载与自动拉取（解除硬编码，仓库即权威源）
+## 10. 运行时加载与自动拉取（仓库即权威源，二进制零数据）
 
-目录与价表都不是「编译进二进制后才生效」的硬编码数据，而是**运行时数据**，权威源在本仓库：
+目录与价表都是**运行时数据**，权威源是本仓库的合并文档；目录与价格**同文档、同事务、同一次原子换入**，从机制上消除「两文件不同步」的漂移窗口。
 
 ### 来源优先级（高 → 低）
 
-1. `pricing.catalog_file` 显式文件（运维意图 / air-gap）。存在时远程**不覆盖**它：hash 分歧时一次性告警 + `GetStatus` 暴露 `remote_hash/local_hash`，本地始终赢。
-2. `pricing.catalog_url` 远程（仓库 main 分支，权威源）：哈希锚点比对 → 变化才下载正文 → 完整校验 → **原子换入**（`modelcatalog.Replace` + 价表 lock 覆盖重放，同一事务内）；成功后正文经 tmp+fsync+rename 原子落盘 `./data/catalog.json` 作离线种子。
-3. `./data/catalog.json` 自动发现文件（= 远程的本地缓存 / 镜像内置基线，构建时 COPY）。
-4. 内嵌目录（`go:embed`，构建时与本仓库同一份文件）——终极兜底，保证二进制永不以空价目表启动。
+1. `pricing.catalog_file` 显式文件（运维意图 / air-gap）。其目录段加载成功后**赢过所有远程目录段**（本地赢；判定 = 「当前目录确实来自该文件」——文件损坏/未放入不锁死远程）；hash 分歧时一次性告警 + `GetStatus` 暴露双方 `hash`；60s **内容哈希**轮询热修复；运维移除文件时解除本地赢锁，远程目录段重新接管。
+2. `pricing.remote_url` 合并文档（默认 = 仓库 main 分支 `deploy/data/models.json`，权威源）：哈希锚点比对（相等 = 无变化，连正文都不下载）→ 变化才下载 → 形态识别（merged / 独立目录 / 扁平价表）→ 目录段 `modelcatalog.Load` 完整校验 + 价表段 `parsePricingData` 完整校验 → **同一临界区原子双换入**（`modelcatalog.Replace` + 价表 map 整体替换）→ 正文 + 锚点经 tmp+fsync+rename 原子落盘 `./data/models.json`。
+3. 启动期本地探测（高 → 低）：`./data/models.json`（远程缓存 / 官方镜像种子，构建时 COPY）→ `./data/catalog.json`（旧独立目录缓存）→ `./data/model_pricing.json`（旧价表缓存）——后两者保留探测只为从两文件时代部署平滑迁移，首次远程同步成功后自动收敛到合并文档。
+4. 兜底价表（`fallback_file`，镜像内置 198 条）+ 空目录——最后防线：价目表永不为空（计费 fail-closed），目录空只影响货架展示，远程恢复后自动收敛。
 
-价表同构：`pricing.remote_url` 默认指向仓库 `deploy/data/model_prices.json`，复用既有「10min 哈希检查 → 下载 → `parsePricingData` 完整校验 → lock 覆盖 → 原子换入 → 原子落盘」链路；失败保留本地缓存 → `fallback_file` → 硬编码回退，永不为空。
+`pricing.catalog_url` / `catalog_hash_url` 独立目录文档为兼容路径（默认关闭）：仅当需要把目录单独托管到另一地址时启用，与合并文档同一套「锚点 → 变化才下载 → 校验 → 原子换入」节奏。
 
 ### 同步节奏与失败行为
 
-- 单一 10min ticker 统一驱动两个远程目标（价表 + 目录），一次 select 同时决策（未启用目标 = nil channel 永久阻塞）；60s **内容哈希**轮询仅保留给显式 `catalog_file`（本地热修复，不受文件系统 mtime 粒度影响）。
-- 拉取失败：**保留上一份有效版本** + 指数退避（首次失败后 10s，逐次翻倍，上限 10min），避免持续失败时反复敲 GitHub；错误变化才告警一条。价表/目录的哈希拉取失败都计入退避（行为对齐）。
-- 价表本地同步锚点 = **实际加载正文的哈希**（与目录侧同语义）：锚点文件损坏/过期只会每轮冗余下载并告警，不会把更新永久冻结；锚点修复后自动恢复短路。
-- 校验失败（版本不对 / ID 重复 / price_ref 悬空 / 哈希文件与正文失配）：保留上一份目录，状态接口可见。
-- `GetStatus()`：`catalog` 字段报告 `source`（`remote` / 文件路径 / `embedded`）、`hash`、`remote_hash`、`models`、`loaded_at`、`last_error`；顶层 `remote_hash` 报告价表最近锚点。
+- 单一 10min ticker 统一驱动远程目标（合并文档 + 可选独立目录文档），一次 select 同时决策（未启用目标 = nil channel 永久阻塞）；60s 内容哈希轮询仅保留给显式 `catalog_file`。
+- 拉取失败：**保留上一份有效版本** + 指数退避（首次失败后 10s，逐次翻倍，上限 10min），避免持续失败时反复敲 GitHub；错误变化才告警一条。锚点拉取失败计入退避。
+- 本地同步锚点 = **实际加载正文的哈希**：锚点文件损坏/过期只会每轮冗余下载并告警，不会把更新永久冻结；锚点修复后自动恢复短路。
+- 校验失败（版本不对 / ID 重复 / price_ref 悬空 / 形态不可识别）：整文档拒收，保留上一份有效版本（内存与磁盘都 last-good），状态接口可见。
+- `GetStatus()`：`catalog` 字段报告 `source`（`remote` / 显式文件路径 / `released` / `none` / 本地文件路径）、`hash`、`remote_hash`、`models`、`loaded_at`、`last_error`；顶层 `remote_hash` 报告合并文档最近锚点。
 
 ### CI 不变量（`pricing_catalog_consistency_test.go`，任一侧单独漂移即红）
 
-1. 两个 `.sha256` 锚点与数据文件匹配（纯 hex 单行）——失配会让每个实例每 10min 重复下载正文；
-2. 目录每个 id/alias 在价表有显式条目（别名可共享 canonical）——保证价表切换后所有在售模型名都不落家族启发式 / 零计费兜底；
-3. 目录带价卡的模型，价表同名字段必须与卡相等——改价必须同步两处（机械一致性，漂移必被抓）。
+1. `models.json.sha256` 锚点与合并文档匹配（纯 hex 单行）——失配会让每个实例每 10min 重复下载正文；
+2. 目录每个 id/alias 在 prices 段有显式条目（别名可共享 canonical）——保证远程换入后所有在售模型名都不落家族启发式 / 零计费兜底；
+3. 每个 `lock_price` 模型必须带可解析价卡，且价表同名字段与卡相等——改价必须同步两处（机械一致性，漂移必被抓）；
+4. 目录段必须通过 `modelcatalog.Load`（与运行时同一个校验器）——坏文档在 CI 先于生产被发现。
+
+所有不变量走生产代码路径（形态识别 + 目录校验 + 价表解析），提交进仓库的文件一定能被运行时接受。
 
 ### 更新流程（仓库 PR → 自动拉取，免重建镜像）
 
-1. **改价**：改 `deploy/data/model_prices.json` 条目 + `catalog.json` 对应卡（CI 不变量 3 会先红提醒），或重跑 `python3 tools/generate_model_prices.py`（上游基线 + 目录卡 → 价表 + 双锚点，`--check` 供 CI 复核）。
-2. **加模型**：`catalog.json` 加模型 + 价卡；价表加显式条目（CI 不变量 2 会先红提醒）。
-3. **生效**：PR 合并 → 运行实例在下一个 10min 哈希检查内自动换入（启动时立即收敛）；免重建镜像、免重启、免改配置。schema 只增不改，新数据配旧代码安全。
-4. **反向 skew 窗口**（同一 PR 改两文件，≤10min 内实例为新目录 + 旧价表）：目录 baseline 价卡先兜底补价（兜底层正是为此设计），两条 `lock_price` 卡始终最强覆盖。
-5. **字段级临时调整**仍走 `pricing.override_file`（优先级最高，作用于目录之上），与整份文件互不冲突。
+1. **改价**：上游同步/新增 → 重跑 `python3 tools/generate_model_prices.py`（上游基线 + 生成器 `FORK_OVERRIDES` 显式表 + lock 卡 → 合并文档 + 锚点）；fork 决议值改 `FORK_OVERRIDES`（机器校验，漂移必被抓）；lock 价改 `models` 段对应卡。
+2. **加模型**（现有平台 + token 计费）：`models` 段加模型条目（id/alias/上游重写）+ `prices` 段加显式条目（上游已有的名字由生成器自动带上；上游没有的名字由生成器从当前 prices 段保留/合成）→ 重跑生成器 → CI 不变量 2 把关。
+3. **生效**：PR 合并 → 运行实例在下一个 10min 哈希检查内自动换入（容器重启时启动期立即收敛）；免重建镜像、免重启、免改配置。**不需要更新二进制/版本**：模型列表、货架、别名/重写、lock 价、计费价全部由文档驱动。
+4. **无 skew 窗口**：目录与价表同文档同事务到达，不存在「新目录 + 旧价表」的中间态。
+5. **字段级临时调整**仍走 `pricing.override_file`（优先级最高，作用于合并文档之上），与整份文件互不冲突。
+
+需要改代码才能生效的情形（少数）：新 platform 枚举、新计费模态（按次/按图/按秒）、家族专属计费策略常量、非标准名字归一规则。
 
 验收标准：
 
-- 改价/加模型：只改仓库里的 JSON 文件，运行实例 ≤10min 自动拉取生效；不改 Go 代码、不重建镜像、不重启。
-- 坏数据：回落到上一份有效版本（本地缓存 → 内嵌），服务不中断，状态接口可见错误。
+- 改价/加模型：只改仓库里的 `deploy/data/models.json`（+ 锚点），运行实例 ≤10min 自动拉取生效；不改 Go 代码、不重建镜像、不重启。
+- 坏数据：整文档拒收，回落到上一份有效版本（本地缓存/种子），服务不中断，状态接口可见错误。
 - 所有既有调用方（定价 resolver、渠道货架、`/v1/models`、默认映射、锁定判定、计费回退）对原子换入透明，零调用点改动。
