@@ -24,6 +24,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/Wei-Shaw/sub2api/internal/pkg/anthropictokenizer"
+	"github.com/Wei-Shaw/sub2api/internal/pkg/httpclient"
 	"github.com/google/uuid"
 	"github.com/tidwall/gjson"
 )
@@ -66,7 +67,10 @@ const (
 )
 
 var (
-	kiroRemoteImageHTTPClient = &http.Client{Timeout: kiroRemoteImageTimeout}
+	// kiroRemoteImageHTTPClient uses an SSRF-safe Transport that blocks
+	// loopback/private/link-local/CGNAT/multicast on every dial (including
+	// 302 redirects) — see internal/pkg/httpclient/ssrf.go.
+	kiroRemoteImageHTTPClient = httpclient.NewSSRFSafeClient(kiroRemoteImageTimeout)
 	requiredToolFields        = map[string][][]string{
 		"write":              {{"filePath", "file_path", "path"}, {"content"}},
 		"write_to_file":      {{"path"}, {"content"}},
@@ -2456,6 +2460,11 @@ func buildKiroImageFromURL(url string) (KiroImage, bool) {
 }
 
 func buildKiroImageFromRemoteURL(url string) (KiroImage, bool) {
+	// URL pre-check: only http/https allowed. isRemoteImageURL already ensures this
+	// for the buildKiroImageFromURL path, but validate explicitly for defense-in-depth.
+	if _, err := httpclient.ValidateImageURLScheme(url); err != nil {
+		return KiroImage{}, false
+	}
 	req, err := http.NewRequest(http.MethodGet, url, nil)
 	if err != nil {
 		return KiroImage{}, false

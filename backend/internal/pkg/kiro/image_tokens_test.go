@@ -12,12 +12,15 @@ import (
 	"image/jpeg"
 	"image/png"
 	"math/rand"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"github.com/Wei-Shaw/sub2api/internal/pkg/httpclient"
 
 	"github.com/stretchr/testify/require"
 )
@@ -71,8 +74,20 @@ func TestEstimateImageTokensUsesDimensionsNotEncodedLength(t *testing.T) {
 	require.Equal(t, flatTokens, noisyTokens)
 }
 
+func allowLoopbackForKiroImageTest(t *testing.T) {
+	t.Helper()
+	// Existing unit tests use httptest.NewServer (127.0.0.1) as image source.
+	// After SSRF hardening, kiroRemoteImageHTTPClient blocks loopback by default.
+	// Explicitly allow loopback for these legacy success-path tests.
+	_, cidr, _ := net.ParseCIDR("127.0.0.0/8")
+	orig := kiroRemoteImageHTTPClient
+	kiroRemoteImageHTTPClient = httpclient.NewSSRFSafeClientWithAllowlist(kiroRemoteImageTimeout, []*net.IPNet{cidr})
+	t.Cleanup(func() { kiroRemoteImageHTTPClient = orig })
+}
+
 func TestEstimateImageTokensRemoteURLCachesSuccess(t *testing.T) {
 	resetImageTokenEstimateStateForTest()
+	allowLoopbackForKiroImageTest(t)
 	var requests atomic.Int32
 	pngBody := encodeImageForTokenTest(t, "png", 200, 200)
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
@@ -102,6 +117,7 @@ func TestEstimateImageTokensRemoteURLCachesSuccess(t *testing.T) {
 
 func TestEstimateImageTokensRemoteFailuresUseCachedFallback(t *testing.T) {
 	resetImageTokenEstimateStateForTest()
+	allowLoopbackForKiroImageTest(t)
 	var requests atomic.Int32
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		requests.Add(1)
@@ -124,6 +140,7 @@ func TestEstimateImageTokensRemoteFailuresUseCachedFallback(t *testing.T) {
 
 func TestEstimateImageTokensRemoteRespectsContext(t *testing.T) {
 	resetImageTokenEstimateStateForTest()
+	allowLoopbackForKiroImageTest(t)
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		<-r.Context().Done()
 	}))
