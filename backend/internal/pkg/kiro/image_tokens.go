@@ -16,6 +16,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/Wei-Shaw/sub2api/internal/pkg/httpclient"
 	"golang.org/x/image/webp"
 	"golang.org/x/sync/singleflight"
 )
@@ -98,6 +99,10 @@ func estimateRemoteImageTokens(ctx context.Context, rawURL string) int {
 }
 
 func fetchRemoteImageTokens(ctx context.Context, rawURL string) (int, bool) {
+	// URL pre-check: only http/https allowed (isRemoteImageURL ensures this, but re-validate).
+	if _, err := httpclient.ValidateImageURLScheme(rawURL); err != nil {
+		return 0, false
+	}
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, rawURL, nil)
 	if err != nil {
 		return 0, false
