@@ -14,16 +14,7 @@ const show = ref(false)
 const triggerRef = useTemplateRef<HTMLElement>('trigger')
 const tooltipRef = useTemplateRef<HTMLElement>('tooltip')
 const tooltipStyle = ref({ top: '0px', left: '0px' })
-let closeTimer: number | null = null
-
-function cancelScheduledClose() {
-  if (closeTimer == null) return
-  window.clearTimeout(closeTimer)
-  closeTimer = null
-}
-
 function openTooltip() {
-  cancelScheduledClose()
   // Position the hidden element before making it visible. Showing it first
   // produces a one-frame flash at the default 0,0 coordinates.
   updatePosition()
@@ -31,7 +22,6 @@ function openTooltip() {
 }
 
 function closeTooltip() {
-  cancelScheduledClose()
   show.value = false
 }
 
@@ -106,7 +96,6 @@ onMounted(() => {
 })
 
 onBeforeUnmount(() => {
-  cancelScheduledClose()
   document.removeEventListener('click', onDocumentClick, true)
   document.removeEventListener('keydown', onDocumentKeydown)
   window.removeEventListener('resize', onViewportChange)
