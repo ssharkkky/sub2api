@@ -16,9 +16,14 @@ type openAICyberTranscriptBlockKeys struct {
 	lookupKeysTruncated bool
 }
 
-// Bound the Redis lookup work for a single request while retaining the most
-// recent transcript prefixes, where a continuation is most likely to match.
-const maxOpenAICyberTranscriptLookupKeys = 256
+// Bound the Redis lookup work for a single request while retaining the initial
+// context prefixes (preventing evasion by message padding) and the most recent
+// transcript prefixes (where continuation matches occur).
+const (
+	maxOpenAICyberTranscriptHeadKeys   = 32
+	maxOpenAICyberTranscriptTailKeys   = 224
+	maxOpenAICyberTranscriptLookupKeys = maxOpenAICyberTranscriptHeadKeys + maxOpenAICyberTranscriptTailKeys
+)
 
 // deriveOpenAICyberTranscriptBlockKeys returns cumulative semantic-history
 // hashes plus the context key immediately before the latest user turn. The
@@ -60,8 +65,10 @@ func deriveOpenAICyberTranscriptBlockKeys(apiKeyID int64, body []byte) openAICyb
 		result := openAICyberTranscriptBlockKeys{
 			lookupKeys: make([]string, 0, maxOpenAICyberTranscriptLookupKeys),
 		}
-		nextLookupKey := 0
-		lookupKeysRotated := false
+		headKeys := make([]string, 0, maxOpenAICyberTranscriptHeadKeys)
+		tailKeys := make([]string, 0, maxOpenAICyberTranscriptTailKeys)
+		nextTailIdx := 0
+		tailRotated := false
 		lastLookupKey := ""
 		// This is an entropy heuristic, not provenance proof: authenticated
 		// server-side history would be required to distinguish fixed few-shot
@@ -85,24 +92,32 @@ func deriveOpenAICyberTranscriptBlockKeys(apiKeyID int64, body []byte) openAICyb
 			_, _ = h.Write([]byte("|item="))
 			_, _ = h.Write([]byte(canonical))
 			lastLookupKey = hex.EncodeToString(h.Sum(nil))
-			if len(result.lookupKeys) < maxOpenAICyberTranscriptLookupKeys {
-				result.lookupKeys = append(result.lookupKeys, lastLookupKey)
+
+			if len(headKeys) < maxOpenAICyberTranscriptHeadKeys {
+				headKeys = append(headKeys, lastLookupKey)
 			} else {
-				result.lookupKeys[nextLookupKey] = lastLookupKey
-				nextLookupKey = (nextLookupKey + 1) % maxOpenAICyberTranscriptLookupKeys
-				lookupKeysRotated = true
-				result.lookupKeysTruncated = true
+				if len(tailKeys) < maxOpenAICyberTranscriptTailKeys {
+					tailKeys = append(tailKeys, lastLookupKey)
+				} else {
+					tailKeys[nextTailIdx] = lastLookupKey
+					nextTailIdx = (nextTailIdx + 1) % maxOpenAICyberTranscriptTailKeys
+					tailRotated = true
+					result.lookupKeysTruncated = true
+				}
 			}
+
 			if openAICyberTranscriptItemIsModelGenerated(item) {
 				hasModelGeneratedItem = true
 			}
 			return true
 		})
-		if lookupKeysRotated {
-			ordered := make([]string, 0, len(result.lookupKeys))
-			ordered = append(ordered, result.lookupKeys[nextLookupKey:]...)
-			ordered = append(ordered, result.lookupKeys[:nextLookupKey]...)
-			result.lookupKeys = ordered
+
+		result.lookupKeys = append(result.lookupKeys, headKeys...)
+		if tailRotated {
+			result.lookupKeys = append(result.lookupKeys, tailKeys[nextTailIdx:]...)
+			result.lookupKeys = append(result.lookupKeys, tailKeys[:nextTailIdx]...)
+		} else {
+			result.lookupKeys = append(result.lookupKeys, tailKeys...)
 		}
 		return result
 	}

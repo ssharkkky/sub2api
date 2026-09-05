@@ -21,8 +21,6 @@ type CyberSessionBlockStore interface {
 	FindCyberSessionBlocked(ctx context.Context, keys []string) (string, error)
 }
 
-const cyberSessionTranscriptLookupOverflowBlockKey = "transcript_lookup_limit_exceeded"
-
 // CyberSessionExplicitBlockKey returns an inexpensive exact key when the
 // client supplies a stable session signal.
 func CyberSessionExplicitBlockKey(apiKeyID int64, c *gin.Context, body []byte) string {
@@ -145,11 +143,6 @@ func (s *OpenAIGatewayService) FindCyberSessionBlockedForRequest(ctx context.Con
 		return ""
 	}
 	transcript := deriveOpenAICyberTranscriptBlockKeys(apiKeyID, body)
-	if transcript.lookupKeysTruncated {
-		// Once the coarse scope is active, silently dropping old candidates would
-		// let a blocked client evade prefix matching by appending dummy items.
-		return cyberSessionTranscriptLookupOverflowBlockKey
-	}
 	keys := transcript.lookupKeys
 	if len(keys) == 0 {
 		return ""

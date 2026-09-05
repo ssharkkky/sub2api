@@ -88,11 +88,13 @@ func TestCyberTranscriptLookupKeysAreBoundedAndKeepNewestOrder(t *testing.T) {
 	keys := CyberSessionTranscriptLookupKeys(77, body)
 	require.Len(t, keys, maxOpenAICyberTranscriptLookupKeys)
 
-	firstRetainedBody, err := json.Marshal(map[string]any{"messages": messages[:45]})
+	// 保留头部锚点（前 32 个）
+	firstHeadBody, err := json.Marshal(map[string]any{"messages": messages[:1]})
 	require.NoError(t, err)
-	firstRetainedPrefix := CyberSessionTranscriptLookupKeys(77, firstRetainedBody)
-	require.Equal(t, firstRetainedPrefix[len(firstRetainedPrefix)-1], keys[0])
+	firstHeadPrefix := CyberSessionTranscriptLookupKeys(77, firstHeadBody)
+	require.Equal(t, firstHeadPrefix[0], keys[0])
 
+	// 保留尾部最近滑动窗口，最后一个为 fullKey
 	fullKey := CyberSessionTranscriptBlockKeys(77, body)[0]
 	require.Equal(t, fullKey, keys[len(keys)-1])
 }
@@ -295,7 +297,7 @@ func TestFindCyberSessionBlockedForRequestUsesScopeForTranscript(t *testing.T) {
 	require.Equal(t, blockKey, svc.FindCyberSessionBlockedForRequest(ctx, 9, nextCtx, nextBody, clientIP, "Codex CLI 1.2.4"))
 }
 
-func TestFindCyberSessionBlockedForRequestFailsClosedOnScopedTranscriptOverflow(t *testing.T) {
+func TestFindCyberSessionBlockedForRequestBoundedLookupOnTranscriptOverflow(t *testing.T) {
 	settingSvc := &SettingService{settingRepo: &fakeSettingRepo{vals: map[string]string{
 		SettingKeyCyberSessionBlockEnabled:    "true",
 		SettingKeyCyberSessionBlockTTLSeconds: "60",
@@ -307,20 +309,31 @@ func TestFindCyberSessionBlockedForRequestFailsClosedOnScopedTranscriptOverflow(
 	const clientIP = "203.0.113.20"
 	const userAgent = "Codex CLI 1.2.3"
 
-	messages := make([]map[string]string, maxOpenAICyberTranscriptLookupKeys+1)
+	// 构造超过 256 条消息的长请求体
+	messages := make([]map[string]string, maxOpenAICyberTranscriptLookupKeys+10)
 	for i := range messages {
 		messages[i] = map[string]string{"role": "user", "content": "message-" + strconv.Itoa(i)}
 	}
 	body, err := json.Marshal(map[string]any{"messages": messages})
 	require.NoError(t, err)
 	c, _ := newCyberBlockTestCtx(nil, string(body))
-	require.Empty(t, svc.FindCyberSessionBlockedForRequest(ctx, apiKeyID, c, body, clientIP, userAgent),
-		"overflow alone must not bypass the scope gate")
+
+	// 未激活 scope 时不进行查找
+	require.Empty(t, svc.FindCyberSessionBlockedForRequest(ctx, apiKeyID, c, body, clientIP, userAgent))
+
+	// 激活 scope 后，即使消息超长(overflow)，也不再直接一刀切判 403 误杀，而是比对锚点指纹：
 	combo.store.scopes = map[string]bool{CyberSessionScopeKey(apiKeyID, clientIP, userAgent): true}
 
-	require.Equal(t, cyberSessionTranscriptLookupOverflowBlockKey,
-		svc.FindCyberSessionBlockedForRequest(ctx, apiKeyID, c, body, clientIP, userAgent))
-	require.Zero(t, combo.store.findCalls, "overflow must not issue an unbounded Redis lookup")
+	// 1. 无匹配违规 key 时放行（新会话不被误杀）
+	require.Empty(t, svc.FindCyberSessionBlockedForRequest(ctx, apiKeyID, c, body, clientIP, userAgent))
+	require.Equal(t, 1, combo.store.findCalls, "must issue a bounded Redis lookup without overflowing")
+
+	// 2. 匹配到违规 key（例如头部锚点或尾部锚点）时成功拦截
+	keys := deriveOpenAICyberTranscriptBlockKeys(apiKeyID, body).lookupKeys
+	require.NotEmpty(t, keys)
+	matchedKey := keys[0] // 头部锚点
+	combo.store.blocked = map[string]bool{matchedKey: true}
+	require.Equal(t, matchedKey, svc.FindCyberSessionBlockedForRequest(ctx, apiKeyID, c, body, clientIP, userAgent))
 }
 
 func TestCyberSessionScopeKeyNormalizesUserAgentVersion(t *testing.T) {
