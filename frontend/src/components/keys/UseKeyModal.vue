@@ -28,6 +28,60 @@
           {{ platformDescription }}
         </p>
 
+        <!-- Actual available models (channel-level allow-list, auto-injected) -->
+        <div
+          data-testid="use-key-models-status"
+          class="rounded-lg border border-gray-200 px-3 py-2 dark:border-dark-700"
+        >
+          <p
+            v-if="keyModelsState === 'loading'"
+            class="text-xs text-gray-500 dark:text-gray-400"
+          >
+            {{ t('keys.useKeyModal.modelSelector.loading') }}
+          </p>
+          <template v-else-if="effectiveModels.length">
+            <p
+              data-testid="use-key-model-count"
+              class="text-xs text-gray-500 dark:text-gray-400"
+            >
+              {{ t('keys.useKeyModal.modelSelector.count', { count: effectiveModels.length }) }}
+            </p>
+            <!-- Default-model pills: one-click target for single-model configs. -->
+            <div
+              v-if="effectiveModels.length > 1"
+              data-testid="use-key-model-pills"
+              class="mt-2 flex flex-wrap gap-1.5"
+              role="group"
+              :aria-label="t('keys.useKeyModal.modelSelector.defaultModel')"
+            >
+              <button
+                v-for="modelId in effectiveModels"
+                :key="modelId"
+                type="button"
+                data-testid="use-key-model-pill"
+                :data-model="modelId"
+                :aria-pressed="modelId === primaryModel()"
+                @click="selectedPrimaryModel = modelId"
+                :class="[
+                  'rounded-full border px-2.5 py-1 font-mono text-xs transition-colors',
+                  modelId === primaryModel()
+                    ? 'border-primary-500 bg-primary-50 text-primary-700 dark:border-primary-500 dark:bg-primary-900/30 dark:text-primary-300'
+                    : 'border-gray-200 text-gray-600 hover:border-gray-300 hover:text-gray-900 dark:border-dark-600 dark:text-gray-400 dark:hover:text-gray-200'
+                ]"
+              >
+                {{ modelId }}
+              </button>
+            </div>
+          </template>
+          <p
+            v-else
+            data-testid="use-key-model-empty"
+            class="text-xs text-amber-600 dark:text-amber-400"
+          >
+            {{ t('keys.useKeyModal.modelSelector.empty') }}
+          </p>
+        </div>
+
         <!-- Client Tabs -->
         <div v-if="clientTabs.length" class="overflow-x-auto border-b border-gray-200 dark:border-dark-700">
           <nav class="-mb-px flex min-w-max gap-4 sm:gap-6" aria-label="Client">
@@ -262,6 +316,8 @@ import BaseDialog from '@/components/common/BaseDialog.vue'
 import Icon from '@/components/icons/Icon.vue'
 import { useClipboard } from '@/composables/useClipboard'
 import { fetchCodexModelsManifest } from '@/api/codex'
+import { fetchKeyAvailableModels } from '@/api/gatewayModels'
+import { getAvailable, resolveChannelModelsForGroup } from '@/api/channels'
 import type { GroupPlatform } from '@/types'
 import {
   findCodexCatalogModel,
@@ -269,6 +325,15 @@ import {
   parseCodexCatalogModels,
   selectCodexConfigReasoningEffort
 } from '@/utils/codexCatalogConfig'
+import {
+  escapeCmdValue,
+  escapePsDq,
+  escapeShDq,
+  escapeTomlBasicString,
+  isMediaModelId,
+  normalizeModelIds,
+  pickPrimaryModel
+} from '@/utils/keyConfigEscape'
 
 interface Props {
   show: boolean
@@ -276,6 +341,13 @@ interface Props {
   baseUrl: string
   platform: GroupPlatform | null
   allowMessagesDispatch?: boolean
+  /** Key's group id: used to filter the channel-level allow-list. */
+  groupId?: number | null
+  /**
+   * Channel-effective model list provided by the parent (already resolved
+   * from channel restrictions). Takes precedence over in-modal fetching.
+   */
+  availableModels?: string[]
 }
 
 interface Emits {
@@ -312,6 +384,129 @@ const codexModelManifestContent = ref('')
 const codexModelManifestModelCount = ref(0)
 let codexModelManifestController: AbortController | null = null
 let codexModelManifestRequestID = 0
+
+// Actual available models: channel-level allow-list, never hardcoded fiction.
+// Priority: parent-provided `availableModels` > gateway GET /v1/models (the key's
+// channel-effective shelf) > user GET /channels/available filtered by group.
+type KeyModelsState = 'idle' | 'loading' | 'ready' | 'error'
+const keyModelsState = ref<KeyModelsState>('idle')
+const gatewayKeyModels = ref<string[]>([])
+const channelAllowListModels = ref<string[]>([])
+let keyModelsController: AbortController | null = null
+let keyModelsRequestID = 0
+
+// Parent-provided lists are already channel-resolved upstream: drop wildcards (`*`)
+// but trust concrete membership.
+const propAvailableModels = computed(() => normalizeModelIds(props.availableModels, { dropWildcards: true }))
+
+const effectiveModels = computed(() => {
+  if (propAvailableModels.value.length) return propAvailableModels.value
+  if (gatewayKeyModels.value.length) return gatewayKeyModels.value
+  return channelAllowListModels.value
+})
+
+// Text-client default: user-picked pill when still available, otherwise the
+// first non-media model so image/video-only ids are never selected as the
+// terminal / config default.
+const selectedPrimaryModel = ref('')
+const primaryModel = () => {
+  if (selectedPrimaryModel.value && effectiveModels.value.includes(selectedPrimaryModel.value)) {
+    return selectedPrimaryModel.value
+  }
+  return pickPrimaryModel(effectiveModels.value)
+}
+
+watch(effectiveModels, (models) => {
+  if (!models.length) {
+    selectedPrimaryModel.value = ''
+    return
+  }
+  if (selectedPrimaryModel.value && models.includes(selectedPrimaryModel.value)) return
+  selectedPrimaryModel.value = pickPrimaryModel(models)
+}, { immediate: true })
+
+const keyModelsContext = computed(() => {
+  if (!props.show || !props.platform || !props.apiKey) return ''
+  return `${props.platform}|${props.groupId ?? ''}|${props.baseUrl}|${props.apiKey}|${propAvailableModels.value.join(',')}`
+})
+
+function resetKeyModels() {
+  keyModelsController?.abort()
+  keyModelsController = null
+  keyModelsRequestID += 1
+  keyModelsState.value = 'idle'
+  gatewayKeyModels.value = []
+  channelAllowListModels.value = []
+  selectedPrimaryModel.value = ''
+}
+
+async function loadKeyModels() {
+  if (!props.show || !props.platform || !props.apiKey) return
+  if (propAvailableModels.value.length) {
+    keyModelsController?.abort()
+    keyModelsController = null
+    keyModelsState.value = 'ready'
+    return
+  }
+  keyModelsController?.abort()
+  const controller = new AbortController()
+  const requestID = ++keyModelsRequestID
+  keyModelsController = controller
+  keyModelsState.value = 'loading'
+  try {
+    // The gateway resolves the channel-owned shelf for this exact key.
+    const models = await fetchKeyAvailableModels(props.baseUrl, props.apiKey, controller.signal)
+    if (requestID !== keyModelsRequestID) return
+    // Server-derived: re-apply non-concrete filtering so backend
+    // platform-default fallbacks never surface as real key models.
+    gatewayKeyModels.value = normalizeModelIds(models, { dropWildcards: true })
+    channelAllowListModels.value = []
+    keyModelsState.value = 'ready'
+  } catch (gatewayError) {
+    const errorName = gatewayError && typeof gatewayError === 'object' && 'name' in gatewayError
+      ? String((gatewayError as { name?: unknown }).name || '')
+      : ''
+    if (requestID !== keyModelsRequestID || errorName === 'AbortError') return
+    try {
+      // Fallback: channel restrictions for the key's group (still channel-level).
+      const channels = await getAvailable({ signal: controller.signal })
+      if (requestID !== keyModelsRequestID) return
+      gatewayKeyModels.value = []
+      channelAllowListModels.value = normalizeModelIds(
+        resolveChannelModelsForGroup(channels, props.groupId ?? null, props.platform),
+        { dropWildcards: true }
+      )
+      keyModelsState.value = 'ready'
+    } catch (channelError) {
+      const channelErrorName = channelError && typeof channelError === 'object' && 'name' in channelError
+        ? String((channelError as { name?: unknown }).name || '')
+        : ''
+      if (requestID !== keyModelsRequestID || channelErrorName === 'AbortError') return
+      gatewayKeyModels.value = []
+      channelAllowListModels.value = []
+      keyModelsState.value = 'error'
+    }
+  } finally {
+    if (requestID === keyModelsRequestID) {
+      keyModelsController = null
+    }
+  }
+}
+
+watch(keyModelsContext, (context, previousContext) => {
+  if (context === previousContext) return
+  if (!context) {
+    resetKeyModels()
+    return
+  }
+  // Invalidate synchronously: while the new key's shelf loads, generated
+  // configs must not keep exposing the previous key's models.
+  gatewayKeyModels.value = []
+  channelAllowListModels.value = []
+  selectedPrimaryModel.value = ''
+  keyModelsState.value = propAvailableModels.value.length ? 'ready' : 'loading'
+  void loadKeyModels()
+}, { immediate: true })
 
 const showCodexModelCatalog = computed(() =>
   props.show &&
@@ -654,9 +849,15 @@ const codexCatalogModelSlugs = computed(() =>
   parseCodexCatalogModels(codexModelManifestContent.value).map((model) => model.slug)
 )
 
-function selectCodexCatalogModel(preferredModel: string): string {
-  if (codexCatalogModelSlugs.value.includes(preferredModel)) return preferredModel
-  return codexCatalogModelSlugs.value[0] || preferredModel
+/**
+ * Codex `model = "..."` default: the first channel-effective model when the
+ * downloaded catalog contains it, otherwise the catalog's first entry,
+ * otherwise the first channel-effective model itself. Never a hardcoded id.
+ */
+function selectCodexModel(): string {
+  const preferred = primaryModel()
+  if (preferred && codexCatalogModelSlugs.value.includes(preferred)) return preferred
+  return codexCatalogModelSlugs.value[0] || preferred
 }
 
 function codexReasoningEffortTomlLine(modelSlug: string): string {
@@ -771,27 +972,36 @@ const currentFiles = computed((): FileConfig[] => {
 })
 
 function generateAnthropicFiles(baseUrl: string, apiKey: string): FileConfig[] {
+  // Channel-effective default model for Claude Code; omitted when the key
+  // has no concrete models so clients keep their own default.
+  const model = primaryModel()
+  const environment: Record<string, string> = {
+    ANTHROPIC_BASE_URL: baseUrl,
+    ANTHROPIC_AUTH_TOKEN: apiKey,
+    ...(model ? { ANTHROPIC_MODEL: model } : {}),
+    CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: '1'
+  }
   let path: string
   let content: string
 
   switch (activeTab.value) {
     case 'unix':
       path = 'Terminal'
-      content = `export ANTHROPIC_BASE_URL="${baseUrl}"
-export ANTHROPIC_AUTH_TOKEN="${apiKey}"
-export CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1`
+      content = Object.entries(environment)
+        .map(([name, value]) => `export ${name}="${escapeShDq(value)}"`)
+        .join('\n')
       break
     case 'cmd':
       path = 'Command Prompt'
-      content = `set ANTHROPIC_BASE_URL=${baseUrl}
-set ANTHROPIC_AUTH_TOKEN=${apiKey}
-set CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1`
+      content = Object.entries(environment)
+        .map(([name, value]) => `set ${name}=${escapeCmdValue(value)}`)
+        .join('\n')
       break
     case 'powershell':
       path = 'PowerShell'
-      content = `$env:ANTHROPIC_BASE_URL="${baseUrl}"
-$env:ANTHROPIC_AUTH_TOKEN="${apiKey}"
-$env:CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1`
+      content = Object.entries(environment)
+        .map(([name, value]) => `$env:${name}="${escapePsDq(value)}"`)
+        .join('\n')
       break
     default:
       path = 'Terminal'
@@ -802,14 +1012,11 @@ $env:CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1`
     ? '~/.claude/settings.json'
     : '%USERPROFILE%\\.claude\\settings.json'
 
-  const vscodeContent = `{
-  "$schema": "https://json.schemastore.org/claude-code-settings.json",
-  "env": {
-    "ANTHROPIC_BASE_URL": "${baseUrl}",
-    "ANTHROPIC_AUTH_TOKEN": "${apiKey}",
-    "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC": "1"
-  }
-}`
+  // Serialized (not interpolated) so model ids can never break JSON syntax.
+  const vscodeContent = JSON.stringify({
+    $schema: 'https://json.schemastore.org/claude-code-settings.json',
+    env: environment
+  }, null, 2)
 
   return [
     { path, content },
@@ -822,15 +1029,21 @@ $env:CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1`
 }
 
 function generateGrokClaudeFiles(baseUrl: string, apiKey: string): FileConfig[] {
-  const environment = {
+  const model = primaryModel()
+  const environment: Record<string, string> = {
     ANTHROPIC_BASE_URL: baseUrl,
     ANTHROPIC_AUTH_TOKEN: apiKey,
-    ANTHROPIC_MODEL: 'grok-4.5',
-    ANTHROPIC_DEFAULT_OPUS_MODEL: 'grok-4.5',
-    ANTHROPIC_DEFAULT_SONNET_MODEL: 'grok-4.5',
-    ANTHROPIC_DEFAULT_HAIKU_MODEL: 'grok-4.5',
-    ANTHROPIC_DEFAULT_FABLE_MODEL: 'grok-4.5',
-    CLAUDE_CODE_SUBAGENT_MODEL: 'grok-4.5',
+    // Model-scoped vars only when the key owns a concrete model; an empty
+    // default would override (and break) the client's own model selection.
+    ...(model
+      ? {
+        ANTHROPIC_MODEL: model,
+        ANTHROPIC_DEFAULT_OPUS_MODEL: model,
+        ANTHROPIC_DEFAULT_SONNET_MODEL: model,
+        ANTHROPIC_DEFAULT_HAIKU_MODEL: model,
+        CLAUDE_CODE_SUBAGENT_MODEL: model
+      }
+      : {}),
     CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: '1'
   }
   let path: string
@@ -840,19 +1053,19 @@ function generateGrokClaudeFiles(baseUrl: string, apiKey: string): FileConfig[] 
     case 'unix':
       path = 'Terminal'
       content = Object.entries(environment)
-        .map(([name, value]) => `export ${name}="${value}"`)
+        .map(([name, value]) => `export ${name}="${escapeShDq(value)}"`)
         .join('\n')
       break
     case 'cmd':
       path = 'Command Prompt'
       content = Object.entries(environment)
-        .map(([name, value]) => `set ${name}=${value}`)
+        .map(([name, value]) => `set ${name}=${escapeCmdValue(value)}`)
         .join('\n')
       break
     case 'powershell':
       path = 'PowerShell'
       content = Object.entries(environment)
-        .map(([name, value]) => `$env:${name}="${value}"`)
+        .map(([name, value]) => `$env:${name}="${escapePsDq(value)}"`)
         .join('\n')
       break
     default:
@@ -878,8 +1091,13 @@ function generateGrokClaudeFiles(baseUrl: string, apiKey: string): FileConfig[] 
 }
 
 function generateGeminiCliContent(baseUrl: string, apiKey: string): FileConfig {
-  const model = 'gemini-2.0-flash'
+  // Real model default from the key's channel-effective list (auto-injected first entry).
+  const model = primaryModel()
   const modelComment = t('keys.useKeyModal.gemini.modelComment')
+  const shBase = escapeShDq(baseUrl)
+  const shKey = escapeShDq(apiKey)
+  const shModel = escapeShDq(model)
+  const modelLine = (line: string) => (model ? `${line}` : null)
   let path: string
   let content: string
   let highlighted: string
@@ -887,32 +1105,48 @@ function generateGeminiCliContent(baseUrl: string, apiKey: string): FileConfig {
   switch (activeTab.value) {
     case 'unix':
       path = 'Terminal'
-      content = `export GOOGLE_GEMINI_BASE_URL="${baseUrl}"
-export GEMINI_API_KEY="${apiKey}"
-export GEMINI_MODEL="${model}"  # ${modelComment}`
-      highlighted = `${keyword('export')} ${variable('GOOGLE_GEMINI_BASE_URL')}${operator('=')}${string(`"${baseUrl}"`)}
-${keyword('export')} ${variable('GEMINI_API_KEY')}${operator('=')}${string(`"${apiKey}"`)}
-${keyword('export')} ${variable('GEMINI_MODEL')}${operator('=')}${string(`"${model}"`)}  ${comment(`# ${modelComment}`)}`
+      content = [
+        `export GOOGLE_GEMINI_BASE_URL="${shBase}"`,
+        `export GEMINI_API_KEY="${shKey}"`,
+        modelLine(`export GEMINI_MODEL="${shModel}"  # ${modelComment}`)
+      ].filter((line): line is string => line !== null).join('\n')
+      highlighted = `${keyword('export')} ${variable('GOOGLE_GEMINI_BASE_URL')}${operator('=')}${string(`"${shBase}"`)}
+${keyword('export')} ${variable('GEMINI_API_KEY')}${operator('=')}${string(`"${shKey}"`)}${model ? `
+${keyword('export')} ${variable('GEMINI_MODEL')}${operator('=')}${string(`"${shModel}"`)}  ${comment(`# ${modelComment}`)}` : ''}`
       break
-    case 'cmd':
+    case 'cmd': {
       path = 'Command Prompt'
-      content = `set GOOGLE_GEMINI_BASE_URL=${baseUrl}
-set GEMINI_API_KEY=${apiKey}
-set GEMINI_MODEL=${model}`
-      highlighted = `${keyword('set')} ${variable('GOOGLE_GEMINI_BASE_URL')}${operator('=')}${string(baseUrl)}
-${keyword('set')} ${variable('GEMINI_API_KEY')}${operator('=')}${string(apiKey)}
-${keyword('set')} ${variable('GEMINI_MODEL')}${operator('=')}${string(model)}
-${comment(`REM ${modelComment}`)}`
+      const cmdBase = escapeCmdValue(baseUrl)
+      const cmdKey = escapeCmdValue(apiKey)
+      const cmdModel = escapeCmdValue(model)
+      const cmdLines = [
+        `set GOOGLE_GEMINI_BASE_URL=${cmdBase}`,
+        `set GEMINI_API_KEY=${cmdKey}`,
+        ...(model ? [`set GEMINI_MODEL=${cmdModel}`] : [])
+      ]
+      content = cmdLines.join('\n')
+      highlighted = `${keyword('set')} ${variable('GOOGLE_GEMINI_BASE_URL')}${operator('=')}${string(cmdBase)}
+${keyword('set')} ${variable('GEMINI_API_KEY')}${operator('=')}${string(cmdKey)}${model ? `
+${keyword('set')} ${variable('GEMINI_MODEL')}${operator('=')}${string(cmdModel)}
+${comment(`REM ${modelComment}`)}` : ''}`
       break
-    case 'powershell':
+    }
+    case 'powershell': {
       path = 'PowerShell'
-      content = `$env:GOOGLE_GEMINI_BASE_URL="${baseUrl}"
-$env:GEMINI_API_KEY="${apiKey}"
-$env:GEMINI_MODEL="${model}"  # ${modelComment}`
-      highlighted = `${keyword('$env:')}${variable('GOOGLE_GEMINI_BASE_URL')}${operator('=')}${string(`"${baseUrl}"`)}
-${keyword('$env:')}${variable('GEMINI_API_KEY')}${operator('=')}${string(`"${apiKey}"`)}
-${keyword('$env:')}${variable('GEMINI_MODEL')}${operator('=')}${string(`"${model}"`)}  ${comment(`# ${modelComment}`)}`
+      const psBase = escapePsDq(baseUrl)
+      const psKey = escapePsDq(apiKey)
+      const psModel = escapePsDq(model)
+      const psLines = [
+        `$env:GOOGLE_GEMINI_BASE_URL="${psBase}"`,
+        `$env:GEMINI_API_KEY="${psKey}"`,
+        ...(model ? [`$env:GEMINI_MODEL="${psModel}"  # ${modelComment}`] : [])
+      ]
+      content = psLines.join('\n')
+      highlighted = `${keyword('$env:')}${variable('GOOGLE_GEMINI_BASE_URL')}${operator('=')}${string(`"${psBase}"`)}
+${keyword('$env:')}${variable('GEMINI_API_KEY')}${operator('=')}${string(`"${psKey}"`)}${model ? `
+${keyword('$env:')}${variable('GEMINI_MODEL')}${operator('=')}${string(`"${psModel}"`)}  ${comment(`# ${modelComment}`)}` : ''}`
       break
+    }
     default:
       path = 'Terminal'
       content = ''
@@ -926,13 +1160,15 @@ function generateOpenAIFiles(baseUrl: string, apiKey: string): FileConfig[] {
   const isWindows = activeTab.value === 'windows'
   const configDir = isWindows ? '%userprofile%\\.codex' : '~/.codex'
 
-  const model = selectCodexCatalogModel('gpt-5.6-sol')
+  const model = selectCodexModel()
   const reasoningEffortLine = codexReasoningEffortTomlLine(model)
+  const tomlModel = escapeTomlBasicString(model)
+  const tomlBase = escapeTomlBasicString(baseUrl)
 
-  // config.toml content
+  // config.toml content (all dynamic values TOML-escaped)
   const configContent = `model_provider = "OpenAI"
-model = "${model}"
-review_model = "${model}"
+model = "${tomlModel}"
+review_model = "${tomlModel}"
 ${reasoningEffortLine}disable_response_storage = true
 model_catalog_json = "${escapeTomlBasicString(codexModelCatalogPath.value)}"
 network_access = "enabled"
@@ -940,7 +1176,7 @@ windows_wsl_setup_acknowledged = true
 
 [model_providers.OpenAI]
 name = "OpenAI"
-base_url = "${baseUrl}"
+base_url = "${tomlBase}"
 wire_api = "responses"
 ${generateCodexProviderAuthConfig(apiKey)}
 
@@ -988,8 +1224,22 @@ function joinConfigPath(dir: string, file: string, windows: boolean): string {
   return `${dir}\\${file}`
 }
 
-function escapeTomlBasicString(value: string): string {
-  return value.replace(/\\/g, '\\\\').replace(/"/g, '\\"')
+/**
+ * Grok Build `[model.*]` entries generated from the key's channel-effective
+ * model list. Every entry keeps `api_backend = "responses"` (Sub2API Grok
+ * serves POST /v1/responses); image/video Imagine ids stay on media endpoints.
+ */
+function buildGrokModelEntries(models: string[]): string {
+  // Media-only ids (Imagine / image / video) must not be configured as
+  // `responses` text models; they are served by media endpoints instead.
+  const textModels = models.filter((id) => !isMediaModelId(id))
+  if (!textModels.length) return '# No channel-effective text models found for this key.'
+  return textModels
+    .map((id) => {
+      const safe = escapeTomlBasicString(id)
+      return `[model."${safe}"]\nmodel = "${safe}"                          # id sent to the API\nenv_key = "XAI_API_KEY"\napi_backend = "responses"                   # chat_completions | responses | messages\nsupports_backend_search = true`
+    })
+    .join('\n\n')
 }
 
 function generateGrokFiles(baseUrl: string, apiKey: string): FileConfig[] {
@@ -1003,25 +1253,30 @@ function generateGrokFiles(baseUrl: string, apiKey: string): FileConfig[] {
   switch (shell) {
     case 'cmd':
       envPath = 'Command Prompt'
-      envContent = `set GROK_MODELS_BASE_URL=${baseUrl}
-set XAI_API_KEY=${apiKey}`
+      envContent = `set GROK_MODELS_BASE_URL=${escapeCmdValue(baseUrl)}
+set XAI_API_KEY=${escapeCmdValue(apiKey)}`
       break
     case 'powershell':
     case 'windows':
       envPath = 'PowerShell'
-      envContent = `$env:GROK_MODELS_BASE_URL="${baseUrl}"
-$env:XAI_API_KEY="${apiKey}"`
+      envContent = `$env:GROK_MODELS_BASE_URL="${escapePsDq(baseUrl)}"
+$env:XAI_API_KEY="${escapePsDq(apiKey)}"`
       break
     default:
       envPath = 'Terminal'
-      envContent = `export GROK_MODELS_BASE_URL="${baseUrl}"
-export XAI_API_KEY="${apiKey}"`
+      envContent = `export GROK_MODELS_BASE_URL="${escapeShDq(baseUrl)}"
+export XAI_API_KEY="${escapeShDq(apiKey)}"`
   }
 
   // Shape follows Grok Build user guide (~/.grok/docs + custom-models) and production-ready Sub2API setups.
-  // Text models only (Responses). Image/video: Imagine model IDs on media endpoints / feature overrides.
+  // Model entries below are generated from the key's channel-effective list
+  // (auto-injected) — never hardcoded ids.
   // Credential order: api_key field → env_key → signed-in session → XAI_API_KEY global fallback.
   const modelsListUrl = `${baseUrl.replace(/\/+$/, '')}/models`
+  const grokDefaultModel = escapeTomlBasicString(primaryModel())
+  const tomlGrokBase = escapeTomlBasicString(baseUrl)
+  const tomlModelsListUrl = escapeTomlBasicString(modelsListUrl)
+  const grokModelEntries = buildGrokModelEntries(effectiveModels.value)
   const configContent = `# Grok Build CLI → Sub2API Grok group (API key auth).
 # Docs: ~/.grok/docs/user-guide/05-configuration.md + 11-custom-models.md
 # Verify after save: grok inspect
@@ -1036,73 +1291,22 @@ export XAI_API_KEY="${apiKey}"`
 # Global inference / catalog endpoints (same role as env GROK_MODELS_BASE_URL).
 # When models_base_url is set, Grok uses API-key Bearer auth (no grok login required).
 [endpoints]
-models_base_url = "${baseUrl}"              # inference base; model list defaults to {base}/models
-models_list_url = "${modelsListUrl}"        # optional override (env: GROK_MODELS_LIST_URL)
-xai_api_base_url = "${baseUrl}"             # public xAI API base override for gateway routing
-cli_chat_proxy_base_url = "${baseUrl}"      # CLI chat-proxy base (env: GROK_CLI_CHAT_PROXY_BASE_URL)
+models_base_url = "${tomlGrokBase}"              # inference base; model list defaults to {base}/models
+models_list_url = "${tomlModelsListUrl}"        # optional override (env: GROK_MODELS_LIST_URL)
+xai_api_base_url = "${tomlGrokBase}"             # public xAI API base override for gateway routing
+cli_chat_proxy_base_url = "${tomlGrokBase}"      # CLI chat-proxy base (env: GROK_CLI_CHAT_PROXY_BASE_URL)
 
 # Prefer API key when using a custom gateway (matches Sub2API).
 # Requires XAI_API_KEY env or per-model env_key / api_key.
 [auth]
 preferred_method = "api_key"
 
-[model."grok-4.5"]
-model = "grok-4.5"                          # id sent to the API
-name = "Grok 4.5"                           # shown in /model picker
-description = "Grok 4.5 via Sub2API (Responses)"
-# base_url inherits from [endpoints].models_base_url; override only if needed:
-# base_url = "${baseUrl}"
-env_key = "XAI_API_KEY"                     # or: api_key = "${apiKey}"  (not recommended)
-api_backend = "responses"                   # chat_completions | responses | messages
-context_window = 500000                     # drives auto-compaction timing
-# Optional sampling (global defaults can live under [models] instead):
-# temperature = 0.7
-# top_p = 0.95
-# max_completion_tokens = 8192
-# Server-side (backend) web_search tools — only if your gateway exposes them:
-supports_backend_search = true
-
-[model."grok-build-0.1"]
-model = "grok-build-0.1"
-name = "Grok Build"
-description = "Coding / agent sessions (xAI recommends grok-build* for coding)"
-env_key = "XAI_API_KEY"
-api_backend = "responses"
-context_window = 256000
-supports_backend_search = true
-
-# Text multi-agent / client web_search sub-agent (NOT Imagine image/video).
-[model."grok-4.20-multi-agent-0309"]
-model = "grok-4.20-multi-agent-0309"
-name = "Grok 4.20 Multi Agent (text / web_search)"
-description = "Text multi-agent; use for web_search sub-agent, not image/video"
-env_key = "XAI_API_KEY"
-api_backend = "responses"
-context_window = 1000000
-supports_backend_search = true
-
-[model."grok-4.3"]
-model = "grok-4.3"
-name = "Grok 4.3"
-env_key = "XAI_API_KEY"
-api_backend = "responses"
-context_window = 1000000
-supports_backend_search = true
-
-# Optional short alias for /model grok:
-# [model."grok"]
-# model = "grok-4.5"
-# name = "Grok"
-# env_key = "XAI_API_KEY"
-# api_backend = "responses"
-# context_window = 1000000
-# supports_backend_search = true
+${grokModelEntries}
 
 [models]
-# xAI recommends grok-build* for coding/agent sessions; use grok-4.5 for general chat.
-default = "grok-4.5"
-web_search = "grok-4.5"                     # client-side web_search tool model (must exist as [model.*])
-image_description = "grok-4.5"              # vision/describe-image helper model
+default = "${grokDefaultModel}"
+web_search = "${grokDefaultModel}"               # client-side web_search tool model (must exist as [model.*])
+image_description = "${grokDefaultModel}"        # vision/describe-image helper model
 # Optional environment-wide sampling defaults (per-model values win):
 # temperature = 0.7
 # top_p = 0.95
@@ -1113,12 +1317,12 @@ image_description = "grok-4.5"              # vision/describe-image helper model
 auto_compact_threshold_percent = 80         # auto-compact at this % of context_window (default 85)
 
 # Imagine tools: model IDs go to Sub2API media endpoints (not the text [model.*] catalog).
-# Enable only if the Grok group allows image/video generation.
-[features]
-image_gen = true
-video_gen = true
-image_gen_model_override = "grok-imagine-image-quality"   # or grok-imagine-image
-image_edit_model_override = "grok-imagine-edit"
+# Uncomment and fill with a media model your channel actually allows.
+# [features]
+# image_gen = true
+# video_gen = true
+# image_gen_model_override = "<channel-allowed-image-model>"
+# image_edit_model_override = "<channel-allowed-image-edit-model>"
 # Optional feature flags (defaults shown in docs):
 # telemetry = false
 # remote_fetch = true                         # set false for air-gapped / pure-gateway catalogs
@@ -1140,36 +1344,38 @@ function generateGrokCodexFiles(baseUrl: string, apiKey: string): FileConfig[] {
   const shell = activeTab.value
   const isWindowsPath = shell === 'windows' || shell === 'cmd' || shell === 'powershell'
   const configDir = isWindowsPath ? '%userprofile%\\.codex' : '~/.codex'
-  const model = selectCodexCatalogModel('grok-4.5')
+  const model = selectCodexModel()
+  const tomlModel = escapeTomlBasicString(model)
+  const tomlBase = escapeTomlBasicString(baseUrl)
 
   let envPath: string
   let envContent: string
   switch (shell) {
     case 'cmd':
       envPath = 'Command Prompt'
-      envContent = `set SUB2API_API_KEY=${apiKey}`
+      envContent = `set SUB2API_API_KEY=${escapeCmdValue(apiKey)}`
       break
     case 'powershell':
     case 'windows':
       envPath = 'PowerShell'
-      envContent = `$env:SUB2API_API_KEY="${apiKey}"`
+      envContent = `$env:SUB2API_API_KEY="${escapePsDq(apiKey)}"`
       break
     default:
       envPath = 'Terminal'
-      envContent = `export SUB2API_API_KEY="${apiKey}"`
+      envContent = `export SUB2API_API_KEY="${escapeShDq(apiKey)}"`
   }
 
   const configContent = `# Codex CLI → Sub2API Grok group
 # Docs: Codex config reference (model_providers.*, wire_api = "responses")
 #
-# Text models only. Image/video: grok-imagine-image / grok-imagine-video on media endpoints.
-# Switch model: grok-4.5 | grok-4.3 | grok-build-0.1 | grok-4.20-multi-agent-0309 (text / web_search)
+# Text models only. Image/video: Imagine model ids on media endpoints.
+# Default model below is the first channel-effective model.
 
 model_provider = "sub2api"
-model = "${model}"
+model = "${tomlModel}"
 model_catalog_json = "${escapeTomlBasicString(codexModelCatalogPath.value)}"
 # Optional:
-# review_model = "${model}"
+# review_model = "${tomlModel}"
 # model_reasoning_effort = "medium"
 # model_context_window = 500000
 # disable_response_storage = true
@@ -1178,11 +1384,11 @@ model_catalog_json = "${escapeTomlBasicString(codexModelCatalogPath.value)}"
 
 [model_providers.sub2api]
 name = "Sub2API Grok"
-base_url = "${baseUrl}"
+base_url = "${tomlBase}"
 # Prefer env_key (variable NAME). Do not combine with experimental_bearer_token.
 env_key = "SUB2API_API_KEY"
 # Fallback only if you cannot set env (discouraged — keeps secret on disk):
-# experimental_bearer_token = "${apiKey}"
+# experimental_bearer_token = "<paste-key-only-if-you-cannot-set-env>"
 wire_api = "responses"
 # API-key providers: do not require ChatGPT OAuth login
 requires_openai_auth = false
@@ -1210,20 +1416,7 @@ function generateRoutedCodexFiles(
 ): FileConfig[] {
   const isWindows = activeTab.value === 'windows'
   const configDir = isWindows ? '%userprofile%\\.codex' : '~/.codex'
-  const preferredModels: Partial<Record<GroupPlatform, string>> = {
-    openai: 'gpt-5.5',
-    anthropic: 'claude-sonnet-4-6',
-    gemini: 'gemini-2.5-pro',
-    antigravity: 'claude-sonnet-4-6',
-    kiro: 'gpt-5.6-sol',
-    grok: 'grok-4.5',
-    kimi: 'kimi-k2.5',
-    zhipu: 'glm-4.7',
-    deepseek: 'deepseek-v4-pro',
-    composite: 'gpt-5.5'
-  }
-  const preferredModel = preferredModels[platform] || ''
-  const model = selectCodexCatalogModel(preferredModel)
+  const model = selectCodexModel()
   const labels: Record<GroupPlatform, string> = {
     anthropic: 'Anthropic',
     openai: 'OpenAI',
@@ -1237,20 +1430,22 @@ function generateRoutedCodexFiles(
     composite: 'Composite'
   }
   const label = labels[platform]
+  const tomlModel = escapeTomlBasicString(model)
+  const tomlBase = escapeTomlBasicString(baseUrl)
   const envContent = isWindows
-    ? `$env:SUB2API_API_KEY="${apiKey}"`
-    : `export SUB2API_API_KEY="${apiKey}"`
+    ? `$env:SUB2API_API_KEY="${escapePsDq(apiKey)}"`
+    : `export SUB2API_API_KEY="${escapeShDq(apiKey)}"`
 
   const configContent = `# Codex CLI -> Sub2API ${label} group
 model_provider = "sub2api"
-model = "${model}"
-review_model = "${model}"
+model = "${tomlModel}"
+review_model = "${tomlModel}"
 disable_response_storage = true
 model_catalog_json = "${escapeTomlBasicString(codexModelCatalogPath.value)}"
 
 [model_providers.sub2api]
 name = "Sub2API ${label}"
-base_url = "${baseUrl}"
+base_url = "${tomlBase}"
 env_key = "SUB2API_API_KEY"
 wire_api = "responses"
 requires_openai_auth = false
@@ -1273,13 +1468,15 @@ supports_websockets = false`
 function generateOpenAIWsFiles(baseUrl: string, apiKey: string): FileConfig[] {
   const isWindows = activeTab.value === 'windows'
   const configDir = isWindows ? '%userprofile%\\.codex' : '~/.codex'
-  const model = selectCodexCatalogModel('gpt-5.6-sol')
+  const model = selectCodexModel()
   const reasoningEffortLine = codexReasoningEffortTomlLine(model)
+  const tomlModel = escapeTomlBasicString(model)
+  const tomlBase = escapeTomlBasicString(baseUrl)
 
   // config.toml content with WebSocket v2
   const configContent = `model_provider = "OpenAI"
-model = "${model}"
-review_model = "${model}"
+model = "${tomlModel}"
+review_model = "${tomlModel}"
 ${reasoningEffortLine}disable_response_storage = true
 model_catalog_json = "${escapeTomlBasicString(codexModelCatalogPath.value)}"
 network_access = "enabled"
@@ -1287,7 +1484,7 @@ windows_wsl_setup_acknowledged = true
 
 [model_providers.OpenAI]
 name = "OpenAI"
-base_url = "${baseUrl}"
+base_url = "${tomlBase}"
 wire_api = "responses"
 supports_websockets = true
 ${generateCodexProviderAuthConfig(apiKey)}
@@ -1308,520 +1505,41 @@ function generateOpenCodeConfig(platform: string, baseUrl: string, apiKey: strin
       }
     }
   }
-  const openaiModels = {
-    'gpt-5.2': {
-      name: 'GPT-5.2',
-      limit: {
-        context: 400000,
-        output: 128000
-      },
-      options: {
-        store: false
-      },
-      variants: {
-        low: {},
-        medium: {},
-        high: {},
-        xhigh: {}
-      }
-    },
-    'gpt-5.6': {
-      name: 'GPT-5.6 (Sol)',
-      limit: {
-        context: 1050000,
-        output: 128000
-      },
-      options: {
-        store: false
-      },
-      variants: {
-        low: {},
-        medium: {},
-        high: {},
-        xhigh: {},
-        max: {}
-      }
-    },
-    'gpt-5.6-sol': {
-      name: 'GPT-5.6 Sol',
-      limit: {
-        context: 1050000,
-        output: 128000
-      },
-      options: {
-        store: false
-      },
-      variants: {
-        low: {},
-        medium: {},
-        high: {},
-        xhigh: {},
-        max: {}
-      }
-    },
-    'gpt-5.6-terra': {
-      name: 'GPT-5.6 Terra',
-      limit: {
-        context: 1050000,
-        output: 128000
-      },
-      options: {
-        store: false
-      },
-      variants: {
-        low: {},
-        medium: {},
-        high: {},
-        xhigh: {},
-        max: {}
-      }
-    },
-    'gpt-5.6-luna': {
-      name: 'GPT-5.6 Luna',
-      limit: {
-        context: 1050000,
-        output: 128000
-      },
-      options: {
-        store: false
-      },
-      variants: {
-        low: {},
-        medium: {},
-        high: {},
-        xhigh: {},
-        max: {}
-      }
-    },
-    'gpt-5.5': {
-      name: 'GPT-5.5',
-      limit: {
-        context: 1050000,
-        output: 128000
-      },
-      options: {
-        store: false
-      },
-      variants: {
-        low: {},
-        medium: {},
-        high: {},
-        xhigh: {}
-      }
-    },
-    'gpt-5.4': {
-      name: 'GPT-5.4',
-      limit: {
-        context: 1050000,
-        output: 128000
-      },
-      options: {
-        store: false
-      },
-      variants: {
-        low: {},
-        medium: {},
-        high: {},
-        xhigh: {}
-      }
-    },
-    'gpt-5.4-mini': {
-      name: 'GPT-5.4 Mini',
-      limit: {
-        context: 400000,
-        output: 128000
-      },
-      options: {
-        store: false
-      },
-      variants: {
-        low: {},
-        medium: {},
-        high: {},
-        xhigh: {}
-      }
-    },
-    'gpt-5.3-codex-spark': {
-      name: 'GPT-5.3 Codex Spark',
-      limit: {
-        context: 128000,
-        output: 32000
-      },
-      options: {
-        store: false
-      },
-      variants: {
-        low: {},
-        medium: {},
-        high: {},
-        xhigh: {}
-      }
-    },
-    'codex-mini-latest': {
-      name: 'Codex Mini',
-      limit: {
-        context: 200000,
-        output: 100000
-      },
-      options: {
-        store: false
-      },
-      variants: {
-        low: {},
-        medium: {},
-        high: {}
-      }
-    }
-  }
-  const geminiModels = {
-    'gemini-2.0-flash': {
-      name: 'Gemini 2.0 Flash',
-      limit: {
-        context: 1048576,
-        output: 65536
-      },
-      modalities: {
-        input: ['text', 'image', 'pdf'],
-        output: ['text']
-      }
-    },
-    'gemini-2.5-flash': {
-      name: 'Gemini 2.5 Flash',
-      limit: {
-        context: 1048576,
-        output: 65536
-      },
-      modalities: {
-        input: ['text', 'image', 'pdf'],
-        output: ['text']
-      }
-    },
-    'gemini-2.5-pro': {
-      name: 'Gemini 2.5 Pro',
-      limit: {
-        context: 2097152,
-        output: 65536
-      },
-      modalities: {
-        input: ['text', 'image', 'pdf'],
-        output: ['text']
-      },
-      options: {
-        thinking: {
-          budgetTokens: 24576,
-          type: 'enabled'
-        }
-      }
-    },
-    'gemini-3.5-flash': {
-      name: 'Gemini 3.5 Flash',
-      limit: {
-        context: 1048576,
-        output: 65536
-      },
-      modalities: {
-        input: ['text', 'image', 'pdf'],
-        output: ['text']
-      }
-    },
-    'gemini-3-flash-preview': {
-      name: 'Gemini 3 Flash Preview',
-      limit: {
-        context: 1048576,
-        output: 65536
-      },
-      modalities: {
-        input: ['text', 'image', 'pdf'],
-        output: ['text']
-      }
-    },
-    'gemini-3-pro-preview': {
-      name: 'Gemini 3 Pro Preview',
-      limit: {
-        context: 1048576,
-        output: 65536
-      },
-      modalities: {
-        input: ['text', 'image', 'pdf'],
-        output: ['text']
-      },
-      options: {
-        thinking: {
-          budgetTokens: 24576,
-          type: 'enabled'
-        }
-      }
-    },
-    'gemini-3.1-pro-preview': {
-      name: 'Gemini 3.1 Pro Preview',
-      limit: {
-        context: 1048576,
-        output: 65536
-      },
-      modalities: {
-        input: ['text', 'image', 'pdf'],
-        output: ['text']
-      },
-      options: {
-        thinking: {
-          budgetTokens: 24576,
-          type: 'enabled'
-        }
-      }
-    }
-  }
+  // OpenCode `models` map is generated from the key's channel-effective list
+  // (auto-injected). No hardcoded ids, limits, or variants are invented here.
+  const dynamicModels = buildOpenCodeModels()
 
-  const antigravityGeminiModels = {
-    'gemini-2.5-flash': {
-      name: 'Gemini 2.5 Flash',
-      limit: {
-        context: 1048576,
-        output: 65536
-      },
-      modalities: {
-        input: ['text', 'image', 'pdf'],
-        output: ['text']
-      },
-      options: {
-        thinking: {
-          budgetTokens: 24576,
-          type: 'disable'
-        }
-      }
-    },
-    'gemini-2.5-flash-lite': {
-      name: 'Gemini 2.5 Flash Lite',
-      limit: {
-        context: 1048576,
-        output: 65536
-      },
-      modalities: {
-        input: ['text', 'image', 'pdf'],
-        output: ['text']
-      },
-      options: {
-        thinking: {
-          budgetTokens: 24576,
-          type: 'enabled'
-        }
-      }
-    },
-    'gemini-2.5-flash-thinking': {
-      name: 'Gemini 2.5 Flash (Thinking)',
-      limit: {
-        context: 1048576,
-        output: 65536
-      },
-      modalities: {
-        input: ['text', 'image', 'pdf'],
-        output: ['text']
-      },
-      options: {
-        thinking: {
-          budgetTokens: 24576,
-          type: 'enabled'
-        }
-      }
-    },
-    'gemini-3-flash': {
-      name: 'Gemini 3 Flash',
-      limit: {
-        context: 1048576,
-        output: 65536
-      },
-      modalities: {
-        input: ['text', 'image', 'pdf'],
-        output: ['text']
-      },
-      options: {
-        thinking: {
-          budgetTokens: 24576,
-          type: 'enabled'
-        }
-      }
-    },
-    'gemini-3.1-pro-low': {
-      name: 'Gemini 3.1 Pro Low',
-      limit: {
-        context: 1048576,
-        output: 65536
-      },
-      modalities: {
-        input: ['text', 'image', 'pdf'],
-        output: ['text']
-      },
-      options: {
-        thinking: {
-          budgetTokens: 24576,
-          type: 'enabled'
-        }
-      }
-    },
-    'gemini-3.1-pro-high': {
-      name: 'Gemini 3.1 Pro High',
-      limit: {
-        context: 1048576,
-        output: 65536
-      },
-      modalities: {
-        input: ['text', 'image', 'pdf'],
-        output: ['text']
-      },
-      options: {
-        thinking: {
-          budgetTokens: 24576,
-          type: 'enabled'
-        }
-      }
-    },
-    'gemini-2.5-flash-image': {
-      name: 'Gemini 2.5 Flash Image',
-      limit: {
-        context: 1048576,
-        output: 65536
-      },
-      modalities: {
-        input: ['text', 'image'],
-        output: ['image']
-      },
-      options: {
-        thinking: {
-          budgetTokens: 24576,
-          type: 'enabled'
-        }
-      }
-    },
-    'gemini-3.1-flash-image': {
-      name: 'Gemini 3.1 Flash Image',
-      limit: {
-        context: 1048576,
-        output: 65536
-      },
-      modalities: {
-        input: ['text', 'image'],
-        output: ['image']
-      },
-      options: {
-        thinking: {
-          budgetTokens: 24576,
-          type: 'enabled'
-        }
-      }
-    }
-  }
-  const claudeModels = {
-    'claude-fable-5-1': {
-      name: 'Claude Fable 5.1',
-      limit: {
-        context: 1048576,
-        output: 128000
-      },
-      modalities: {
-        input: ['text', 'image', 'pdf'],
-        output: ['text']
-      },
-      options: {
-        thinking: {
-          type: 'adaptive'
-        }
-      }
-    },
-    'claude-fable-5': {
-      name: 'Claude Fable 5',
-      limit: {
-        context: 1048576,
-        output: 128000
-      },
-      modalities: {
-        input: ['text', 'image', 'pdf'],
-        output: ['text']
-      },
-      options: {
-        thinking: {
-          type: 'adaptive'
-        }
-      }
-    },
-    'claude-opus-4-6-thinking': {
-      name: 'Claude 4.6 Opus (Thinking)',
-      limit: {
-        context: 200000,
-        output: 128000
-      },
-      modalities: {
-        input: ['text', 'image', 'pdf'],
-        output: ['text']
-      },
-      options: {
-        thinking: {
-          budgetTokens: 24576,
-          type: 'enabled'
-        }
-      }
-    },
-    'claude-sonnet-4-6': {
-      name: 'Claude 4.6 Sonnet',
-      limit: {
-        context: 200000,
-        output: 64000
-      },
-      modalities: {
-        input: ['text', 'image', 'pdf'],
-        output: ['text']
-      },
-      options: {
-        thinking: {
-          budgetTokens: 24576,
-          type: 'enabled'
-        }
-      }
-    }
-  }
-  // Align context_window with Grok Build official sample (docs.x.ai/build/settings) where known.
-  // Image/video: grok-imagine-image / grok-imagine-video on media endpoints — not this list.
-  const grokModels = {
-    'grok-4.5': {
-      name: 'Grok 4.5',
-      limit: { context: 500000, output: 64000 }
-    },
-    'grok-build-0.1': {
-      name: 'Grok Build 0.1',
-      limit: { context: 256000, output: 64000 }
-    },
-    'grok-4.20-multi-agent-0309': {
-      name: 'Grok 4.20 Multi Agent (text / web_search)',
-      limit: { context: 1000000, output: 64000 }
-    },
-    'grok-4.3': {
-      name: 'Grok 4.3',
-      limit: { context: 1000000, output: 64000 }
-    },
-    'grok-composer-2.5-fast': {
-      name: 'Grok Composer 2.5 Fast',
-      limit: { context: 500000, output: 64000 }
-    }
-  }
-
+/**
+ * Minimal OpenCode model entries derived from real channel-effective ids.
+ * Limits/variants are intentionally omitted: inventing them would mislead
+ * clients into requesting capabilities the channel never granted.
+ */
+function buildOpenCodeModels(): Record<string, { name: string }> {
+  return Object.fromEntries(effectiveModels.value.map((id) => [id, { name: id }]))
+}
   if (platform === 'gemini') {
     provider[platform].npm = '@ai-sdk/google'
-    provider[platform].models = geminiModels
+    provider[platform].models = dynamicModels
   } else if (platform === 'anthropic') {
     provider[platform].npm = '@ai-sdk/anthropic'
+    provider[platform].models = dynamicModels
   } else if (platform === 'antigravity-claude') {
     provider[platform].npm = '@ai-sdk/anthropic'
     provider[platform].name = 'Antigravity (Claude)'
-    provider[platform].models = claudeModels
+    provider[platform].models = dynamicModels
   } else if (platform === 'antigravity-gemini') {
     provider[platform].npm = '@ai-sdk/google'
     provider[platform].name = 'Antigravity (Gemini)'
-    provider[platform].models = antigravityGeminiModels
+    provider[platform].models = dynamicModels
   } else if (platform === 'openai') {
-    provider[platform].models = openaiModels
+    provider[platform].models = dynamicModels
   } else if (platform === 'grok') {
     // Custom provider pointing at Sub2API OpenAI-compatible Responses/Chat endpoints.
     provider[platform].npm = '@ai-sdk/openai-compatible'
     provider[platform].name = 'Grok via Sub2API'
-    provider[platform].models = grokModels
+    provider[platform].models = dynamicModels
+  } else {
+    provider[platform].models = dynamicModels
   }
 
   const agent =

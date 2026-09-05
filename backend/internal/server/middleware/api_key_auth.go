@@ -166,10 +166,13 @@ func apiKeyAuthWithSubscription(apiKeyService *service.APIKeyService, subscripti
 		ctx := context.WithValue(c.Request.Context(), ctxkey.UserID, apiKey.User.ID)
 		c.Request = c.Request.WithContext(ctx)
 		billingInfoRequest := c.Request.URL.Path == "/v1/sub2api/billing"
+		isModelsRead := c.Request.Method == http.MethodGet && (c.Request.URL.Path == "/v1/models" || c.Request.URL.Path == "/models" || c.Request.URL.Path == "/backend-api/codex/models" || c.Request.URL.Path == "/antigravity/models" || c.Request.URL.Path == "/v1beta/models" || c.Request.URL.Path == "/antigravity/v1beta/models")
 		// Async image task polling only reads data that already belongs to the
 		// authenticated key and must remain available after the completed
 		// generation consumes the key's remaining balance.
-		skipBilling := c.Request.URL.Path == "/v1/usage" || billingInfoRequest || isAsyncImageTaskRead(c.Request.Method, c.Request.URL.Path)
+		// /v1/models (and variants) are metadata discovery endpoints and must not
+		// block on balance/quota so users and tools can inspect available models.
+		skipBilling := c.Request.URL.Path == "/v1/usage" || billingInfoRequest || isModelsRead || isAsyncImageTaskRead(c.Request.Method, c.Request.URL.Path)
 
 		// ── 4. SimpleMode → early return ─────────────────────────────
 

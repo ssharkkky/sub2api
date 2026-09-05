@@ -218,6 +218,12 @@ export default {
         modelsCount: '已获取 {count} 个模型',
         errorDescription: '无法使用当前 API Key 获取模型目录。'
       },
+      modelSelector: {
+        loading: '正在加载模型…',
+        count: '已自动载入该渠道的 {count} 个可用模型',
+        defaultModel: '默认模型',
+        empty: '未找到该密钥的渠道有效模型，配置暂时无法引用真实模型。'
+      },
       opencode: {
         title: 'OpenCode 配置示例',
         subtitle: 'opencode.json',

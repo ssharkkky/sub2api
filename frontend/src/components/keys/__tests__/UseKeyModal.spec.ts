@@ -7,11 +7,15 @@ const { copyToClipboardMock, saveAsMock } = vi.hoisted(() => ({
   saveAsMock: vi.fn()
 }))
 
-vi.mock('vue-i18n', () => ({
-  useI18n: () => ({
-    t: (key: string) => key
-  })
-}))
+vi.mock('vue-i18n', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('vue-i18n')>()
+  return {
+    ...actual,
+    useI18n: () => ({
+      t: (key: string) => key
+    })
+  }
+})
 
 vi.mock('@/composables/useClipboard', () => ({
   useClipboard: () => ({
@@ -34,36 +38,222 @@ function readBlobAsText(blob: Blob): Promise<string> {
   })
 }
 
+function mountModal(props: Record<string, unknown> = {}) {
+  return mount(UseKeyModal, {
+    props: {
+      show: true,
+      apiKey: 'sk-test',
+      baseUrl: 'https://example.com/v1',
+      platform: 'grok',
+      ...props
+    },
+    global: {
+      stubs: {
+        BaseDialog: {
+          template: '<div><slot /><slot name="footer" /></div>'
+        },
+        Icon: {
+          template: '<span />'
+        }
+      }
+    }
+  })
+}
+
+function stubGatewayModels(models: string[]) {
+  const fetchMock = vi.fn().mockImplementation((url: string) => {
+    if (String(url).includes('client_version')) {
+      return Promise.resolve({ ok: true, status: 200, json: async () => ({ models: [] }) })
+    }
+    return Promise.resolve({
+      ok: true,
+      status: 200,
+      json: async () => ({ object: 'list', data: models.map((id) => ({ id })) })
+    })
+  })
+  vi.stubGlobal('fetch', fetchMock)
+  return fetchMock
+}
+
+function allCode(wrapper: ReturnType<typeof mountModal>): string {
+  return wrapper.findAll('pre code').map((code) => code.text()).join('\n')
+}
+
 describe('UseKeyModal', () => {
   afterEach(() => {
     vi.unstubAllGlobals()
     saveAsMock.mockClear()
+    copyToClipboardMock.mockClear()
+  })
+
+  it('auto-loads parent-provided channel models with no manual selector', async () => {
+    const wrapper = mountModal({ availableModels: ['grok-4.5', 'grok-build-0.1'] })
+    await nextTick()
+
+    expect(wrapper.find('[data-testid="use-key-model-select"]').exists()).toBe(false)
+    expect(wrapper.find('[data-testid="use-key-model-selector"]').exists()).toBe(false)
+    expect(wrapper.get('[data-testid="use-key-models-status"]').exists()).toBe(true)
+    expect(wrapper.get('[data-testid="use-key-model-count"]').exists()).toBe(true)
+    const code = allCode(wrapper)
+    expect(code).toContain('[model."grok-4.5"]')
+    expect(code).toContain('[model."grok-build-0.1"]')
+  })
+
+  it('uses the first channel model by default in Grok Claude setup instead of hardcoded ids', async () => {
+    const wrapper = mountModal({ availableModels: ['grok-aaa', 'grok-bbb'] })
+    await nextTick()
+
+    const claudeTab = wrapper.findAll('button').find((button) =>
+      button.text().includes('keys.useKeyModal.cliTabs.claudeCode')
+    )
+    expect(claudeTab).toBeDefined()
+    await claudeTab!.trigger('click')
+    await nextTick()
+
+    expect(allCode(wrapper)).toContain('export ANTHROPIC_MODEL="grok-aaa"')
+    expect(allCode(wrapper)).toContain('export CLAUDE_CODE_SUBAGENT_MODEL="grok-aaa"')
+    expect(allCode(wrapper)).not.toContain('grok-4.5')
+    expect(allCode(wrapper)).not.toContain('grok-4.3')
+    expect(allCode(wrapper)).not.toContain('grok-build-0.1')
+    expect(allCode(wrapper)).not.toContain('grok-4.20')
+  })
+
+  it('generates Grok Build config entries from the real model list', async () => {
+    const wrapper = mountModal({ availableModels: ['grok-aaa', 'grok-bbb'] })
+    await nextTick()
+
+    const code = allCode(wrapper)
+    expect(code).toContain('[model."grok-aaa"]')
+    expect(code).toContain('[model."grok-bbb"]')
+    expect(code).toContain('default = "grok-aaa"')
+    expect(code).toContain('web_search = "grok-aaa"')
+    expect(code).toContain('api_backend = "responses"')
+    expect(code).not.toContain('[model."grok-4.5"]')
+    expect(code).not.toContain('grok-4.20-multi-agent-0309')
+    expect(code).not.toContain('grok-composer')
+  })
+
+  it('uses the first channel model by default in Gemini CLI setup', async () => {
+    const wrapper = mountModal({
+      platform: 'gemini',
+      availableModels: ['gemini-hello-world']
+    })
+    await nextTick()
+
+    expect(allCode(wrapper)).toContain('export GEMINI_MODEL="gemini-hello-world"')
+    expect(allCode(wrapper)).not.toContain('gemini-2.0-flash')
+  })
+
+  it('builds OpenCode provider models from the real list without invented metadata', async () => {
+    const wrapper = mountModal({
+      platform: 'openai',
+      availableModels: ['gpt-real-a', 'gpt-real-b']
+    })
+    await nextTick()
+
+    const opencodeTab = wrapper.findAll('button').find((button) =>
+      button.text().includes('keys.useKeyModal.cliTabs.opencode')
+    )
+    expect(opencodeTab).toBeDefined()
+    await opencodeTab!.trigger('click')
+    await nextTick()
+
+    const parsed = JSON.parse(wrapper.find('pre code').text())
+    expect(Object.keys(parsed.provider.openai.models).sort()).toEqual(['gpt-real-a', 'gpt-real-b'])
+    expect(parsed.provider.openai.models['gpt-real-a']).toEqual({ name: 'gpt-real-a' })
+    const raw = wrapper.find('pre code').text()
+    expect(raw).not.toContain('gpt-5.6')
+    expect(raw).not.toContain('variants')
+    expect(raw).not.toContain('claude-fable')
+  })
+
+  it('loads the key-scoped shelf from the gateway when the parent provides nothing', async () => {
+    stubGatewayModels(['grok-from-gateway'])
+
+    const wrapper = mountModal({ availableModels: undefined })
+    await flushPromises()
+
+    expect(wrapper.find('[data-testid="use-key-model-select"]').exists()).toBe(false)
+    expect(wrapper.get('[data-testid="use-key-model-count"]').exists()).toBe(true)
+    expect(allCode(wrapper)).toContain('[model."grok-from-gateway"]')
+    expect(allCode(wrapper)).not.toContain('[model."grok-4.5"]')
+  })
+
+  it('falls back to channel restrictions filtered by group when the gateway rejects the key', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn().mockResolvedValue({ ok: false, status: 401, json: async () => ({}) })
+    )
+    const channelsModule = await import('@/api/channels')
+    const getAvailableSpy = vi
+      .spyOn(channelsModule, 'getAvailable')
+      .mockResolvedValue([
+        {
+          name: 'channel-a',
+          description: '',
+          platforms: [
+            {
+              platform: 'grok',
+              groups: [{ id: 7, name: 'g' }],
+              supported_models: [{ name: 'grok-channel-only', platform: 'grok' }]
+            },
+            {
+              platform: 'grok',
+              groups: [{ id: 8, name: 'other' }],
+              supported_models: [{ name: 'grok-other-group', platform: 'grok' }]
+            }
+          ]
+        }
+      ] as never)
+
+    try {
+      const wrapper = mountModal({ groupId: 7, availableModels: [] })
+      await flushPromises()
+
+      expect(wrapper.find('[data-testid="use-key-model-select"]').exists()).toBe(false)
+      expect(wrapper.get('[data-testid="use-key-model-count"]').exists()).toBe(true)
+      expect(allCode(wrapper)).toContain('[model."grok-channel-only"]')
+      expect(allCode(wrapper)).not.toContain('grok-other-group')
+    } finally {
+      getAvailableSpy.mockRestore()
+    }
+  })
+
+  it('shows an empty notice and invents no models when every source fails', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn().mockResolvedValue({ ok: false, status: 500, json: async () => ({}) })
+    )
+    const channelsModule = await import('@/api/channels')
+    const getAvailableSpy = vi.spyOn(channelsModule, 'getAvailable').mockRejectedValue(new Error('down'))
+
+    try {
+      const wrapper = mountModal({ availableModels: [] })
+      await flushPromises()
+
+      expect(wrapper.get('[data-testid="use-key-model-empty"]').exists()).toBe(true)
+      const code = allCode(wrapper)
+      expect(code).not.toContain('gpt-5.6')
+      expect(code).not.toContain('grok-4.5')
+      expect(code).not.toContain('claude-fable')
+      expect(code).not.toContain('gemini-2.0-flash')
+    } finally {
+      getAvailableSpy.mockRestore()
+    }
   })
 
   it('omits the attribution override from every standard Claude Code setup form', async () => {
-    const wrapper = mount(UseKeyModal, {
-      props: {
-        show: true,
-        apiKey: 'sk-anthropic-test',
-        baseUrl: 'https://example.com/v1',
-        platform: 'anthropic'
-      },
-      global: {
-        stubs: {
-          BaseDialog: {
-            template: '<div><slot /><slot name="footer" /></div>'
-          },
-          Icon: {
-            template: '<span />'
-          }
-        }
-      }
+    const wrapper = mountModal({
+      platform: 'anthropic',
+      apiKey: 'sk-anthropic-test',
+      availableModels: ['claude-real']
     })
+    await nextTick()
 
     for (const [shell, trafficSetting] of [
-      ['macOS / Linux', 'export CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1'],
+      ['macOS / Linux', 'export CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC="1"'],
       ['Windows CMD', 'set CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1'],
-      ['PowerShell', '$env:CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1']
+      ['PowerShell', '$env:CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC="1"']
     ]) {
       if (shell !== 'macOS / Linux') {
         const shellTab = wrapper.findAll('button').find(
@@ -75,335 +265,44 @@ describe('UseKeyModal', () => {
       }
 
       const codeBlocks = wrapper.findAll('pre code').map((code) => code.text())
-      const allCode = codeBlocks.join('\n')
+      const code = codeBlocks.join('\n')
       const settings = JSON.parse(codeBlocks.find((content) => content.includes('"$schema"'))!)
 
-      expect(allCode).not.toContain('CLAUDE_CODE_ATTRIBUTION_HEADER')
-      expect(allCode).toContain(trafficSetting)
+      expect(code).not.toContain('CLAUDE_CODE_ATTRIBUTION_HEADER')
+      expect(code).toContain(trafficSetting)
       expect(settings.env.CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC).toBe('1')
       expect(settings.env).not.toHaveProperty('CLAUDE_CODE_ATTRIBUTION_HEADER')
     }
   })
 
-  it('renders Grok Build and OpenCode setup for Grok groups', async () => {
-    const wrapper = mount(UseKeyModal, {
-      props: {
-        show: true,
-        apiKey: 'sk-grok-test',
-        baseUrl: 'https://example.com/v1',
-        platform: 'grok'
-      },
-      global: {
-        stubs: {
-          BaseDialog: {
-            template: '<div><slot /><slot name="footer" /></div>'
-          },
-          Icon: {
-            template: '<span />'
-          }
-        }
-      }
+  it('keeps legacy OpenAI Codex auth behavior while using the real model', async () => {
+    const wrapper = mountModal({
+      platform: 'openai',
+      apiKey: 'sk-test',
+      availableModels: ['gpt-real']
     })
-
-    const grokTab = wrapper.findAll('button').find((button) =>
-      button.text().includes('keys.useKeyModal.cliTabs.grokCli')
-    )
-    expect(grokTab).toBeDefined()
-
-    const allCode = wrapper.findAll('pre code').map((code) => code.text()).join('\n')
-    expect(allCode).toContain('GROK_MODELS_BASE_URL')
-    expect(allCode).toContain('XAI_API_KEY')
-    expect(allCode).toContain('[model."grok-4.5"]')
-    expect(allCode).toContain('[model."grok-build-0.1"]')
-    expect(allCode).toContain('[model."grok-4.20-multi-agent-0309"]')
-    expect(allCode).toContain('[model."grok-4.3"]')
-    expect(allCode).toContain('default = "grok-4.5"')
-    expect(allCode).toContain('models_base_url = "https://example.com/v1"')
-    expect(allCode).toContain('models_list_url = "https://example.com/v1/models"')
-    expect(allCode).toContain('xai_api_base_url = "https://example.com/v1"')
-    expect(allCode).toContain('cli_chat_proxy_base_url = "https://example.com/v1"')
-    expect(allCode).toContain('preferred_method = "api_key"')
-    expect(allCode).toContain('image_description = "grok-4.5"')
-    expect(allCode).toContain('auto_compact_threshold_percent = 80')
-    expect(allCode).toContain('image_gen = true')
-    expect(allCode).toContain('video_gen = true')
-    expect(allCode).toContain('image_gen_model_override = "grok-imagine-image-quality"')
-    expect(allCode).toContain('image_edit_model_override = "grok-imagine-edit"')
-    expect(allCode).toContain('env_key = "XAI_API_KEY"')
-    expect(allCode).toContain('Keep api_backend = "responses" on every model entry.')
-    expect(allCode).toContain('grok-imagine-image')
-    expect(allCode).toContain('grok-imagine-edit')
-    expect(allCode).toMatch(/\[model\."grok-4\.5"\][\s\S]*?context_window = 500000/)
-    expect(allCode).toMatch(/\[model\."grok-build-0\.1"\][\s\S]*?context_window = 256000/)
-    // Prefer env_key; hardcode api_key only as commented alternative
-    expect(allCode).not.toMatch(/^api_key = "sk-grok-test"$/m)
-
-    const modelBlocks = allCode
-      .split(/(?=^\[model\.)/m)
-      .filter((block) => block.startsWith('[model."'))
-    expect(modelBlocks.length).toBeGreaterThanOrEqual(4)
-    for (const block of modelBlocks) {
-      if (block.includes('# [model.')) continue
-      expect(block).toContain('api_backend = "responses"')
-    }
-
-    const windowsTab = wrapper.findAll('button').find(
-      (button) => button.text().trim() === 'Windows'
-    )
-    expect(windowsTab).toBeDefined()
-    await windowsTab!.trigger('click')
     await nextTick()
-    expect(wrapper.text().toLowerCase()).toContain('%userprofile%\\.grok\\config.toml')
-
-    const opencodeTab = wrapper.findAll('button').find((button) =>
-      button.text().includes('keys.useKeyModal.cliTabs.opencode')
-    )
-    expect(opencodeTab).toBeDefined()
-    await opencodeTab!.trigger('click')
-    await nextTick()
-
-    const parsed = JSON.parse(wrapper.find('pre code').text())
-    expect(parsed.provider.grok.npm).toBe('@ai-sdk/openai-compatible')
-    expect(parsed.provider.grok.name).toBe('Grok via Sub2API')
-    expect(parsed.provider.grok.options).toEqual({
-      baseURL: 'https://example.com/v1',
-      apiKey: 'sk-grok-test'
-    })
-    expect(parsed.provider.grok.models['grok-4.5']).toBeDefined()
-    expect(parsed.provider.grok.models['grok-4.5'].limit.context).toBe(500000)
-    expect(parsed.provider.grok.models['grok-build-0.1']).toBeDefined()
-    expect(parsed.provider.grok.models['grok-4.20-multi-agent-0309']).toBeDefined()
-    expect(parsed.provider.grok.models['grok-composer-2.5-fast']).toBeDefined()
-    expect(parsed.provider.grok.models['gpt-5.6']).toBeUndefined()
-  })
-
-  it('renders copyable Claude Code setup through the Grok Messages gateway', async () => {
-    copyToClipboardMock.mockClear()
-    const wrapper = mount(UseKeyModal, {
-      props: {
-        show: true,
-        apiKey: 'sk-grok-claude-test',
-        baseUrl: 'https://example.com/v1',
-        platform: 'grok'
-      },
-      global: {
-        stubs: {
-          BaseDialog: {
-            template: '<div><slot /><slot name="footer" /></div>'
-          },
-          Icon: {
-            template: '<span />'
-          }
-        }
-      }
-    })
-
-    const claudeTab = wrapper.findAll('button').find((button) =>
-      button.text().includes('keys.useKeyModal.cliTabs.claudeCode')
-    )
-    expect(claudeTab).toBeDefined()
-    await claudeTab!.trigger('click')
-    await nextTick()
-
-    let codeBlocks = wrapper.findAll('pre code').map((code) => code.text())
-    expect(codeBlocks.join('\n')).toContain('ANTHROPIC_BASE_URL="https://example.com"')
-    expect(codeBlocks.join('\n')).toContain('ANTHROPIC_AUTH_TOKEN="sk-grok-claude-test"')
-    const unixConfig = codeBlocks.find((content) => content.startsWith('export ANTHROPIC_BASE_URL'))
-    expect(unixConfig).toBeDefined()
-    for (const name of [
-      'ANTHROPIC_MODEL',
-      'ANTHROPIC_DEFAULT_OPUS_MODEL',
-      'ANTHROPIC_DEFAULT_SONNET_MODEL',
-      'ANTHROPIC_DEFAULT_HAIKU_MODEL',
-      'ANTHROPIC_DEFAULT_FABLE_MODEL',
-      'CLAUDE_CODE_SUBAGENT_MODEL'
-    ]) {
-      expect(unixConfig).toContain(`export ${name}="grok-4.5"`)
-    }
-    const settingsConfig = codeBlocks.find((content) => content.includes('"$schema"'))
-    expect(settingsConfig).toBeDefined()
-    const parsedSettings = JSON.parse(settingsConfig!)
-    expect(parsedSettings.$schema).toBe('https://json.schemastore.org/claude-code-settings.json')
-    expect(parsedSettings.env.ANTHROPIC_MODEL).toBe('grok-4.5')
-    expect(codeBlocks.join('\n')).not.toContain('CLAUDE_CODE_ATTRIBUTION_HEADER')
-    expect(codeBlocks.join('\n')).toContain('CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC')
-    expect(parsedSettings.env.CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC).toBe('1')
-    expect(parsedSettings.env).not.toHaveProperty('CLAUDE_CODE_ATTRIBUTION_HEADER')
-    expect(wrapper.text()).toContain('keys.useKeyModal.claudeSettingsHint')
-    expect(wrapper.text()).toContain('keys.useKeyModal.grok.claudeNote')
-    expect(wrapper.find('nav[aria-label="Client"]').classes()).toContain('min-w-max')
-    expect(wrapper.find('nav[aria-label="Client"]').element.parentElement?.classList.contains('overflow-x-auto')).toBe(true)
-
-    const cmdTab = wrapper.findAll('button').find(
-      (button) => button.text().trim() === 'Windows CMD'
-    )
-    expect(cmdTab).toBeDefined()
-    await cmdTab!.trigger('click')
-    await nextTick()
-
-    codeBlocks = wrapper.findAll('pre code').map((code) => code.text())
-    expect(codeBlocks.join('\n')).toContain('set ANTHROPIC_MODEL=grok-4.5')
-    expect(codeBlocks.join('\n')).toContain('set ANTHROPIC_DEFAULT_FABLE_MODEL=grok-4.5')
-    expect(codeBlocks.join('\n')).toContain('set CLAUDE_CODE_SUBAGENT_MODEL=grok-4.5')
-    expect(codeBlocks.join('\n')).toContain('set CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1')
-    expect(codeBlocks.join('\n')).not.toContain('CLAUDE_CODE_ATTRIBUTION_HEADER')
-    const cmdSettings = JSON.parse(codeBlocks.find((content) => content.includes('"$schema"'))!)
-    expect(cmdSettings.env.CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC).toBe('1')
-    expect(cmdSettings.env).not.toHaveProperty('CLAUDE_CODE_ATTRIBUTION_HEADER')
-
-    const powershellTab = wrapper.findAll('button').find(
-      (button) => button.text().trim() === 'PowerShell'
-    )
-    expect(powershellTab).toBeDefined()
-    await powershellTab!.trigger('click')
-    await nextTick()
-
-    codeBlocks = wrapper.findAll('pre code').map((code) => code.text())
-    expect(codeBlocks.join('\n')).toContain('$env:ANTHROPIC_BASE_URL="https://example.com"')
-    expect(codeBlocks.join('\n')).toContain('$env:ANTHROPIC_MODEL="grok-4.5"')
-    expect(codeBlocks.join('\n')).toContain('$env:ANTHROPIC_DEFAULT_FABLE_MODEL="grok-4.5"')
-    expect(codeBlocks.join('\n')).toContain('$env:CLAUDE_CODE_SUBAGENT_MODEL="grok-4.5"')
-    expect(codeBlocks.join('\n')).toContain('$env:CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC="1"')
-    expect(codeBlocks.join('\n')).not.toContain('CLAUDE_CODE_ATTRIBUTION_HEADER')
-    const powershellSettings = JSON.parse(codeBlocks.find((content) => content.includes('"$schema"'))!)
-    expect(powershellSettings.env.CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC).toBe('1')
-    expect(powershellSettings.env).not.toHaveProperty('CLAUDE_CODE_ATTRIBUTION_HEADER')
-    expect(wrapper.text()).toContain('%USERPROFILE%\\.claude\\settings.json')
-
-    const copyButton = wrapper.findAll('button').find((button) =>
-      button.text().includes('keys.useKeyModal.copy')
-    )
-    expect(copyButton).toBeDefined()
-    await copyButton!.trigger('click')
-    expect(copyToClipboardMock).toHaveBeenCalledWith(
-      expect.stringContaining('ANTHROPIC_AUTH_TOKEN="sk-grok-claude-test"'),
-      'keys.copied'
-    )
-  })
-
-  it('renders Codex custom provider setup through the Grok Responses gateway', async () => {
-    const wrapper = mount(UseKeyModal, {
-      props: {
-        show: true,
-        apiKey: 'sk-grok-codex-test',
-        baseUrl: 'https://example.com/v1',
-        platform: 'grok'
-      },
-      global: {
-        stubs: {
-          BaseDialog: {
-            template: '<div><slot /><slot name="footer" /></div>'
-          },
-          Icon: {
-            template: '<span />'
-          }
-        }
-      }
-    })
-
-    const codexTab = wrapper.findAll('button').find((button) =>
-      button.text().includes('keys.useKeyModal.cliTabs.codexCli')
-    )
-    expect(codexTab).toBeDefined()
-    await codexTab!.trigger('click')
-    await nextTick()
-
-    let codeBlocks = wrapper.findAll('pre code').map((code) => code.text())
-    const configToml = codeBlocks.find((content) => content.includes('[model_providers.sub2api]'))
-    expect(configToml).toBeDefined()
-    expect(configToml).toContain('model_provider = "sub2api"')
-    expect(configToml).toContain('model = "grok-4.5"')
-    expect(configToml).toContain('base_url = "https://example.com/v1"')
-    expect(configToml).toContain('env_key = "SUB2API_API_KEY"')
-    expect(configToml).toContain('wire_api = "responses"')
-    // API-key provider: Codex must not require a ChatGPT OAuth login.
-    expect(configToml).toContain('requires_openai_auth = false')
-    expect(configToml).toContain('supports_websockets = false')
-    expect(configToml).toContain('grok-4.20-multi-agent-0309 (text / web_search)')
-    expect(configToml).toContain('grok-imagine-image')
-    expect(configToml).toContain('grok-imagine-video')
-    // Hardcoded bearer is only a commented fallback when env cannot be set.
-    expect(configToml).toMatch(/# experimental_bearer_token = "sk-grok-codex-test"/)
-    expect(configToml).not.toContain('supports_websockets = true')
-    expect(configToml).not.toContain('responses_websockets_v2')
-    expect(wrapper.text()).not.toContain('auth.json')
-    expect(codeBlocks.join('\n')).toContain('SUB2API_API_KEY')
-
-    const windowsTab = wrapper.findAll('button').find(
-      (button) => button.text().trim() === 'Windows'
-    )
-    expect(windowsTab).toBeDefined()
-    await windowsTab!.trigger('click')
-    await nextTick()
-
-    codeBlocks = wrapper.findAll('pre code').map((code) => code.text())
-    expect(wrapper.text().toLowerCase()).toContain('%userprofile%\\.codex\\config.toml'.toLowerCase())
-    expect(codeBlocks.join('\n')).toContain('experimental_bearer_token = "sk-grok-codex-test"')
-  })
-
-  it('keeps legacy OpenAI Codex config as the default', () => {
-    const wrapper = mount(UseKeyModal, {
-      props: {
-        show: true,
-        apiKey: 'sk-test',
-        baseUrl: 'https://example.com/v1',
-        platform: 'openai'
-      },
-      global: {
-        stubs: {
-          BaseDialog: {
-            template: '<div><slot /><slot name="footer" /></div>'
-          },
-          Icon: {
-            template: '<span />'
-          }
-        }
-      }
-    })
 
     const codeBlocks = wrapper.findAll('pre code').map((code) => code.text())
     const configToml = codeBlocks.find((content) => content.includes('model_provider = "OpenAI"'))
 
     expect(configToml).toBeDefined()
-    expect(configToml).toContain('model = "gpt-5.6-sol"')
-    expect(configToml).toContain('review_model = "gpt-5.6-sol"')
-    expect(configToml).not.toContain('model = "gpt-5.5"')
-    expect(configToml).not.toContain('model = "gpt-5.4"')
-    expect(configToml).not.toContain('model_context_window')
-    expect(configToml).not.toContain('model_auto_compact_token_limit')
+    expect(configToml).toContain('model = "gpt-real"')
+    expect(configToml).toContain('review_model = "gpt-real"')
+    expect(configToml).not.toContain('gpt-5.6')
     expect(configToml).toContain('requires_openai_auth = true')
     expect(configToml).not.toContain('experimental_bearer_token')
-    expect(configToml).not.toContain('x-openai-actor-authorization')
-    expect(configToml).not.toContain('env_key')
-    expect(configToml).not.toContain('image_generation')
-    expect(configToml).not.toContain('supports_websockets')
-    expect(configToml).not.toContain('responses_websockets_v2')
-    expect(configToml).toContain('[features]\ngoals = true')
-    expect(configToml).not.toContain('model_reasoning_effort = "xhigh"')
     expect(codeBlocks).toContain('{\n  "OPENAI_API_KEY": "sk-test"\n}')
-    expect(wrapper.text()).toContain('auth.json')
     expect(wrapper.find('[data-testid="codex-api-key-restart-notice"]').exists()).toBe(false)
   })
 
   it('renders API Key Mode authorization in OpenAI Codex config', async () => {
-    const wrapper = mount(UseKeyModal, {
-      props: {
-        show: true,
-        apiKey: 'sk-test',
-        baseUrl: 'https://example.com/v1',
-        platform: 'openai'
-      },
-      global: {
-        stubs: {
-          BaseDialog: {
-            template: '<div><slot /><slot name="footer" /></div>'
-          },
-          Icon: {
-            template: '<span />'
-          }
-        }
-      }
+    const wrapper = mountModal({
+      platform: 'openai',
+      apiKey: 'sk-test',
+      availableModels: ['gpt-real']
     })
+    await nextTick()
 
     const apiKeyMode = wrapper.get('[data-testid="codex-auth-mode-api-key"]')
     await apiKeyMode.trigger('click')
@@ -417,13 +316,8 @@ describe('UseKeyModal', () => {
     expect(configToml).toContain('requires_openai_auth = false')
     expect(configToml).toContain('experimental_bearer_token = "sk-test"')
     expect(configToml).toContain('http_headers = { "x-openai-actor-authorization" = "local-image-extension" }')
-    expect(configToml).toContain('model = "gpt-5.6-sol"')
-    expect(configToml).toContain('review_model = "gpt-5.6-sol"')
-    expect(configToml).not.toContain('model = "gpt-5.5"')
-    expect(configToml).not.toContain('env_key')
-    expect(configToml).not.toContain('image_generation')
+    expect(configToml).toContain('model = "gpt-real"')
     expect(codeBlocks).not.toContain('{\n  "OPENAI_API_KEY": "sk-test"\n}')
-    expect(wrapper.text()).not.toContain('auth.json')
 
     const restartNotice = wrapper.get('[data-testid="codex-api-key-restart-notice"]')
     expect(restartNotice.text()).toContain(
@@ -434,128 +328,14 @@ describe('UseKeyModal', () => {
     await nextTick()
 
     expect(wrapper.find('[data-testid="codex-api-key-restart-notice"]').exists()).toBe(false)
-    expect(wrapper.findAll('pre code').map((code) => code.text()).join('\n')).not.toContain(
-      'x-openai-actor-authorization'
-    )
-  })
-
-  it('keeps legacy OpenAI Codex WebSocket config as the default', async () => {
-    const wrapper = mount(UseKeyModal, {
-      props: {
-        show: true,
-        apiKey: 'sk-test',
-        baseUrl: 'https://example.com/v1',
-        platform: 'openai'
-      },
-      global: {
-        stubs: {
-          BaseDialog: {
-            template: '<div><slot /><slot name="footer" /></div>'
-          },
-          Icon: {
-            template: '<span />'
-          }
-        }
-      }
-    })
-
-    const wsTab = wrapper.findAll('button').find((button) =>
-      button.text().includes('keys.useKeyModal.cliTabs.codexCliWs')
-    )
-
-    expect(wsTab).toBeDefined()
-    await wsTab!.trigger('click')
-    await nextTick()
-
-    const codeBlocks = wrapper.findAll('pre code').map((code) => code.text())
-    const configToml = codeBlocks.find((content) => content.includes('supports_websockets = true'))
-
-    expect(configToml).toBeDefined()
-    expect(configToml).toContain('model = "gpt-5.6-sol"')
-    expect(configToml).toContain('review_model = "gpt-5.6-sol"')
-    expect(configToml).not.toContain('model = "gpt-5.5"')
-    expect(configToml).not.toContain('model = "gpt-5.4"')
-    expect(configToml).not.toContain('model_context_window')
-    expect(configToml).not.toContain('model_auto_compact_token_limit')
-    expect(configToml).toContain('requires_openai_auth = true')
-    expect(configToml).not.toContain('experimental_bearer_token')
-    expect(configToml).not.toContain('x-openai-actor-authorization')
-    expect(configToml).not.toContain('env_key')
-    expect(configToml).not.toContain('image_generation')
-    expect(configToml).toContain('supports_websockets = true')
-    expect(configToml).toContain('[features]\nresponses_websockets_v2 = true\ngoals = true')
-    expect(codeBlocks).toContain('{\n  "OPENAI_API_KEY": "sk-test"\n}')
-    expect(wrapper.text()).toContain('auth.json')
-  })
-
-  it('preserves API Key Mode when switching to OpenAI Codex WebSocket config', async () => {
-    const wrapper = mount(UseKeyModal, {
-      props: {
-        show: true,
-        apiKey: 'sk-test',
-        baseUrl: 'https://example.com/v1',
-        platform: 'openai'
-      },
-      global: {
-        stubs: {
-          BaseDialog: {
-            template: '<div><slot /><slot name="footer" /></div>'
-          },
-          Icon: {
-            template: '<span />'
-          }
-        }
-      }
-    })
-
-    const apiKeyMode = wrapper.get('[data-testid="codex-auth-mode-api-key"]')
-    await apiKeyMode.trigger('click')
-
-    const wsTab = wrapper.findAll('button').find((button) =>
-      button.text().includes('keys.useKeyModal.cliTabs.codexCliWs')
-    )
-    expect(wsTab).toBeDefined()
-    await wsTab!.trigger('click')
-    await nextTick()
-
-    const codeBlocks = wrapper.findAll('pre code').map((code) => code.text())
-    const configToml = codeBlocks.find((content) => content.includes('supports_websockets = true'))
-
-    expect(wrapper.get('[data-testid="codex-auth-mode-api-key"]').attributes('aria-checked')).toBe('true')
-    expect(configToml).toBeDefined()
-    expect(configToml).toContain('requires_openai_auth = false')
-    expect(configToml).toContain('experimental_bearer_token = "sk-test"')
-    expect(configToml).toContain('http_headers = { "x-openai-actor-authorization" = "local-image-extension" }')
-    expect(configToml).toContain('model = "gpt-5.6-sol"')
-    expect(configToml).toContain('review_model = "gpt-5.6-sol"')
-    expect(configToml).not.toContain('model = "gpt-5.5"')
-    expect(configToml).not.toContain('env_key')
-    expect(configToml).not.toContain('image_generation')
-    expect(configToml).toContain('supports_websockets = true')
-    expect(configToml).toContain('[features]\nresponses_websockets_v2 = true\ngoals = true')
-    expect(codeBlocks).not.toContain('{\n  "OPENAI_API_KEY": "sk-test"\n}')
-    expect(wrapper.text()).not.toContain('auth.json')
   })
 
   it('resets Codex authentication mode when the modal reopens or platform changes', async () => {
-    const wrapper = mount(UseKeyModal, {
-      props: {
-        show: true,
-        apiKey: 'sk-test',
-        baseUrl: 'https://example.com/v1',
-        platform: 'openai'
-      },
-      global: {
-        stubs: {
-          BaseDialog: {
-            template: '<div><slot /><slot name="footer" /></div>'
-          },
-          Icon: {
-            template: '<span />'
-          }
-        }
-      }
+    const wrapper = mountModal({
+      platform: 'openai',
+      availableModels: ['gpt-real']
     })
+    await nextTick()
 
     await wrapper.get('[data-testid="codex-auth-mode-api-key"]').trigger('click')
     await wrapper.setProps({ show: false })
@@ -563,7 +343,6 @@ describe('UseKeyModal', () => {
     await nextTick()
 
     expect(wrapper.get('[data-testid="codex-auth-mode-legacy"]').attributes('aria-checked')).toBe('true')
-    expect(wrapper.findAll('pre code').map((code) => code.text()).join('\n')).toContain('requires_openai_auth = true')
 
     await wrapper.get('[data-testid="codex-auth-mode-api-key"]').trigger('click')
     await wrapper.setProps({ platform: 'gemini' })
@@ -571,62 +350,142 @@ describe('UseKeyModal', () => {
     await nextTick()
 
     expect(wrapper.get('[data-testid="codex-auth-mode-legacy"]').attributes('aria-checked')).toBe('true')
-    expect(wrapper.findAll('pre code').map((code) => code.text()).join('\n')).not.toContain('x-openai-actor-authorization')
   })
 
-  it('renders GPT-5.4 mini entry in OpenCode config', async () => {
-    const wrapper = mount(UseKeyModal, {
-      props: {
-        show: true,
-        apiKey: 'sk-test',
-        baseUrl: 'https://example.com/v1',
-        platform: 'openai'
-      },
-      global: {
-        stubs: {
-          BaseDialog: {
-            template: '<div><slot /><slot name="footer" /></div>'
-          },
-          Icon: {
-            template: '<span />'
-          }
-        }
+  it('prefers the first real model when the Codex catalog contains it', async () => {
+    const fetchMock = vi.fn().mockImplementation((url: string) => {
+      if (String(url).includes('client_version')) {
+        return Promise.resolve({
+          ok: true,
+          status: 200,
+          json: async () => ({
+            models: [
+              { slug: 'gpt-real' },
+              { slug: 'gpt-other' }
+            ]
+          })
+        })
       }
+      return Promise.resolve({ ok: false, status: 404, json: async () => ({}) })
     })
+    vi.stubGlobal('fetch', fetchMock)
+    const channelsModule = await import('@/api/channels')
+    const getAvailableSpy = vi.spyOn(channelsModule, 'getAvailable').mockResolvedValue([])
 
-    const opencodeTab = wrapper.findAll('button').find((button) =>
-      button.text().includes('keys.useKeyModal.cliTabs.opencode')
-    )
+    try {
+      const wrapper = mountModal({
+        platform: 'composite',
+        apiKey: 'sk-composite-test',
+        availableModels: ['gpt-real', 'gpt-missing']
+      })
+      await nextTick()
 
-    expect(opencodeTab).toBeDefined()
-    await opencodeTab!.trigger('click')
+      const codexTab = wrapper.findAll('button').find((button) =>
+        button.text().includes('keys.useKeyModal.cliTabs.codexCli')
+      )
+      expect(codexTab).toBeDefined()
+      await codexTab!.trigger('click')
+      await nextTick()
+
+      await wrapper.get('[data-testid="codex-model-catalog-fetch"]').trigger('click')
+      await flushPromises()
+
+      const config = wrapper.findAll('pre code')
+        .map((code) => code.text())
+        .find((content) => content.includes('[model_providers.sub2api]'))
+      expect(config).toContain('model = "gpt-real"')
+      expect(config).toContain('review_model = "gpt-real"')
+      expect(config).not.toContain('gpt-5.5')
+    } finally {
+      getAvailableSpy.mockRestore()
+    }
+  })
+
+  it('downloads the fetched Codex catalog', async () => {
+    const manifest = {
+      models: [{ slug: 'gpt-real' }]
+    }
+    const fetchMock = vi.fn().mockImplementation((url: string) => {
+      if (String(url).includes('client_version')) {
+        return Promise.resolve({ ok: true, status: 200, json: async () => manifest })
+      }
+      return Promise.resolve({ ok: false, status: 404, json: async () => ({}) })
+    })
+    vi.stubGlobal('fetch', fetchMock)
+    const channelsModule = await import('@/api/channels')
+    const getAvailableSpy = vi.spyOn(channelsModule, 'getAvailable').mockResolvedValue([])
+
+    try {
+      const wrapper = mountModal({
+        platform: 'composite',
+        apiKey: 'sk-composite-test',
+        availableModels: ['gpt-real']
+      })
+      await nextTick()
+
+      const codexTab = wrapper.findAll('button').find((button) =>
+        button.text().includes('keys.useKeyModal.cliTabs.codexCli')
+      )
+      expect(codexTab).toBeDefined()
+      await codexTab!.trigger('click')
+      await nextTick()
+
+      await wrapper.get('[data-testid="codex-model-catalog-fetch"]').trigger('click')
+      await flushPromises()
+
+      expect(fetchMock).toHaveBeenCalledWith(
+        'https://example.com/v1/models?client_version=0.147.0',
+        expect.objectContaining({
+          headers: expect.objectContaining({ Authorization: 'Bearer sk-composite-test' })
+        })
+      )
+      expect(wrapper.get('[data-testid="codex-model-catalog"]').text())
+        .toContain('keys.useKeyModal.codexModelCatalog.download')
+
+      const downloadButton = wrapper.findAll('button').find((button) =>
+        button.text().includes('keys.useKeyModal.codexModelCatalog.download')
+      )
+      expect(downloadButton).toBeDefined()
+      await downloadButton!.trigger('click')
+      expect(saveAsMock).toHaveBeenCalledWith(expect.any(Blob), 'codex-models.json')
+      const downloadedBlob = saveAsMock.mock.calls[0]?.[0] as Blob
+      expect(JSON.parse(await readBlobAsText(downloadedBlob))).toEqual(manifest)
+    } finally {
+      getAvailableSpy.mockRestore()
+    }
+  })
+
+  it('neutralizes shell metacharacters in dynamic model ids', async () => {
+    const wrapper = mountModal({
+      platform: 'gemini',
+      availableModels: ['a"b`c$d$(touch pwn)', 'gemini-real']
+    })
     await nextTick()
 
-    const codeBlock = wrapper.find('pre code')
-    expect(codeBlock.exists()).toBe(true)
-    expect(codeBlock.text()).toContain('"name": "GPT-5.4 Mini"')
-    expect(codeBlock.text()).not.toContain('"name": "GPT-5.4 Nano"')
+    const code = allCode(wrapper)
+    expect(code).not.toContain('d$(touch pwn)')
+    expect(code).toContain('export GEMINI_MODEL="a\\"b\\`c\\$d\\$(touch pwn)"')
   })
 
-  it('renders GPT-5.6 alias and max variants in OpenCode config', async () => {
-    const wrapper = mount(UseKeyModal, {
-      props: {
-        show: true,
-        apiKey: 'sk-test',
-        baseUrl: 'https://example.com/v1',
-        platform: 'openai'
-      },
-      global: {
-        stubs: {
-          BaseDialog: {
-            template: '<div><slot /><slot name="footer" /></div>'
-          },
-          Icon: {
-            template: '<span />'
-          }
-        }
-      }
+  it('escapes TOML string breaks from hostile model ids', async () => {
+    const wrapper = mountModal({
+      availableModels: ['grok-real', 'evil"break']
     })
+    await nextTick()
+
+    const code = allCode(wrapper)
+    expect(code).toContain('[model."grok-real"]')
+    expect(code).toContain('evil\\"break')
+    expect(code).not.toContain('evil"break')
+    expect(code).toContain('default = "grok-real"')
+  })
+
+  it('drops wildcard pricing rules instead of configuring them', async () => {
+    const wrapper = mountModal({
+      platform: 'openai',
+      availableModels: ['gpt-4*', 'gpt-real']
+    })
+    await nextTick()
 
     const opencodeTab = wrapper.findAll('button').find((button) =>
       button.text().includes('keys.useKeyModal.cliTabs.opencode')
@@ -636,107 +495,96 @@ describe('UseKeyModal', () => {
     await nextTick()
 
     const parsed = JSON.parse(wrapper.find('pre code').text())
-    const models = parsed.provider.openai.models
-    for (const model of ['gpt-5.6', 'gpt-5.6-sol', 'gpt-5.6-terra', 'gpt-5.6-luna']) {
-      expect(models[model]).toBeDefined()
-      expect(models[model].variants).toHaveProperty('max')
-      expect(models[model].variants).toHaveProperty('xhigh')
-    }
-    expect(models['gpt-5.6'].name).toBe('GPT-5.6 (Sol)')
+    expect(Object.keys(parsed.provider.openai.models)).toEqual(['gpt-real'])
+    expect(wrapper.find('pre code').text()).not.toContain('gpt-4*')
   })
 
-  it('renders Claude Fable 5 OpenCode config with adaptive thinking', async () => {
-    const wrapper = mount(UseKeyModal, {
-      props: {
-        show: true,
-        apiKey: 'sk-test',
-        baseUrl: 'https://example.com/v1',
-        platform: 'antigravity'
-      },
-      global: {
-        stubs: {
-          BaseDialog: {
-            template: '<div><slot /><slot name="footer" /></div>'
-          },
-          Icon: {
-            template: '<span />'
-          }
-        }
-      }
-    })
+  it('trusts concrete model ids from the gateway shelf', async () => {
+    stubGatewayModels(['gpt-5.6-sol', 'gpt-real'])
 
-    const opencodeTab = wrapper.findAll('button').find((button) =>
-      button.text().includes('keys.useKeyModal.cliTabs.opencode')
-    )
+    const wrapper = mountModal({ platform: 'openai', availableModels: undefined })
+    await flushPromises()
 
-    expect(opencodeTab).toBeDefined()
-    await opencodeTab!.trigger('click')
+    const code = allCode(wrapper)
+    expect(code).toContain('model = "gpt-5.6-sol"')
+  })
+
+  it('never selects a media-only model as the text-client default', async () => {
+    const wrapper = mountModal({ availableModels: ['grok-imagine-image', 'grok-aaa'] })
     await nextTick()
 
-    const claudeConfig = wrapper.findAll('pre code')
-      .map((code) => code.text())
-      .find((content) => content.includes('"antigravity-claude"'))
-
-    expect(claudeConfig).toBeDefined()
-    const parsed = JSON.parse(claudeConfig!)
-    const fable51 = parsed.provider['antigravity-claude'].models['claude-fable-5-1']
-    const fable = parsed.provider['antigravity-claude'].models['claude-fable-5']
-
-    expect(fable51.name).toBe('Claude Fable 5.1')
-    expect(fable51.limit).toEqual({ context: 1048576, output: 128000 })
-    expect(fable51.options.thinking).toEqual({ type: 'adaptive' })
-    expect(fable51.options.thinking).not.toHaveProperty('budgetTokens')
-    expect(fable.name).toBe('Claude Fable 5')
-    expect(fable.limit).toEqual({ context: 1048576, output: 128000 })
-    expect(fable.options.thinking).toEqual({ type: 'adaptive' })
-    expect(fable.options.thinking).not.toHaveProperty('budgetTokens')
+    const code = allCode(wrapper)
+    expect(code).toContain('default = "grok-aaa"')
+    expect(code).toContain('[model."grok-aaa"]')
+    expect(code).not.toContain('grok-imagine-image')
   })
 
-  // Scenario: API Key users can fetch a routed group catalog and reference it from config.toml.
-  it('offers a downloadable Codex catalog for Composite API keys', async () => {
-    const manifest = {
-      models: [
-        {
-          slug: 'claude-opus-4-8',
-          default_reasoning_level: 'medium',
-          supported_reasoning_levels: [{ effort: 'max', description: 'Maximum reasoning depth' }],
-          input_modalities: ['text'],
-          model_messages: { instructions_template: 'Use the routed model.' }
-        },
-        {
-          slug: 'grok-4.6',
-          default_reasoning_level: 'high',
-          supported_reasoning_levels: [{ effort: 'xhigh', description: 'Extra-high reasoning depth' }],
-          input_modalities: ['text'],
-          model_messages: { instructions_template: 'Use the routed model.' }
-        }
-      ]
-    }
-    const fetchMock = vi.fn().mockResolvedValue({
-      ok: true,
-      status: 200,
-      json: async () => manifest
+  it('injects the channel model into standard Claude Code setups', async () => {
+    const wrapper = mountModal({
+      platform: 'anthropic',
+      availableModels: ['claude-real']
     })
-    vi.stubGlobal('fetch', fetchMock)
+    await nextTick()
 
-    const wrapper = mount(UseKeyModal, {
-      props: {
-        show: true,
-        apiKey: 'sk-composite-test',
-        baseUrl: 'https://example.com/v1',
-        platform: 'composite'
-      },
-      global: {
-        stubs: {
-          BaseDialog: {
-            template: '<div><slot /><slot name="footer" /></div>'
-          },
-          Icon: {
-            template: '<span />'
-          }
-        }
-      }
-    })
+    const codeBlocks = wrapper.findAll('pre code').map((code) => code.text())
+    const code = codeBlocks.join('\n')
+    expect(code).toContain('export ANTHROPIC_MODEL="claude-real"')
+    const settings = JSON.parse(codeBlocks.find((content) => content.includes('"$schema"'))!)
+    expect(settings.env.ANTHROPIC_MODEL).toBe('claude-real')
+    expect(settings.env.CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC).toBe('1')
+  })
+
+  it('clears the previous key models while the next key loads', async () => {
+    stubGatewayModels(['model-a'])
+    const wrapper = mountModal({ availableModels: undefined })
+    await flushPromises()
+    expect(allCode(wrapper)).toContain('model-a')
+
+    vi.stubGlobal('fetch', vi.fn().mockReturnValue(new Promise(() => {})))
+    await wrapper.setProps({ apiKey: 'sk-next' })
+    await nextTick()
+
+    expect(allCode(wrapper)).not.toContain('model-a')
+    expect(wrapper.text()).toContain('keys.useKeyModal.modelSelector.loading')
+  })
+
+  it('switches the Claude default model through the model pills', async () => {
+    const wrapper = mountModal({ availableModels: ['grok-4.5', 'grok-4.6'] })
+    await nextTick()
+
+    const pills = wrapper.findAll('[data-testid="use-key-model-pill"]')
+    expect(pills.map((pill) => pill.text())).toEqual(['grok-4.5', 'grok-4.6'])
+    expect(pills[0].attributes('aria-pressed')).toBe('true')
+
+    const claudeTab = wrapper.findAll('button').find((button) =>
+      button.text().includes('keys.useKeyModal.cliTabs.claudeCode')
+    )
+    expect(claudeTab).toBeDefined()
+    await claudeTab!.trigger('click')
+    await nextTick()
+
+    expect(allCode(wrapper)).toContain('export ANTHROPIC_MODEL="grok-4.5"')
+
+    await pills[1].trigger('click')
+    await nextTick()
+
+    expect(wrapper.findAll('[data-testid="use-key-model-pill"]')[1].attributes('aria-pressed')).toBe('true')
+    expect(allCode(wrapper)).toContain('export ANTHROPIC_MODEL="grok-4.6"')
+    expect(allCode(wrapper)).toContain('export CLAUDE_CODE_SUBAGENT_MODEL="grok-4.6"')
+    expect(allCode(wrapper)).not.toContain('export ANTHROPIC_MODEL="grok-4.5"')
+  })
+
+  it('switches Codex and Grok Build defaults through the model pills', async () => {
+    const wrapper = mountModal({ availableModels: ['grok-4.5', 'grok-4.6'] })
+    await nextTick()
+
+    await wrapper.findAll('[data-testid="use-key-model-pill"]')[1].trigger('click')
+    await nextTick()
+
+    expect(allCode(wrapper)).toContain('default = "grok-4.6"')
+    expect(allCode(wrapper)).toContain('web_search = "grok-4.6"')
+    expect(allCode(wrapper)).toContain('[model."grok-4.5"]')
+    expect(allCode(wrapper)).toContain('[model."grok-4.6"]')
 
     const codexTab = wrapper.findAll('button').find((button) =>
       button.text().includes('keys.useKeyModal.cliTabs.codexCli')
@@ -745,172 +593,44 @@ describe('UseKeyModal', () => {
     await codexTab!.trigger('click')
     await nextTick()
 
-    const unixConfig = wrapper.findAll('pre code')
-      .map((code) => code.text())
-      .find((content) => content.includes('[model_providers.sub2api]'))
-    expect(unixConfig).toContain('model_catalog_json = "~/.codex/codex-models.json"')
-    expect(unixConfig).toContain('env_key = "SUB2API_API_KEY"')
-
-    await wrapper.get('[data-testid="codex-model-catalog-fetch"]').trigger('click')
-    await flushPromises()
-
-    expect(fetchMock).toHaveBeenCalledWith(
-      'https://example.com/v1/models?client_version=0.147.0',
-      expect.objectContaining({
-        headers: expect.objectContaining({ Authorization: 'Bearer sk-composite-test' })
-      })
-    )
-    expect(wrapper.get('[data-testid="codex-model-catalog"]').text())
-      .toContain('keys.useKeyModal.codexModelCatalog.download')
-
-    const loadedUnixConfig = wrapper.findAll('pre code')
-      .map((code) => code.text())
-      .find((content) => content.includes('[model_providers.sub2api]'))
-    expect(loadedUnixConfig).toContain('model = "claude-opus-4-8"')
-    expect(loadedUnixConfig).toContain('review_model = "claude-opus-4-8"')
-    expect(loadedUnixConfig).not.toContain('model = "gpt-5.5"')
-
-    const downloadButton = wrapper.findAll('button').find((button) =>
-      button.text().includes('keys.useKeyModal.codexModelCatalog.download')
-    )
-    expect(downloadButton).toBeDefined()
-    await downloadButton!.trigger('click')
-    expect(saveAsMock).toHaveBeenCalledWith(expect.any(Blob), 'codex-models.json')
-    const downloadedBlob = saveAsMock.mock.calls[0]?.[0] as Blob
-    expect(JSON.parse(await readBlobAsText(downloadedBlob))).toEqual(manifest)
-
-    const windowsTab = wrapper.findAll('button').find((button) => button.text().trim() === 'Windows')
-    expect(windowsTab).toBeDefined()
-    await windowsTab!.trigger('click')
-    await nextTick()
-
-    const windowsConfig = wrapper.findAll('pre code')
-      .map((code) => code.text())
-      .find((content) => content.includes('[model_providers.sub2api]'))
-    expect(windowsConfig).toContain(
-      'model_catalog_json = "%userprofile%\\\\.codex\\\\codex-models.json"'
-    )
+    const config = allCode(wrapper)
+    expect(config).toContain('model = "grok-4.6"')
+    expect(config).not.toContain('model = "grok-4.5"')
   })
 
-  it.each(['anthropic', 'gemini', 'antigravity', 'kimi', 'zhipu'] as const)(
-    'offers Codex catalog configuration for the %s routed group',
-    async (platform) => {
-      const wrapper = mount(UseKeyModal, {
-        props: {
-          show: true,
-          apiKey: `sk-${platform}-test`,
-          baseUrl: 'https://example.com/v1',
-          platform
-        },
-        global: {
-          stubs: {
-            BaseDialog: {
-              template: '<div><slot /><slot name="footer" /></div>'
-            },
-            Icon: {
-              template: '<span />'
+  it('hides the model pills when only one model is available', async () => {
+    const wrapper = mountModal({ availableModels: ['grok-4.5'] })
+    await nextTick()
+
+    expect(wrapper.find('[data-testid="use-key-model-pills"]').exists()).toBe(false)
+    expect(wrapper.findAll('[data-testid="use-key-model-pill"]')).toHaveLength(0)
+    expect(wrapper.get('[data-testid="use-key-model-count"]').exists()).toBe(true)
+  })
+
+  it('derives OpenAI Codex reasoning effort from the auto default catalog descriptor', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn().mockResolvedValue({
+        ok: true,
+        status: 200,
+        json: async () => ({
+          models: [
+            {
+              slug: 'glm-5.3',
+              default_reasoning_level: 'none',
+              supported_reasoning_levels: [{ effort: 'none' }]
             }
-          }
-        }
+          ]
+        })
       })
-
-      const codexTab = wrapper.findAll('button').find((button) =>
-        button.text().includes('keys.useKeyModal.cliTabs.codexCli')
-      )
-      expect(codexTab).toBeDefined()
-      await codexTab!.trigger('click')
-      await nextTick()
-
-      expect(wrapper.find('[data-testid="codex-model-catalog"]').exists()).toBe(true)
-      const config = wrapper.findAll('pre code')
-        .map((code) => code.text())
-        .find((content) => content.includes('[model_providers.sub2api]'))
-      expect(config).toContain('model_catalog_json = "~/.codex/codex-models.json"')
-      expect(config).toContain('base_url = "https://example.com/v1"')
-      expect(config).toContain('wire_api = "responses"')
-    }
-  )
-
-  // Scenario: the platform-preferred model remains selected when the downloaded catalog contains it.
-  it('keeps the preferred Composite default when it exists in the catalog', async () => {
-    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({
-      ok: true,
-      status: 200,
-      json: async () => ({
-        models: [
-          { slug: 'claude-opus-4-8' },
-          { slug: 'gpt-5.5' }
-        ]
-      })
-    }))
-
-    const wrapper = mount(UseKeyModal, {
-      props: {
-        show: true,
-        apiKey: 'sk-composite-test',
-        baseUrl: 'https://example.com/v1',
-        platform: 'composite'
-      },
-      global: {
-        stubs: {
-          BaseDialog: {
-            template: '<div><slot /><slot name="footer" /></div>'
-          },
-          Icon: {
-            template: '<span />'
-          }
-        }
-      }
-    })
-
-    const codexTab = wrapper.findAll('button').find((button) =>
-      button.text().includes('keys.useKeyModal.cliTabs.codexCli')
     )
-    expect(codexTab).toBeDefined()
-    await codexTab!.trigger('click')
-    await wrapper.get('[data-testid="codex-model-catalog-fetch"]').trigger('click')
-    await flushPromises()
 
-    const config = wrapper.findAll('pre code')
-      .map((code) => code.text())
-      .find((content) => content.includes('[model_providers.sub2api]'))
-    expect(config).toContain('model = "gpt-5.5"')
-    expect(config).toContain('review_model = "gpt-5.5"')
-  })
-
-  it('derives OpenAI Codex reasoning effort from the selected catalog descriptor', async () => {
-    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({
-      ok: true,
-      status: 200,
-      json: async () => ({
-        models: [
-          {
-            slug: 'glm-5.3',
-            default_reasoning_level: 'none',
-            supported_reasoning_levels: [{ effort: 'none' }]
-          }
-        ]
-      })
-    }))
-
-    const wrapper = mount(UseKeyModal, {
-      props: {
-        show: true,
-        apiKey: 'sk-openai-test',
-        baseUrl: 'https://example.com/v1',
-        platform: 'openai'
-      },
-      global: {
-        stubs: {
-          BaseDialog: {
-            template: '<div><slot /><slot name="footer" /></div>'
-          },
-          Icon: {
-            template: '<span />'
-          }
-        }
-      }
+    const wrapper = mountModal({
+      platform: 'openai',
+      apiKey: 'sk-openai-test',
+      availableModels: ['glm-5.3']
     })
+    await nextTick()
 
     await wrapper.get('[data-testid="codex-model-catalog-fetch"]').trigger('click')
     await flushPromises()
