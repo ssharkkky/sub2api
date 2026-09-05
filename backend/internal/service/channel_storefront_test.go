@@ -2,6 +2,7 @@ package service
 
 import (
 	"context"
+	"errors"
 	"testing"
 	"time"
 
@@ -76,9 +77,13 @@ func TestListCatalogStorefrontModelsWithCoverage_WithoutGroupsKeepsPlainCatalog(
 type storefrontAccountRepoStub struct {
 	AccountRepository
 	byGroup map[int64][]Account
+	errs    map[int64]error
 }
 
 func (f *storefrontAccountRepoStub) ListByGroup(_ context.Context, groupID int64) ([]Account, error) {
+	if err := f.errs[groupID]; err != nil {
+		return nil, err
+	}
 	return f.byGroup[groupID], nil
 }
 
@@ -107,6 +112,12 @@ func TestListCatalogStorefrontModelsWithCoverage_GroupScopedList(t *testing.T) {
 	require.NotNil(t, models[0].InputPrice)
 	require.NotNil(t, models[1].InputPrice)
 	require.NotNil(t, models[2].InputPrice)
+	// coverage：共享模型 have=2，独占模型 have=1
+	require.Equal(t, 1, *models[0].CoverageHave)
+	require.Equal(t, 1, *models[1].CoverageHave)
+	require.Equal(t, 2, *models[2].CoverageHave)
+	require.Equal(t, 2, *models[0].CoverageTotal)
+	require.Equal(t, 2, *models[2].CoverageSynced)
 }
 
 // 账号里有、目录里没有的模型（如内部模型 ID）也要进列表，保留原始写法、无价卡。
@@ -175,6 +186,59 @@ func TestListCatalogStorefrontModelsWithCoverage_Normalization(t *testing.T) {
 	require.Equal(t, "gemini-3.7-flash", models[1].ID)
 	require.NotNil(t, models[0].InputPrice)
 	require.NotNil(t, models[1].InputPrice)
+	// 大写 snapshot 条目经规范化后 coverage 仍计数（与并集口径一致）
+	require.Equal(t, 1, *models[0].CoverageHave)
+	require.Equal(t, 1, *models[1].CoverageHave)
+	require.Equal(t, 1, *models[0].CoverageTotal)
+}
+
+// 空串/纯空白/纯 models/ 前缀的 snapshot 条目不进入并集；
+// 大写条目命中目录后 coverage 仍按规范化口径计数（大小写不敏感）。
+func TestListCatalogStorefrontModelsWithCoverage_EmptySnapshotEntriesSkipped(t *testing.T) {
+	svc := newStorefrontService(t, map[int64][]Account{
+		2: {
+			{ID: 1, Platform: PlatformAntigravity, Extra: ApplyUpstreamModelSnapshot(nil, []string{"", "   ", "models/", "models/   ", "GEMINI-3.7-FLASH"}, time.Unix(1, 0).UTC())},
+		},
+	})
+
+	models := svc.ListCatalogStorefrontModelsWithCoverage(context.Background(), "antigravity", []int64{2})
+	require.Len(t, models, 1)
+	require.Equal(t, "gemini-3.7-flash", models[0].ID)
+	require.Equal(t, 1, *models[0].CoverageHave) // 大写 snapshot 条目规范化后仍计数
+}
+
+// 影子账号（ParentAccountID != nil）不参与并集，也不计入 total。
+func TestListCatalogStorefrontModelsWithCoverage_ShadowAccountsExcluded(t *testing.T) {
+	parentID := int64(1)
+	svc := newStorefrontService(t, map[int64][]Account{
+		2: {
+			{ID: 3, Platform: PlatformAntigravity, ParentAccountID: &parentID, Extra: ApplyUpstreamModelSnapshot(nil, []string{"gemini-3.6-flash"}, time.Unix(1, 0).UTC())},
+			{ID: 2, Platform: PlatformAntigravity},
+		},
+	})
+
+	models := svc.ListCatalogStorefrontModelsWithCoverage(context.Background(), "antigravity", []int64{2})
+	// 影子被排除 → 并集为空 → 回退全目录
+	require.Len(t, models, len(ListCatalogStorefrontModels("antigravity")))
+	require.Equal(t, 1, *models[0].CoverageTotal) // total 只算非影子账号
+	require.Equal(t, 0, *models[0].CoverageHave)
+}
+
+// 某个分组的 ListByGroup 报错不影响其他分组的范围判定。
+func TestListCatalogStorefrontModelsWithCoverage_ListByGroupErrorTolerated(t *testing.T) {
+	svc := NewChannelService(nil, nil, nil, nil)
+	svc.SetAccountRepository(&storefrontAccountRepoStub{
+		byGroup: map[int64][]Account{
+			3: {{ID: 2, Platform: PlatformAntigravity, Extra: ApplyUpstreamModelSnapshot(nil, []string{"gemini-3.6-flash"}, time.Unix(1, 0).UTC())}},
+		},
+		errs: map[int64]error{2: errors.New("boom")},
+	})
+
+	models := svc.ListCatalogStorefrontModelsWithCoverage(context.Background(), "antigravity", []int64{2, 3})
+	require.Len(t, models, 1)
+	require.Equal(t, "gemini-3.6-flash", models[0].ID)
+	require.Equal(t, 1, *models[0].CoverageTotal)
+	require.Equal(t, 1, *models[0].CoverageHave)
 }
 
 // 过滤后 coverage 语义不变：have 只算 snapshot 覆盖的账号，total 含无 snapshot 账号。

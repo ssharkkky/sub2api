@@ -159,7 +159,9 @@ func storefrontModelKey(model string) string {
 // storefrontModelUnion returns the union of all non-empty upstream model
 // snapshots across the given (already platform-filtered) accounts. Keys are
 // normalized model IDs; values keep the first-seen original spelling for
-// display when a model is not catalog-known.
+// display when a model is not catalog-known. First-seen order is group
+// order, then account order, then snapshot order (deterministic for
+// identical inputs).
 func storefrontModelUnion(accounts []Account) map[string]string {
 	union := make(map[string]string)
 	for i := range accounts {
@@ -210,13 +212,16 @@ func storefrontModelsFromUnion(union map[string]string, catalog []CatalogStorefr
 			continue
 		}
 		original := union[key]
-		out = append(out, CatalogStorefrontModel{
+		entry := CatalogStorefrontModel{
 			ID:          original,
 			DisplayName: original,
 			CanonicalID: original,
-			Platforms:   []string{strings.ToLower(strings.TrimSpace(platform))},
 			BillingMode: "token",
-		})
+		}
+		if normalized := strings.ToLower(strings.TrimSpace(platform)); normalized != "" {
+			entry.Platforms = []string{normalized}
+		}
+		out = append(out, entry)
 	}
 	return out
 }
@@ -248,29 +253,47 @@ func filterStorefrontCoverageAccounts(accounts []Account, platform string) []Acc
 
 // AnnotateCatalogStorefrontCoverage fills per-model account coverage from
 // snapshots. It never uses the intersection as the user-facing shelf.
+// storefrontCoverageAccount is one snapshot-bearing bound account with its
+// snapshot models pre-normalized so coverage counting matches the
+// group-scoped union's normalization (case-insensitive, models/-prefix
+// tolerant) without touching snapshotCoversRequestedModel's scheduling
+// semantics.
+type storefrontCoverageAccount struct {
+	account *Account
+	models  []string
+	byKey   map[string]struct{}
+}
+
 func AnnotateCatalogStorefrontCoverage(models []CatalogStorefrontModel, accounts []Account) []CatalogStorefrontModel {
 	total := len(accounts)
 	synced := 0
-	indexed := make([]struct {
-		account *Account
-		models  []string
-	}, 0, len(accounts))
+	indexed := make([]storefrontCoverageAccount, 0, len(accounts))
 	for i := range accounts {
 		snapshot := accounts[i].UpstreamModelSnapshot()
 		if snapshot == nil || len(snapshot.Models) == 0 {
 			continue
 		}
 		synced++
-		indexed = append(indexed, struct {
-			account *Account
-			models  []string
-		}{account: &accounts[i], models: snapshot.Models})
+		byKey := make(map[string]struct{}, len(snapshot.Models))
+		for _, model := range snapshot.Models {
+			if key := storefrontModelKey(model); key != "" {
+				byKey[key] = struct{}{}
+			}
+		}
+		indexed = append(indexed, storefrontCoverageAccount{account: &accounts[i], models: snapshot.Models, byKey: byKey})
 	}
 	for i := range models {
 		have := 0
+		key := storefrontModelKey(models[i].ID)
 		for _, item := range indexed {
 			if snapshotCoversRequestedModel(item.account, item.models, models[i].ID) {
 				have++
+				continue
+			}
+			if key != "" {
+				if _, ok := item.byKey[key]; ok {
+					have++
+				}
 			}
 		}
 		haveCopy, totalCopy, syncedCopy := have, total, synced
