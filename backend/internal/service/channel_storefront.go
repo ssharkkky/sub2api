@@ -104,12 +104,24 @@ func (s *ChannelService) SetAccountRepository(accountRepo AccountRepository) {
 	s.accountRepo = accountRepo
 }
 
-// ListCatalogStorefrontModelsWithCoverage returns catalog models and, when
-// group IDs are provided, how many bound accounts currently have each model.
+// ListCatalogStorefrontModelsWithCoverage returns the selectable model list
+// for a channel being configured.
+//
+// When group IDs are provided and at least one bound account has synced
+// upstream capability data, the selectable list is the union of those
+// accounts' upstream model snapshots (group-scoped shelf): catalog-known
+// models keep the catalog display name and price card, account-only models
+// (e.g. provider-prefixed IDs) are surfaced without a price card. Models
+// owned by other groups or channels on the same platform therefore do not
+// leak into the picker.
+//
+// When no bound account has synced data, the full platform catalog is kept
+// so a missing probe cannot leave the picker empty (same fallback semantics
+// as HasSyncedUpstreamModel). Per-model coverage is always annotated from
+// the bound accounts' snapshots.
 func (s *ChannelService) ListCatalogStorefrontModelsWithCoverage(ctx context.Context, platform string, groupIDs []int64) []CatalogStorefrontModel {
-	models := ListCatalogStorefrontModels(platform)
 	if s == nil || s.accountRepo == nil || len(groupIDs) == 0 {
-		return models
+		return ListCatalogStorefrontModels(platform)
 	}
 	accounts := make([]Account, 0)
 	seenGroups := make(map[int64]struct{}, len(groupIDs))
@@ -127,7 +139,86 @@ func (s *ChannelService) ListCatalogStorefrontModelsWithCoverage(ctx context.Con
 		}
 		accounts = append(accounts, groupAccounts...)
 	}
-	return AnnotateCatalogStorefrontCoverage(models, filterStorefrontCoverageAccounts(accounts, platform))
+	boundAccounts := filterStorefrontCoverageAccounts(accounts, platform)
+	catalog := ListCatalogStorefrontModels(platform)
+
+	if union := storefrontModelUnion(boundAccounts); len(union) > 0 {
+		return AnnotateCatalogStorefrontCoverage(storefrontModelsFromUnion(union, catalog, platform), boundAccounts)
+	}
+	return AnnotateCatalogStorefrontCoverage(catalog, boundAccounts)
+}
+
+// storefrontModelKey normalizes a model ID for union/matching: trimmed,
+// lowercased, and stripped of the Google-style "models/" prefix. It mirrors
+// modelcatalog normalization so account-snapshot models match catalog IDs.
+func storefrontModelKey(model string) string {
+	model = strings.ToLower(strings.TrimSpace(model))
+	return strings.TrimPrefix(model, "models/")
+}
+
+// storefrontModelUnion returns the union of all non-empty upstream model
+// snapshots across the given (already platform-filtered) accounts. Keys are
+// normalized model IDs; values keep the first-seen original spelling for
+// display when a model is not catalog-known.
+func storefrontModelUnion(accounts []Account) map[string]string {
+	union := make(map[string]string)
+	for i := range accounts {
+		snapshot := accounts[i].UpstreamModelSnapshot()
+		if snapshot == nil || len(snapshot.Models) == 0 {
+			continue
+		}
+		for _, model := range snapshot.Models {
+			key := storefrontModelKey(model)
+			if key == "" {
+				continue
+			}
+			if _, ok := union[key]; !ok {
+				union[key] = strings.TrimSpace(model)
+			}
+		}
+	}
+	return union
+}
+
+// storefrontModelsFromUnion maps the bound-account model union onto picker
+// candidates, sorted by normalized key. Union keys present in the platform
+// catalog (canonical or alias) reuse the catalog candidate (display name,
+// canonical ID, price card); everything else becomes a bare candidate whose
+// ID keeps the original spelling so operators can price it directly.
+func storefrontModelsFromUnion(union map[string]string, catalog []CatalogStorefrontModel, platform string) []CatalogStorefrontModel {
+	byKey := make(map[string]CatalogStorefrontModel, len(catalog))
+	for _, model := range catalog {
+		key := storefrontModelKey(model.ID)
+		if key == "" {
+			continue
+		}
+		if _, ok := byKey[key]; !ok {
+			byKey[key] = model
+		}
+	}
+
+	keys := make([]string, 0, len(union))
+	for key := range union {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+
+	out := make([]CatalogStorefrontModel, 0, len(keys))
+	for _, key := range keys {
+		if model, ok := byKey[key]; ok {
+			out = append(out, model)
+			continue
+		}
+		original := union[key]
+		out = append(out, CatalogStorefrontModel{
+			ID:          original,
+			DisplayName: original,
+			CanonicalID: original,
+			Platforms:   []string{strings.ToLower(strings.TrimSpace(platform))},
+			BillingMode: "token",
+		})
+	}
+	return out
 }
 
 func filterStorefrontCoverageAccounts(accounts []Account, platform string) []Account {
