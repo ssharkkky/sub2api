@@ -473,8 +473,7 @@ describe('UseKeyModal', () => {
 
   it('escapes TOML string breaks from hostile model ids', async () => {
     const wrapper = mountModal({
-      availableModels: ['grok-real', 'evil"break']
-    })
+      availableModels: ['grok-real', 'evil"break']    })
     await nextTick()
 
     const code = allCode(wrapper)
@@ -500,8 +499,7 @@ describe('UseKeyModal', () => {
 
     const parsed = JSON.parse(wrapper.find('pre code').text())
     expect(Object.keys(parsed.provider.openai.models)).toEqual(['gpt-real'])
-    expect(wrapper.find('pre code').text()).not.toContain('gpt-4*')
-  })
+    expect(wrapper.find('pre code').text()).not.toContain('gpt-4*')  })
 
   it('trusts concrete model ids from the gateway shelf', async () => {
     stubGatewayModels(['gpt-5.6-sol', 'gpt-real'])
