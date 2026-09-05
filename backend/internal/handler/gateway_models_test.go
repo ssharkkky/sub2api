@@ -418,7 +418,7 @@ func TestGatewayModels_OmitsMetadataWhenPricingUnavailable(t *testing.T) {
 	require.Equal(t, http.StatusOK, rec.Code)
 
 	var got struct {
-		Data     []struct {
+		Data []struct {
 			ID string `json:"id"`
 		} `json:"data"`
 		HasMetadata bool `json:"metadata"`
