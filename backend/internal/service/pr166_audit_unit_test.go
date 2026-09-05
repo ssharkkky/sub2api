@@ -31,9 +31,9 @@ func TestPR166AuditEasyPayEmergencySwitchStopsProviderQueries(t *testing.T) {
 	t.Cleanup(server.Close)
 	instance, err := client.PaymentProviderInstance.Create().SetProviderKey(payment.TypeEasyPay).
 		SetName("audit").SetConfig(encryptWebhookProviderConfig(t, map[string]string{
-			"pid": "pid-1", "pkey": "pkey-1", "apiBase": server.URL,
-			"notifyUrl": "https://example.com/notify", "returnUrl": "https://example.com/return",
-		})).SetSupportedTypes("alipay,wxpay").SetEnabled(true).Save(ctx)
+		"pid": "pid-1", "pkey": "pkey-1", "apiBase": server.URL,
+		"notifyUrl": "https://example.com/notify", "returnUrl": "https://example.com/return",
+	})).SetSupportedTypes("alipay,wxpay").SetEnabled(true).Save(ctx)
 	require.NoError(t, err)
 	user, err := client.User.Create().SetEmail("pr166@example.com").SetPasswordHash("hash").SetUsername("pr166").Save(ctx)
 	require.NoError(t, err)
