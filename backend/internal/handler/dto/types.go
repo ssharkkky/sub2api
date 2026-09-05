@@ -419,6 +419,14 @@ type AccountListItem struct {
 	QuotaDailyResetAt    *string `json:"quota_daily_reset_at,omitempty"`
 	QuotaWeeklyResetAt   *string `json:"quota_weekly_reset_at,omitempty"`
 
+	// Kiro 配额/运行态（lite 列表的冷却、停用、配额状态展示依赖这些字段）
+	KiroQuotaState     string     `json:"kiro_quota_state,omitempty"`
+	KiroQuotaReason    string     `json:"kiro_quota_reason,omitempty"`
+	KiroQuotaResetAt   *time.Time `json:"kiro_quota_reset_at,omitempty"`
+	KiroRuntimeState   string     `json:"kiro_runtime_state,omitempty"`
+	KiroRuntimeReason  string     `json:"kiro_runtime_reason,omitempty"`
+	KiroRuntimeResetAt *time.Time `json:"kiro_runtime_reset_at,omitempty"`
+
 	QuotaNotifyDailyEnabled    *bool    `json:"quota_notify_daily_enabled,omitempty"`
 	QuotaNotifyDailyThreshold  *float64 `json:"quota_notify_daily_threshold,omitempty"`
 	QuotaNotifyWeeklyEnabled   *bool    `json:"quota_notify_weekly_enabled,omitempty"`

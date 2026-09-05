@@ -451,6 +451,14 @@ func (s *PaymentService) ReconcilePendingWxpayOrders(ctx context.Context) (int, 
 		Where(
 			paymentorder.StatusEQ(OrderStatusPending),
 			paymentorder.ExpiresAtGT(now),
+			// EasyPay orders carry the visible payment_type alipay/wxpay, so the
+			// clauses below would select them. Their upstream query must stay
+			// behind the EasyPay emergency switch (ReconcilePendingEasyPayOrders),
+			// so exclude easypay provider orders from the native reconcile path.
+			paymentorder.Not(paymentorder.Or(
+				paymentorder.ProviderKeyEQ(payment.TypeEasyPay),
+				paymentorder.ProviderKeyHasPrefix(payment.TypeEasyPay+"_"),
+			)),
 			paymentorder.Or(
 				paymentorder.PaymentTypeEQ(payment.TypeWxpay),
 				paymentorder.PaymentTypeHasPrefix(payment.TypeWxpay+"_"),

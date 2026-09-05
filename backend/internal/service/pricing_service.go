@@ -557,30 +557,38 @@ func (s *PricingService) reloadCustomPricingLayers() error {
 	}
 	before := s.customPricingFilesFingerprint()
 
-	applied := false
+	// 权威价格基底：优先合并文档缓存的价表段，解码/解析失败时回退旧价表文件。
+	var base map[string]*LiteLLMModelPricing
 	if docBody, docErr := os.ReadFile(s.getModelDataCachePath()); docErr == nil && len(docBody) > 0 {
-		if doc, decErr := decodeModelData(docBody); decErr == nil {
-			if err := s.applyModelData(doc, "custom-reload", s.getModelDataCachePath(), nil); err != nil {
-				return fmt.Errorf("apply model data doc: %w", err)
+		if doc, decErr := decodeModelData(docBody); decErr == nil && doc.hasPrices {
+			if prices, parseErr := s.parsePricingData(doc.pricesBody); parseErr == nil {
+				base = prices
 			}
-			applied = true
 		}
 	}
-	if !applied {
+	if base == nil {
 		pricingFile := s.getPricingFilePath()
 		body, readErr := os.ReadFile(pricingFile)
 		if readErr != nil {
 			return fmt.Errorf("read file failed: %w", readErr)
 		}
-		data, _, err := s.buildPricingData(body)
-		if err != nil {
-			return fmt.Errorf("parse pricing data: %w", err)
+		parsed, parseErr := s.parsePricingData(body)
+		if parseErr != nil {
+			return fmt.Errorf("parse pricing data: %w", parseErr)
 		}
-		s.mu.Lock()
-		warnDroppedLongContextLadders(s.pricingData, data)
-		s.pricingData = data
-		s.mu.Unlock()
+		base = parsed
 	}
+
+	// 只重建价格层（基底 + fallback + override + 目录锁价叠加），不重放目录：
+	// 目录有自己的生效路径（远程下载/显式文件/catalog URL），自定义文件热重载
+	// 若换入缓存目录会绕过显式目录优先保护，丢失目录锁价则造成错误计费。
+	data := s.mergeFallbackPricingData(base)
+	data = s.mergeOverrideOnlyModels(data)
+	data = mergeCatalogPricingData(data)
+	s.mu.Lock()
+	warnDroppedLongContextLadders(s.pricingData, data)
+	s.pricingData = data
+	s.mu.Unlock()
 
 	after := s.customPricingFilesFingerprint()
 	if before != after {

@@ -498,6 +498,8 @@ func AccountListItemFromAccount(a *Account) *AccountListItem {
 		CustomBaseURL: a.CustomBaseURL, QuotaLimit: a.QuotaLimit, QuotaUsed: a.QuotaUsed,
 		QuotaDailyLimit: a.QuotaDailyLimit, QuotaDailyUsed: a.QuotaDailyUsed, QuotaWeeklyLimit: a.QuotaWeeklyLimit,
 		QuotaWeeklyUsed: a.QuotaWeeklyUsed, QuotaDailyResetMode: a.QuotaDailyResetMode,
+		KiroQuotaState: a.KiroQuotaState, KiroQuotaReason: a.KiroQuotaReason, KiroQuotaResetAt: a.KiroQuotaResetAt,
+		KiroRuntimeState: a.KiroRuntimeState, KiroRuntimeReason: a.KiroRuntimeReason, KiroRuntimeResetAt: a.KiroRuntimeResetAt,
 		QuotaDailyResetHour: a.QuotaDailyResetHour, QuotaWeeklyResetMode: a.QuotaWeeklyResetMode,
 		QuotaWeeklyResetDay: a.QuotaWeeklyResetDay, QuotaWeeklyResetHour: a.QuotaWeeklyResetHour,
 		QuotaResetTimezone: a.QuotaResetTimezone, QuotaDailyResetAt: a.QuotaDailyResetAt,
