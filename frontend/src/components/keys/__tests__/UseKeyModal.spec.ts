@@ -60,7 +60,7 @@ function mountModal(props: Record<string, unknown> = {}) {
   })
 }
 
-function stubGatewayModels(models: string[]) {
+function stubGatewayModels(models: string[], metadata?: Record<string, Record<string, number>>) {
   const fetchMock = vi.fn().mockImplementation((url: string) => {
     if (String(url).includes('client_version')) {
       return Promise.resolve({ ok: true, status: 200, json: async () => ({ models: [] }) })
@@ -68,7 +68,11 @@ function stubGatewayModels(models: string[]) {
     return Promise.resolve({
       ok: true,
       status: 200,
-      json: async () => ({ object: 'list', data: models.map((id) => ({ id })) })
+      json: async () => ({
+        object: 'list',
+        data: models.map((id) => ({ id })),
+        ...(metadata ? { metadata } : {})
+      })
     })
   })
   vi.stubGlobal('fetch', fetchMock)
@@ -640,5 +644,87 @@ describe('UseKeyModal', () => {
       .find((content) => content.includes('model_provider = "OpenAI"'))
     expect(configToml).toContain('model = "glm-5.3"')
     expect(configToml).not.toContain('model_reasoning_effort')
+  })
+
+  describe('media-only shelves and default selection', () => {
+    it('emits no Grok default when the shelf has only media models', async () => {
+      const wrapper = mountModal({ availableModels: ['grok-imagine-image'] })
+      await nextTick()
+
+      const code = allCode(wrapper)
+      // No `default` dangling without a matching [model.*] entry.
+      expect(code).toContain('No channel-effective text models')
+      expect(code).not.toContain('default = ""')
+      expect(code).not.toContain('default = "grok-imagine-image"')
+    })
+
+    it('offers only text-capable models as default pills', async () => {
+      const wrapper = mountModal({
+        availableModels: ['grok-4.5', 'grok-imagine-image', 'grok-build-0.1']
+      })
+      await nextTick()
+
+      const pills = wrapper.findAll('[data-testid="use-key-model-pill"]')
+      expect(pills.map((pill) => pill.text())).toEqual(['grok-4.5', 'grok-build-0.1'])
+    })
+
+    it('does not render pills when only one text model is selectable', async () => {
+      const wrapper = mountModal({ availableModels: ['grok-4.5', 'grok-imagine-image'] })
+      await nextTick()
+
+      expect(wrapper.find('[data-testid="use-key-model-pills"]').exists()).toBe(false)
+      // The single text model still becomes the default.
+      expect(allCode(wrapper)).toContain('default = "grok-4.5"')
+    })
+  })
+
+  describe('OpenCode trusted model limits', () => {
+    async function openOpencodeTab(wrapper: ReturnType<typeof mountModal>) {
+      const opencodeTab = wrapper.findAll('button').find((button) =>
+        button.text().includes('keys.useKeyModal.cliTabs.opencode')
+      )
+      expect(opencodeTab).toBeDefined()
+      await opencodeTab!.trigger('click')
+      await nextTick()
+      return JSON.parse(wrapper.find('pre code').text())
+    }
+
+    it('fills limit from trusted gateway metadata', async () => {
+      stubGatewayModels(
+        ['claude-sonnet-4-5', 'grok-4.5'],
+        { 'claude-sonnet-4-5': { context_window: 200000, max_output_tokens: 64000 } }
+      )
+      const wrapper = mountModal({ platform: 'anthropic', availableModels: undefined })
+      await flushPromises()
+
+      const parsed = await openOpencodeTab(wrapper)
+      // Trusted metadata becomes a concrete limit…
+      expect(parsed.provider.anthropic.models['claude-sonnet-4-5']).toEqual({
+        name: 'claude-sonnet-4-5',
+        limit: { context: 200000, output: 64000 }
+      })
+      // …while models without trusted metadata keep the minimal shape
+      // (no invented limits).
+      expect(parsed.provider.anthropic.models['grok-4.5']).toEqual({ name: 'grok-4.5' })
+    })
+
+    it('does not invent limits for gateway models without metadata', async () => {
+      stubGatewayModels(['some-custom-model'])
+      const wrapper = mountModal({ platform: 'openai', availableModels: undefined })
+      await flushPromises()
+
+      const parsed = await openOpencodeTab(wrapper)
+      expect(parsed.provider.openai.models['some-custom-model']).toEqual({
+        name: 'some-custom-model'
+      })
+    })
+
+    it('does not attach limits to parent-provided shelves', async () => {
+      const wrapper = mountModal({ platform: 'openai', availableModels: ['gpt-real'] })
+      await nextTick()
+
+      const parsed = await openOpencodeTab(wrapper)
+      expect(parsed.provider.openai.models['gpt-real']).toEqual({ name: 'gpt-real' })
+    })
   })
 })

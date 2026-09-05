@@ -166,13 +166,12 @@ func apiKeyAuthWithSubscription(apiKeyService *service.APIKeyService, subscripti
 		ctx := context.WithValue(c.Request.Context(), ctxkey.UserID, apiKey.User.ID)
 		c.Request = c.Request.WithContext(ctx)
 		billingInfoRequest := c.Request.URL.Path == "/v1/sub2api/billing"
-		isModelsRead := c.Request.Method == http.MethodGet && (c.Request.URL.Path == "/v1/models" || c.Request.URL.Path == "/models" || c.Request.URL.Path == "/backend-api/codex/models" || c.Request.URL.Path == "/antigravity/models" || c.Request.URL.Path == "/v1beta/models" || c.Request.URL.Path == "/antigravity/v1beta/models")
 		// Async image task polling only reads data that already belongs to the
 		// authenticated key and must remain available after the completed
 		// generation consumes the key's remaining balance.
-		// /v1/models (and variants) are metadata discovery endpoints and must not
-		// block on balance/quota so users and tools can inspect available models.
-		skipBilling := c.Request.URL.Path == "/v1/usage" || billingInfoRequest || isModelsRead || isAsyncImageTaskRead(c.Request.Method, c.Request.URL.Path)
+		// Model discovery endpoints are metadata reads and must not block on
+		// balance/quota so users and tools can inspect available models.
+		skipBilling := c.Request.URL.Path == "/v1/usage" || billingInfoRequest || isModelsDiscoveryRead(c) || isAsyncImageTaskRead(c.Request.Method, c.Request.URL.Path)
 
 		// ── 4. SimpleMode → early return ─────────────────────────────
 
@@ -341,6 +340,26 @@ func isAsyncImageTaskRead(method, path string) bool {
 		return false
 	}
 	return strings.HasPrefix(path, "/v1/images/tasks/") || strings.HasPrefix(path, "/images/tasks/")
+}
+
+// isModelsDiscoveryRead 报告请求是否为只读模型发现端点。
+//
+// 这类元数据端点与 /v1/usage 同级，必须跳过计费执行（余额/配额/订阅限额），
+// 让零余额 Key 仍能发现渠道模型。注意 /v1beta 与 /antigravity/v1beta 路由
+// 走的是 Google 风格中间件（api_key_auth_google.go），两套中间件都必须应用
+// 同一豁免，否则对应路径的零余额请求仍会被 403 拦截。
+func isModelsDiscoveryRead(c *gin.Context) bool {
+	if c.Request.Method != http.MethodGet {
+		return false
+	}
+	switch c.Request.URL.Path {
+	case "/v1/models", "/models", "/backend-api/codex/models",
+		"/antigravity/models", "/antigravity/v1/models",
+		"/v1beta/models", "/antigravity/v1beta/models":
+		return true
+	default:
+		return false
+	}
 }
 
 // GetAPIKeyFromContext 从上下文中获取API key

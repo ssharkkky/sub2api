@@ -46,16 +46,18 @@
             >
               {{ t('keys.useKeyModal.modelSelector.count', { count: effectiveModels.length }) }}
             </p>
-            <!-- Default-model pills: one-click target for single-model configs. -->
+            <!-- Default-model pills: one-click target for single-model configs.
+                 Text-capable models only — a media id would become a `default`
+                 that the generated config entries intentionally exclude. -->
             <div
-              v-if="effectiveModels.length > 1"
+              v-if="primaryModelCandidates.length > 1"
               data-testid="use-key-model-pills"
               class="mt-2 flex flex-wrap gap-1.5"
               role="group"
               :aria-label="t('keys.useKeyModal.modelSelector.defaultModel')"
             >
               <button
-                v-for="modelId in effectiveModels"
+                v-for="modelId in primaryModelCandidates"
                 :key="modelId"
                 type="button"
                 data-testid="use-key-model-pill"
@@ -391,6 +393,11 @@ let codexModelManifestRequestID = 0
 type KeyModelsState = 'idle' | 'loading' | 'ready' | 'error'
 const keyModelsState = ref<KeyModelsState>('idle')
 const gatewayKeyModels = ref<string[]>([])
+// Trusted per-model token limits from the gateway /v1/models `metadata`
+// section (repo-owned model data doc). Only the gateway-derived shelf carries
+// these; parent-provided and channel-fallback lists never do. Used to fill
+// OpenCode `limit` so unknown models don't fall back to context=0.
+const gatewayModelLimits = ref<Record<string, { contextWindow?: number; maxOutputTokens?: number }>>({})
 const channelAllowListModels = ref<string[]>([])
 let keyModelsController: AbortController | null = null
 let keyModelsRequestID = 0
@@ -416,6 +423,13 @@ const primaryModel = () => {
   return pickPrimaryModel(effectiveModels.value)
 }
 
+// Pill candidates: text-capable models only. Media ids stay visible in the
+// count/list (the channel may serve them on media endpoints) but are never
+// offered as a text `default`.
+const primaryModelCandidates = computed(() =>
+  effectiveModels.value.filter((id) => !isMediaModelId(id))
+)
+
 watch(effectiveModels, (models) => {
   if (!models.length) {
     selectedPrimaryModel.value = ''
@@ -436,6 +450,7 @@ function resetKeyModels() {
   keyModelsRequestID += 1
   keyModelsState.value = 'idle'
   gatewayKeyModels.value = []
+  gatewayModelLimits.value = {}
   channelAllowListModels.value = []
   selectedPrimaryModel.value = ''
 }
@@ -459,7 +474,14 @@ async function loadKeyModels() {
     if (requestID !== keyModelsRequestID) return
     // Server-derived: re-apply non-concrete filtering so backend
     // platform-default fallbacks never surface as real key models.
-    gatewayKeyModels.value = normalizeModelIds(models, { dropWildcards: true })
+    const limits: Record<string, { contextWindow?: number; maxOutputTokens?: number }> = {}
+    for (const info of models) {
+      if (info.contextWindow || info.maxOutputTokens) {
+        limits[info.id] = { contextWindow: info.contextWindow, maxOutputTokens: info.maxOutputTokens }
+      }
+    }
+    gatewayKeyModels.value = normalizeModelIds(models.map((m) => m.id), { dropWildcards: true })
+    gatewayModelLimits.value = limits
     channelAllowListModels.value = []
     keyModelsState.value = 'ready'
   } catch (gatewayError) {
@@ -472,6 +494,7 @@ async function loadKeyModels() {
       const channels = await getAvailable({ signal: controller.signal })
       if (requestID !== keyModelsRequestID) return
       gatewayKeyModels.value = []
+      gatewayModelLimits.value = {}
       channelAllowListModels.value = normalizeModelIds(
         resolveChannelModelsForGroup(channels, props.groupId ?? null, props.platform),
         { dropWildcards: true }
@@ -483,6 +506,7 @@ async function loadKeyModels() {
         : ''
       if (requestID !== keyModelsRequestID || channelErrorName === 'AbortError') return
       gatewayKeyModels.value = []
+      gatewayModelLimits.value = {}
       channelAllowListModels.value = []
       keyModelsState.value = 'error'
     }
@@ -502,6 +526,7 @@ watch(keyModelsContext, (context, previousContext) => {
   // Invalidate synchronously: while the new key's shelf loads, generated
   // configs must not keep exposing the previous key's models.
   gatewayKeyModels.value = []
+  gatewayModelLimits.value = {}
   channelAllowListModels.value = []
   selectedPrimaryModel.value = ''
   keyModelsState.value = propAvailableModels.value.length ? 'ready' : 'loading'
@@ -1274,6 +1299,16 @@ export XAI_API_KEY="${escapeShDq(apiKey)}"`
   // Credential order: api_key field → env_key → signed-in session → XAI_API_KEY global fallback.
   const modelsListUrl = `${baseUrl.replace(/\/+$/, '')}/models`
   const grokDefaultModel = escapeTomlBasicString(primaryModel())
+  // A media-only shelf has no text default: emit an explanatory comment
+  // instead of a `default` pointing at a model with no `[model.*]` entry.
+  const grokModelsSection = grokDefaultModel
+    ? `[models]
+default = "${grokDefaultModel}"
+web_search = "${grokDefaultModel}"               # client-side web_search tool model (must exist as [model.*])
+image_description = "${grokDefaultModel}"        # vision/describe-image helper model`
+    : `[models]
+# No channel-effective text models for this key — Grok has no usable default.
+# Add a text model to the channel allow-list and regenerate this config.`
   const tomlGrokBase = escapeTomlBasicString(baseUrl)
   const tomlModelsListUrl = escapeTomlBasicString(modelsListUrl)
   const grokModelEntries = buildGrokModelEntries(effectiveModels.value)
@@ -1303,10 +1338,7 @@ preferred_method = "api_key"
 
 ${grokModelEntries}
 
-[models]
-default = "${grokDefaultModel}"
-web_search = "${grokDefaultModel}"               # client-side web_search tool model (must exist as [model.*])
-image_description = "${grokDefaultModel}"        # vision/describe-image helper model
+${grokModelsSection}
 # Optional environment-wide sampling defaults (per-model values win):
 # temperature = 0.7
 # top_p = 0.95
@@ -1511,11 +1543,26 @@ function generateOpenCodeConfig(platform: string, baseUrl: string, apiKey: strin
 
 /**
  * Minimal OpenCode model entries derived from real channel-effective ids.
- * Limits/variants are intentionally omitted: inventing them would mislead
- * clients into requesting capabilities the channel never granted.
+ * `limit` is filled only from trusted gateway metadata (the repo-owned model
+ * data doc): OpenCode assigns context=0 to models absent from its built-in
+ * catalog, which disables auto-compaction and lets long sessions accumulate
+ * until upstream rejects. Variants stay omitted — inventing capabilities
+ * would mislead clients into requesting what the channel never granted.
  */
-function buildOpenCodeModels(): Record<string, { name: string }> {
-  return Object.fromEntries(effectiveModels.value.map((id) => [id, { name: id }]))
+function buildOpenCodeModels(): Record<string, { name: string; limit?: { context: number; output?: number } }> {
+  return Object.fromEntries(
+    effectiveModels.value.map((id) => {
+      const entry: { name: string; limit?: { context: number; output?: number } } = { name: id }
+      const trusted = gatewayModelLimits.value[id]
+      if (trusted?.contextWindow) {
+        entry.limit = {
+          context: trusted.contextWindow,
+          ...(trusted.maxOutputTokens ? { output: trusted.maxOutputTokens } : {})
+        }
+      }
+      return [id, entry]
+    })
+  )
 }
   if (platform === 'gemini') {
     provider[platform].npm = '@ai-sdk/google'

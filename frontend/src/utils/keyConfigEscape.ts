@@ -60,10 +60,14 @@ export function normalizeModelIds(values: unknown, options?: NormalizeModelIdsOp
   return ids
 }
 
-/** First text-capable model; falls back to the first entry; '' when empty. */
+/**
+ * First text-capable model; '' when the shelf has no text model. A
+ * media-only shelf must yield no default: single-model text configs would
+ * reference a media id that the generated config entries intentionally
+ * exclude (e.g. Grok `[model.*]` entries filter media ids out).
+ */
 export function pickPrimaryModel(models: readonly string[]): string {
-  if (!models.length) return ''
-  return models.find((id) => !isMediaModelId(id)) ?? models[0] ?? ''
+  return models.find((id) => !isMediaModelId(id)) ?? ''
 }
 
 /** Escape a value embedded in a double-quoted Bourne-shell string. */
@@ -75,12 +79,27 @@ export function escapeShDq(value: string): string {
     .replace(/`/g, '\\`')
 }
 
-/** Escape a value embedded in a double-quoted PowerShell string. */
+/**
+ * Escape a value embedded in a double-quoted PowerShell string.
+ *
+ * Besides the ASCII delimiter, PowerShell's tokenizer also treats the
+ * Unicode double quotes U+201C / U+201D and the low-9 quote U+201E as
+ * double-quoted-string boundaries (verified by scanning every Unicode
+ * punctuation/symbol code point against the PowerShell parser — only
+ * U+0022, U+201C, U+201D and U+201E act as boundaries). An unescaped value
+ * containing one of them can terminate the string early and inject
+ * commands, e.g. a model id `audit\u201d; Write-Output PWNED; #`. A backtick
+ * prefix neutralizes all of them: U+201C/U+201D normalize to ASCII quotes
+ * and U+201E is preserved as a literal.
+ */
 export function escapePsDq(value: string): string {
   return value
     .replace(/`/g, '``')
     .replace(/"/g, '`"')
     .replace(/\$/g, '`$')
+    .replace(/\u201c/g, '`\u201c')
+    .replace(/\u201d/g, '`\u201d')
+    .replace(/\u201e/g, '`\u201e')
 }
 
 /** Escape a value embedded in an unquoted Windows CMD `set` assignment. */
