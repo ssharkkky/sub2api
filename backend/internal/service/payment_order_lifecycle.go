@@ -455,10 +455,15 @@ func (s *PaymentService) ReconcilePendingWxpayOrders(ctx context.Context) (int, 
 			// clauses below would select them. Their upstream query must stay
 			// behind the EasyPay emergency switch (ReconcilePendingEasyPayOrders),
 			// so exclude easypay provider orders from the native reconcile path.
-			paymentorder.Not(paymentorder.Or(
-				paymentorder.ProviderKeyEQ(payment.TypeEasyPay),
-				paymentorder.ProviderKeyHasPrefix(payment.TypeEasyPay+"_"),
-			)),
+			// provider_key is nillable: NOT() over NULL evaluates to NULL and
+			// would silently drop legacy rows, so allow NULL explicitly.
+			paymentorder.Or(
+				paymentorder.ProviderKeyIsNil(),
+				paymentorder.Not(paymentorder.Or(
+					paymentorder.ProviderKeyEQ(payment.TypeEasyPay),
+					paymentorder.ProviderKeyHasPrefix(payment.TypeEasyPay+"_"),
+				)),
+			),
 			paymentorder.Or(
 				paymentorder.PaymentTypeEQ(payment.TypeWxpay),
 				paymentorder.PaymentTypeHasPrefix(payment.TypeWxpay+"_"),
