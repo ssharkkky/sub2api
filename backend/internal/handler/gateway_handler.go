@@ -81,6 +81,9 @@ type GatewayHandler struct {
 	maxAccountSwitchesGemini  int
 	cfg                       *config.Config
 	settingService            *service.SettingService
+	// pricingService 提供可信模型元数据（token 上限）：/v1/models 用它给客户端
+	// 配置生成（如 OpenCode limit）补齐上下文窗口。nil 时跳过 metadata 注入。
+	pricingService *service.PricingService
 }
 
 // NewGatewayHandler creates a new GatewayHandler
@@ -1127,20 +1130,20 @@ func (h *GatewayHandler) Models(c *gin.Context) {
 	if platform == service.PlatformComposite {
 		availableModels := h.compositeAvailableModels(c.Request.Context(), groupID)
 		if _, restricted := h.channelStorefrontModels(c.Request.Context(), groupID, ""); restricted {
-			writePlatformModelsList(c, service.PlatformComposite, availableModels)
+			writePlatformModelsList(c, service.PlatformComposite, availableModels, h.resolveModelLimits(availableModels))
 			return
 		}
 		if len(availableModels) == 0 {
 			availableModels = service.PlatformDefaultModelIDs(service.PlatformComposite)
 		}
-		writePlatformModelsList(c, service.PlatformComposite, availableModels)
+		writePlatformModelsList(c, service.PlatformComposite, availableModels, h.resolveModelLimits(availableModels))
 		return
 	}
 
 	// A bound channel with RestrictModels owns the user-facing shelf: even an
 	// empty list must not fall through to account mappings or platform defaults.
 	if storefront, ok := h.channelStorefrontModels(c.Request.Context(), groupID, platform); ok {
-		writePlatformModelsList(c, platform, storefront)
+		writePlatformModelsList(c, platform, storefront, h.resolveModelLimits(storefront))
 		return
 	}
 
@@ -1148,21 +1151,70 @@ func (h *GatewayHandler) Models(c *gin.Context) {
 	if len(availableModels) == 0 {
 		availableModels = service.PlatformDefaultModelIDs(platform)
 	}
-	writePlatformModelsList(c, platform, availableModels)
+	writePlatformModelsList(c, platform, availableModels, h.resolveModelLimits(availableModels))
 }
 
-func writePlatformModelsList(c *gin.Context, platform string, modelIDs []string) {
+// modelTokenLimits carries trusted per-model token metadata in the
+// /v1/models response (`metadata` top-level field). Client-config generators
+// (e.g. OpenCode `limit`) use it to fill real context windows instead of
+// falling back to context=0 — which disables OpenCode auto-compaction for
+// models absent from its built-in catalog.
+type modelTokenLimits struct {
+	ContextWindow   int `json:"context_window,omitempty"`
+	MaxOutputTokens int `json:"max_output_tokens,omitempty"`
+}
+
+// resolveModelLimits maps channel-effective model IDs to trusted token
+// limits from the repo-owned model data document. Only deterministic
+// identifications count (exact id / known variant / dated-suffix strip): a
+// family-level guess would inherit another model's window. IDs without
+// metadata are simply absent from the map.
+func (h *GatewayHandler) resolveModelLimits(modelIDs []string) map[string]modelTokenLimits {
+	if h.pricingService == nil || len(modelIDs) == 0 {
+		return nil
+	}
+	limits := make(map[string]modelTokenLimits, len(modelIDs))
+	for _, modelID := range modelIDs {
+		if strings.TrimSpace(modelID) == "" {
+			continue
+		}
+		pricing := h.pricingService.GetIdentifiedModelPricing(modelID)
+		if pricing == nil || pricing.MaxInputTokens <= 0 {
+			continue
+		}
+		limits[modelID] = modelTokenLimits{
+			ContextWindow:   pricing.MaxInputTokens,
+			MaxOutputTokens: pricing.MaxOutputTokens,
+		}
+	}
+	if len(limits) == 0 {
+		return nil
+	}
+	return limits
+}
+
+// withModelMetadata attaches trusted per-model token metadata to a
+// model-list response body. Additive field: existing clients ignore unknown
+// response fields.
+func withModelMetadata(body gin.H, limits map[string]modelTokenLimits) gin.H {
+	if len(limits) > 0 {
+		body["metadata"] = limits
+	}
+	return body
+}
+
+func writePlatformModelsList(c *gin.Context, platform string, modelIDs []string, limits map[string]modelTokenLimits) {
 	switch platform {
 	case service.PlatformOpenAI:
-		writeOpenAIModelsList(c, modelIDs)
+		writeOpenAIModelsList(c, modelIDs, limits)
 	case service.PlatformGemini:
-		writeGeminiModelsList(c, modelIDs)
+		writeGeminiModelsList(c, modelIDs, limits)
 	default:
-		writeModelsList(c, platform, modelIDs)
+		writeModelsList(c, platform, modelIDs, limits)
 	}
 }
 
-func writeGeminiModelsList(c *gin.Context, modelIDs []string) {
+func writeGeminiModelsList(c *gin.Context, modelIDs []string, limits map[string]modelTokenLimits) {
 	defaultsByID := make(map[string]geminicli.Model, len(geminicli.DefaultModels))
 	for _, model := range geminicli.DefaultModels {
 		defaultsByID[model.ID] = model
@@ -1175,10 +1227,10 @@ func writeGeminiModelsList(c *gin.Context, modelIDs []string) {
 		}
 		models = append(models, geminicli.Model{ID: modelID, Type: "model", DisplayName: modelID})
 	}
-	c.JSON(http.StatusOK, gin.H{
+	c.JSON(http.StatusOK, withModelMetadata(gin.H{
 		"object": "list",
 		"data":   models,
-	})
+	}, limits))
 }
 
 // CodexModels returns the effective group model list using the manifest shape
@@ -1342,9 +1394,9 @@ func (h *GatewayHandler) compositeAvailableModels(ctx context.Context, groupID *
 	return models
 }
 
-func writeModelsList(c *gin.Context, platform string, modelIDs []string) {
+func writeModelsList(c *gin.Context, platform string, modelIDs []string, limits map[string]modelTokenLimits) {
 	if platform == service.PlatformGrok {
-		writeGrokModelsList(c, modelIDs)
+		writeGrokModelsList(c, modelIDs, limits)
 		return
 	}
 	models := make([]claude.Model, 0, len(modelIDs))
@@ -1356,10 +1408,10 @@ func writeModelsList(c *gin.Context, platform string, modelIDs []string) {
 			CreatedAt:   "2024-01-01T00:00:00Z",
 		})
 	}
-	c.JSON(http.StatusOK, gin.H{
+	c.JSON(http.StatusOK, withModelMetadata(gin.H{
 		"object": "list",
 		"data":   models,
-	})
+	}, limits))
 }
 
 type grokReasoningEffortOption struct {
@@ -1375,7 +1427,7 @@ type grokModelListItem struct {
 	ReasoningEfforts        []grokReasoningEffortOption `json:"reasoningEfforts,omitempty"`
 }
 
-func writeGrokModelsList(c *gin.Context, modelIDs []string) {
+func writeGrokModelsList(c *gin.Context, modelIDs []string, limits map[string]modelTokenLimits) {
 	defaults := xai.DefaultModels()
 	defaultsByID := make(map[string]xai.Model, len(defaults))
 	for _, model := range defaults {
@@ -1410,10 +1462,10 @@ func writeGrokModelsList(c *gin.Context, modelIDs []string) {
 		models = append(models, item)
 	}
 
-	c.JSON(http.StatusOK, gin.H{
+	c.JSON(http.StatusOK, withModelMetadata(gin.H{
 		"object": "list",
 		"data":   models,
-	})
+	}, limits))
 }
 
 func grokModelSupportsConfigurableReasoning(modelID string) bool {
@@ -1425,7 +1477,7 @@ func grokModelSupportsConfigurableReasoning(modelID string) bool {
 	}
 }
 
-func writeOpenAIModelsList(c *gin.Context, modelIDs []string) {
+func writeOpenAIModelsList(c *gin.Context, modelIDs []string, limits map[string]modelTokenLimits) {
 	defaultsByID := make(map[string]openai.Model, len(openai.DefaultModels))
 	for _, model := range openai.DefaultModels {
 		defaultsByID[model.ID] = model
@@ -1446,10 +1498,10 @@ func writeOpenAIModelsList(c *gin.Context, modelIDs []string) {
 			DisplayName: modelID,
 		})
 	}
-	c.JSON(http.StatusOK, gin.H{
+	c.JSON(http.StatusOK, withModelMetadata(gin.H{
 		"object": "list",
 		"data":   models,
-	})
+	}, limits))
 }
 
 func customModelsListSource(platform string, availableModels, fallbackModels []string) []string {

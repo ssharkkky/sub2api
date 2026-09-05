@@ -119,6 +119,50 @@ func TestParsePricingData_ParsesPriorityAndServiceTierFields(t *testing.T) {
 	require.True(t, pricing.SupportsServiceTier)
 }
 
+func TestParsePricingData_ParsesTokenLimitFields(t *testing.T) {
+	svc := &PricingService{}
+	body := []byte(`{
+		"gpt-5": {
+			"input_cost_per_token": 0.00000125,
+			"output_cost_per_token": 0.00001,
+			"max_input_tokens": 272000,
+			"max_output_tokens": 128000,
+			"max_tokens": 128000
+		},
+		"claude-3-7-sonnet": {
+			"input_cost_per_token": 0.000003,
+			"output_cost_per_token": 0.000015,
+			"max_input_tokens": 200000,
+			"max_output_tokens": 64000
+		},
+		"no-limits-model": {
+			"input_cost_per_token": 0.000001,
+			"output_cost_per_token": 0.000005,
+			"max_input_tokens": 0,
+			"max_output_tokens": -1
+		}
+	}`)
+
+	data, err := svc.parsePricingData(body)
+	require.NoError(t, err)
+
+	gpt5 := data["gpt-5"]
+	require.NotNil(t, gpt5)
+	require.Equal(t, 272000, gpt5.MaxInputTokens)
+	require.Equal(t, 128000, gpt5.MaxOutputTokens)
+
+	successor := data["claude-3-7-sonnet"]
+	require.NotNil(t, successor)
+	require.Equal(t, 200000, successor.MaxInputTokens)
+	require.Equal(t, 64000, successor.MaxOutputTokens)
+
+	// 非正数不写入（omitempty 会将其视为"未知"）。
+	noLimits := data["no-limits-model"]
+	require.NotNil(t, noLimits)
+	require.Zero(t, noLimits.MaxInputTokens)
+	require.Zero(t, noLimits.MaxOutputTokens)
+}
+
 func TestBillingService_GPT56CacheWritePricingUsesOfficialMultiplier(t *testing.T) {
 	tests := []struct {
 		model             string

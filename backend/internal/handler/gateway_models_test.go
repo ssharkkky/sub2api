@@ -7,6 +7,7 @@ import (
 	"net/http/httptest"
 	"testing"
 
+	"github.com/Wei-Shaw/sub2api/internal/config"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/claude"
 	middleware2 "github.com/Wei-Shaw/sub2api/internal/server/middleware"
 	"github.com/Wei-Shaw/sub2api/internal/service"
@@ -336,6 +337,95 @@ func codexReasoningEffortsForTest(levels []codexReasoningLevelForTest) []string 
 		efforts = append(efforts, level.Effort)
 	}
 	return efforts
+}
+
+func TestGatewayModels_IncludesTrustedModelMetadata(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	groupID := int64(50)
+	h := newGatewayModelsHandlerForTest(
+		&gatewayModelsAccountRepoStub{
+			byGroup: map[int64][]service.Account{
+				groupID: {
+					{ID: 1, Platform: service.PlatformOpenAI},
+				},
+			},
+		},
+	)
+	h.pricingService = service.NewPricingService(&config.Config{}, nil)
+	h.pricingService.LoadCatalogForTest(map[string]*service.LiteLLMModelPricing{
+		"gpt-5.4": {MaxInputTokens: 272000, MaxOutputTokens: 128000},
+	})
+
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	c.Request = httptest.NewRequest(http.MethodGet, "/v1/models", nil)
+	c.Set(string(middleware2.ContextKeyAPIKey), &service.APIKey{
+		Group: &service.Group{ID: groupID, Platform: service.PlatformOpenAI},
+	})
+
+	h.Models(c)
+
+	require.Equal(t, http.StatusOK, rec.Code)
+
+	var got struct {
+		gatewayModelsResponseForTest
+		Metadata map[string]struct {
+			ContextWindow   int `json:"context_window"`
+			MaxOutputTokens int `json:"max_output_tokens"`
+		} `json:"metadata"`
+	}
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &got))
+	require.Equal(t, "list", got.Object)
+	require.NotEmpty(t, got.Data)
+
+	// 已知模型：metadata 携带可信限额。
+	require.Contains(t, modelIDsForTest(got.Data), "gpt-5.4")
+	require.Contains(t, got.Metadata, "gpt-5.4")
+	require.Equal(t, 272000, got.Metadata["gpt-5.4"].ContextWindow)
+	require.Equal(t, 128000, got.Metadata["gpt-5.4"].MaxOutputTokens)
+
+	// 未知模型：不得出现在 metadata 中（不虚构限额）。
+	for id := range got.Metadata {
+		require.NotEqual(t, "some-custom-model", id)
+	}
+}
+
+func TestGatewayModels_OmitsMetadataWhenPricingUnavailable(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	groupID := int64(51)
+	h := newGatewayModelsHandlerForTest(
+		&gatewayModelsAccountRepoStub{
+			byGroup: map[int64][]service.Account{
+				groupID: {
+					{ID: 1, Platform: service.PlatformOpenAI},
+				},
+			},
+		},
+	)
+	// pricingService 未注入：metadata 缺省，模型列表本身不受影响。
+
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	c.Request = httptest.NewRequest(http.MethodGet, "/v1/models", nil)
+	c.Set(string(middleware2.ContextKeyAPIKey), &service.APIKey{
+		Group: &service.Group{ID: groupID, Platform: service.PlatformOpenAI},
+	})
+
+	h.Models(c)
+
+	require.Equal(t, http.StatusOK, rec.Code)
+
+	var got struct {
+		Data []struct {
+			ID string `json:"id"`
+		} `json:"data"`
+		HasMetadata bool `json:"metadata"`
+	}
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &got))
+	require.NotEmpty(t, got.Data)
+	require.False(t, got.HasMetadata)
 }
 
 func TestGatewayModels_GeminiGroupFallsBackToGeminiModels(t *testing.T) {

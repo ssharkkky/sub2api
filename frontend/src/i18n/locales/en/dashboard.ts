@@ -214,6 +214,13 @@ export default {
         modelsCount: '{count} models ready to download',
         errorDescription: 'The catalog could not be fetched with this API key.',
       },
+      modelSelector: {
+        loading: 'Loading models…',
+        count: '{count} channel models auto-loaded',
+        defaultModel: 'Default model',
+        empty:
+          'No channel-effective models found for this key, so configs cannot reference a real model yet.',
+      },
       opencode: {
         title: 'OpenCode Example',
         subtitle: 'opencode.json',

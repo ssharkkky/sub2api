@@ -5,6 +5,7 @@
 
 import { apiClient } from './client'
 import type { BillingMode } from '@/constants/channel'
+import { normalizeModelIds } from '@/utils/keyConfigEscape'
 
 export interface UserAvailableGroup {
   id: number
@@ -79,5 +80,40 @@ export async function getAvailable(options?: { signal?: AbortSignal }): Promise<
 }
 
 export const userChannelsAPI = { getAvailable }
+
+/**
+ * Resolve the channel-level model shelf for a group.
+ *
+ * A key belongs to a group, but the effective allow-list lives on the
+ * channel (`supported_models` per platform section). Sections that do not
+ * list the group are ignored; when `platform` is given only matching
+ * sections apply (composite groups accept every section bound to them).
+ */
+export function resolveChannelModelsForGroup(
+  channels: UserAvailableChannel[] | null | undefined,
+  groupId: number | null | undefined,
+  platform?: string | null
+): string[] {
+  if (!Array.isArray(channels) || groupId === null || groupId === undefined) return []
+  const wanted = (platform || '').trim().toLowerCase()
+  const ids: string[] = []
+  for (const channel of channels) {
+    if (!channel || !Array.isArray(channel.platforms)) continue
+    for (const section of channel.platforms) {
+      if (!section || !Array.isArray(section.groups)) continue
+      const bound = section.groups.some((group) => group && group.id === groupId)
+      if (!bound) continue
+      const sectionPlatform = (section.platform || '').trim().toLowerCase()
+      if (wanted && wanted !== 'composite' && sectionPlatform && sectionPlatform !== wanted) continue
+      if (!Array.isArray(section.supported_models)) continue
+      // Sanitize control chars and drop wildcard pricing rules (`foo-*`)
+      // so only concrete model ids reach generated configs.
+      for (const id of normalizeModelIds(section.supported_models.map((model) => model?.name))) {
+        if (!ids.includes(id)) ids.push(id)
+      }
+    }
+  }
+  return ids
+}
 
 export default userChannelsAPI

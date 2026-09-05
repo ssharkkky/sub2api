@@ -129,6 +129,12 @@ type LiteLLMModelPricing struct {
 	OutputCostPerImageToken             float64 `json:"output_cost_per_image_token"` // 图片输出 token 价格
 	InputCostPerImageToken              float64 `json:"input_cost_per_image_token"`  // 图片输入 token 价格（如 gpt-image-2 图片编辑）
 
+	// 可信 token 上限（LiteLLM 价表 max_input_tokens / max_output_tokens）。
+	// 0 表示源数据未提供；客户端配置生成（如 OpenCode limit.context）用它补齐
+	// 上下文窗口，避免未知模型落到 context=0 关闭自动压缩。
+	MaxInputTokens  int `json:"max_input_tokens,omitempty"`
+	MaxOutputTokens int `json:"max_output_tokens,omitempty"`
+
 	// TokenPricingAbsent 表示源数据中 input/output token 价格均缺失（仅有图片价）。
 	// 此类条目只可用于图片计费，token 计费必须回退到 fallback 或 fail-closed，
 	// 否则 token 流量会被按 $0 计费。零值（false）表示条目具备 token 价格。
@@ -163,6 +169,8 @@ type LiteLLMRawEntry struct {
 	OutputCostPerImage                  *float64 `json:"output_cost_per_image"`
 	OutputCostPerImageToken             *float64 `json:"output_cost_per_image_token"`
 	InputCostPerImageToken              *float64 `json:"input_cost_per_image_token"`
+	MaxInputTokens                      *int     `json:"max_input_tokens"`
+	MaxOutputTokens                     *int     `json:"max_output_tokens"`
 }
 
 // PricingService 动态价格服务
@@ -580,6 +588,13 @@ func (s *PricingService) parsePricingData(body []byte) (map[string]*LiteLLMModel
 		}
 		if entry.InputCostPerImageToken != nil {
 			pricing.InputCostPerImageToken = *entry.InputCostPerImageToken
+		}
+		// 可信 token 上限：只接受正数（LiteLLM 源数据偶有 0/缺省）。
+		if entry.MaxInputTokens != nil && *entry.MaxInputTokens > 0 {
+			pricing.MaxInputTokens = *entry.MaxInputTokens
+		}
+		if entry.MaxOutputTokens != nil && *entry.MaxOutputTokens > 0 {
+			pricing.MaxOutputTokens = *entry.MaxOutputTokens
 		}
 
 		hasExplicitLongContext := entry.LongContextInputTokenThreshold != nil ||
@@ -1511,6 +1526,13 @@ func (s *PricingService) GetStatus() map[string]any {
 		"remote_hash":  remoteHash,
 		"catalog":      s.catalogStatus(),
 	}
+}
+
+// LoadCatalogForTest 在测试中直接替换当前价表（不触发远程/本地 IO）。
+func (s *PricingService) LoadCatalogForTest(pricing map[string]*LiteLLMModelPricing) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.pricingData = pricing
 }
 
 // ForceUpdate 强制更新（绕过锚点短路，立即拉取远程文档并全量校验换入）
