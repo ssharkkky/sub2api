@@ -45,6 +45,10 @@ diff -r \
   "$REPO_ROOT/backend/resources" \
   "$CANDIDATE/oci-context/backend/resources" >/dev/null || \
   fail "OCI runtime resources were not prepared exactly"
+cmp -s \
+  "$REPO_ROOT/deploy/data/models.json" \
+  "$CANDIDATE/oci-context/deploy/data/models.json" || \
+  fail "OCI seed model catalog was not staged exactly (Dockerfile.goreleaser COPY would fail)"
 DIGEST="sha256:$(printf 'a%.0s' {1..64})"
 "$REPO_ROOT/deploy/finalize-release-candidate.sh" "$CANDIDATE" "$DIGEST"
 "$REPO_ROOT/deploy/verify-release-candidate.sh" "$CANDIDATE" "$VERSION" "$COMMIT"
