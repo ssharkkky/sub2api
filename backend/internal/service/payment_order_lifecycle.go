@@ -451,18 +451,35 @@ func (s *PaymentService) ReconcilePendingWxpayOrders(ctx context.Context) (int, 
 		Where(
 			paymentorder.StatusEQ(OrderStatusPending),
 			paymentorder.ExpiresAtGT(now),
+			// EasyPay orders carry the visible payment_type alipay/wxpay, so the
+			// clauses below would select them. Their upstream query must stay
+			// behind the EasyPay emergency switch (ReconcilePendingEasyPayOrders),
+			// so exclude easypay provider orders from the native reconcile path.
+			// provider_key is nillable: NOT() over NULL evaluates to NULL and
+			// would silently drop legacy rows, so allow NULL explicitly.
+			paymentorder.Or(
+				paymentorder.ProviderKeyIsNil(),
+				paymentorder.Not(paymentorder.Or(
+					paymentorder.ProviderKeyEQ(payment.TypeEasyPay),
+					paymentorder.ProviderKeyHasPrefix(payment.TypeEasyPay+"_"),
+				)),
+			),
 			paymentorder.Or(
 				paymentorder.PaymentTypeEQ(payment.TypeWxpay),
 				paymentorder.PaymentTypeHasPrefix(payment.TypeWxpay+"_"),
 				paymentorder.ProviderKeyEQ(payment.TypeWxpay),
 				paymentorder.ProviderKeyHasPrefix(payment.TypeWxpay+"_"),
+				paymentorder.PaymentTypeEQ(payment.TypeAlipay),
+				paymentorder.PaymentTypeHasPrefix(payment.TypeAlipay+"_"),
+				paymentorder.ProviderKeyEQ(payment.TypeAlipay),
+				paymentorder.ProviderKeyHasPrefix(payment.TypeAlipay+"_"),
 			),
 		).
 		Order(dbent.Asc(paymentorder.FieldCreatedAt)).
 		Limit(pendingWxpayReconcileLimit).
 		All(ctx)
 	if err != nil {
-		return 0, fmt.Errorf("query pending wxpay orders: %w", err)
+		return 0, fmt.Errorf("query pending payment orders: %w", err)
 	}
 
 	recovered := 0

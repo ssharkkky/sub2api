@@ -347,6 +347,9 @@ func (s *PricingService) catalogModelCountLocked() int {
 // setCatalogError 记录目录问题；相同错误只告警一次，避免刷屏。
 // 传 nil 表示恢复正常。
 func (s *PricingService) setCatalogError(err error) {
+	if s.catalogRuntime == nil {
+		return
+	}
 	msg := ""
 	if err != nil {
 		msg = err.Error()

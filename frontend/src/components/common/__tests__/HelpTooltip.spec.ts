@@ -18,8 +18,7 @@ describe('HelpTooltip', () => {
     document.body.innerHTML = ''
   })
 
-  it('keeps the hover tooltip open while the pointer crosses into the teleported panel', async () => {
-    vi.useFakeTimers()
+  it('keeps the existing hover interaction by default', async () => {
     const wrapper = mount(HelpTooltip, {
       attachTo: document.body,
       props: {
@@ -37,16 +36,6 @@ describe('HelpTooltip', () => {
     expect(tooltip.style.display).not.toBe('none')
 
     await trigger.trigger('mouseleave')
-    await nextTick()
-    expect(tooltip.style.display).not.toBe('none')
-
-    tooltip.dispatchEvent(new MouseEvent('mouseenter'))
-    vi.advanceTimersByTime(200)
-    await nextTick()
-    expect(tooltip.style.display).not.toBe('none')
-
-    tooltip.dispatchEvent(new MouseEvent('mouseleave'))
-    vi.advanceTimersByTime(120)
     await nextTick()
     expect(tooltip.style.display).toBe('none')
 
@@ -82,6 +71,35 @@ describe('HelpTooltip', () => {
     expect(tooltip.style.top).toBe('calc(112px)')
     expect(tooltip.style.left).toBe('48px')
 
+    wrapper.unmount()
+  })
+
+  it('keeps a hover tooltip open while the pointer moves between the trigger and the tooltip', async () => {
+    const wrapper = mount(HelpTooltip, {
+      attachTo: document.body,
+      props: {
+        content: 'copyable details',
+      },
+    })
+
+    const trigger = wrapper.get('.group')
+    const tooltip = getTooltipElement()
+
+    await trigger.trigger('mouseenter')
+    await nextTick()
+    expect(tooltip.style.display).not.toBe('none')
+
+    await trigger.trigger('mouseleave', { relatedTarget: tooltip })
+    await nextTick()
+    expect(tooltip.style.display).not.toBe('none')
+
+    tooltip.dispatchEvent(new MouseEvent('mouseleave', { relatedTarget: trigger.element }))
+    await nextTick()
+    expect(tooltip.style.display).not.toBe('none')
+
+    tooltip.dispatchEvent(new MouseEvent('mouseleave', { relatedTarget: null }))
+    await nextTick()
+    expect(tooltip.style.display).toBe('none')
     wrapper.unmount()
   })
 

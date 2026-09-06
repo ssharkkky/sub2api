@@ -14,11 +14,12 @@ import (
 	"github.com/dgraph-io/ristretto"
 )
 
-// v23 adds the group Fast fields (force_openai_fast / free_openai_fast,
-// upstream v0.2.0) on top of the v21 Kiro runtime fields. Rejecting
+// v24 adds the group codex_models_manifest_config field (upstream v0.2.1)
+// on top of the v23 group Fast fields (force_openai_fast / free_openai_fast,
+// upstream v0.2.0) and the v21 Kiro runtime fields. Rejecting
 // older versions is required because a cache hit on an older snapshot
 // would silently fall back to zero values and lose runtime settings.
-const apiKeyAuthSnapshotVersion = 23
+const apiKeyAuthSnapshotVersion = 24
 
 type apiKeyAuthCacheConfig struct {
 	l1Size        int
@@ -434,6 +435,7 @@ func (s *APIKeyService) snapshotFromAPIKey(ctx context.Context, apiKey *APIKey) 
 			DefaultMappedModel:                groupForSnapshot.DefaultMappedModel,
 			MessagesDispatchModelConfig:       groupForSnapshot.MessagesDispatchModelConfig,
 			ModelsListConfig:                  groupForSnapshot.ModelsListConfig,
+			CodexModelsManifestConfig:         apiKey.Group.CodexModelsManifestConfig,
 			RPMLimit:                          groupForSnapshot.RPMLimit,
 			MaxReasoningEffort:                groupForSnapshot.MaxReasoningEffort,
 			MaxReasoningEffortOverLimit:       groupForSnapshot.MaxReasoningEffortOverLimit,
@@ -544,6 +546,7 @@ func (s *APIKeyService) snapshotToAPIKey(key string, snapshot *APIKeyAuthSnapsho
 			DefaultMappedModel:                snapshot.Group.DefaultMappedModel,
 			MessagesDispatchModelConfig:       snapshot.Group.MessagesDispatchModelConfig,
 			ModelsListConfig:                  snapshot.Group.ModelsListConfig,
+			CodexModelsManifestConfig:         snapshot.Group.CodexModelsManifestConfig,
 			RPMLimit:                          snapshot.Group.RPMLimit,
 			MaxReasoningEffort:                snapshot.Group.MaxReasoningEffort,
 			MaxReasoningEffortOverLimit:       snapshot.Group.MaxReasoningEffortOverLimit,

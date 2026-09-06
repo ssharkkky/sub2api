@@ -1540,7 +1540,6 @@ function generateOpenCodeConfig(platform: string, baseUrl: string, apiKey: strin
   // OpenCode `models` map is generated from the key's channel-effective list
   // (auto-injected). No hardcoded ids, limits, or variants are invented here.
   const dynamicModels = buildOpenCodeModels()
-
 /**
  * Minimal OpenCode model entries derived from real channel-effective ids.
  * `limit` is filled only from trusted gateway metadata (the repo-owned model

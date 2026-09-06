@@ -100,6 +100,7 @@ func TestUsageLogRepositoryCreateSyncRequestTypeAndLegacyFields(t *testing.T) {
 			sqlmock.AnyArg(), // billing_mode
 			sqlmock.AnyArg(), // account_stats_cost
 			sqlmock.AnyArg(), // kiro_credits
+			sqlmock.AnyArg(), // upstream_request_id
 			sqlmock.AnyArg(), // session_id
 			log.NativeCompactionV2,
 			createdAt,
@@ -195,6 +196,7 @@ func TestUsageLogRepositoryCreate_PersistsServiceTier(t *testing.T) {
 			sqlmock.AnyArg(), // billing_mode
 			sqlmock.AnyArg(), // account_stats_cost
 			sqlmock.AnyArg(), // kiro_credits
+			sqlmock.AnyArg(), // upstream_request_id
 			sqlmock.AnyArg(), // session_id
 			log.NativeCompactionV2,
 			createdAt,
@@ -980,6 +982,7 @@ func TestScanUsageLogRequestTypeAndLegacyFallback(t *testing.T) {
 			sql.NullString{},
 			sql.NullFloat64{},
 			sql.NullFloat64{},
+			sql.NullString{}, // upstream_request_id
 			sql.NullString{},
 			sql.NullBool{Valid: true}, // native_compaction_v2 (NULL-safe scan)
 			now,
@@ -1054,12 +1057,14 @@ func TestScanUsageLogRequestTypeAndLegacyFallback(t *testing.T) {
 			sql.NullString{},
 			false,
 			false,
-			sql.NullInt64{},           // channel_id
-			sql.NullString{},          // model_mapping_chain
-			sql.NullString{},          // billing_tier
-			sql.NullString{},          // billing_mode
-			sql.NullFloat64{},         // account_stats_cost
-			sql.NullFloat64{},         // kiro_credits
+			sql.NullInt64{},   // channel_id
+			sql.NullString{},  // model_mapping_chain
+			sql.NullString{},  // billing_tier
+			sql.NullString{},  // billing_mode
+			sql.NullFloat64{}, // account_stats_cost
+			sql.NullFloat64{}, // kiro_credits
+			sql.NullString{},  // upstream_request_id
+
 			sql.NullString{},          // session_id
 			sql.NullBool{Valid: true}, // native_compaction_v2 (NULL-safe scan)
 			now,
@@ -1117,12 +1122,14 @@ func TestScanUsageLogRequestTypeAndLegacyFallback(t *testing.T) {
 			sql.NullString{},
 			false,
 			false,
-			sql.NullInt64{},                       // channel_id
-			sql.NullString{},                      // model_mapping_chain
-			sql.NullString{},                      // billing_tier
-			sql.NullString{},                      // billing_mode
-			sql.NullFloat64{},                     // account_stats_cost
-			sql.NullFloat64{},                     // kiro_credits
+			sql.NullInt64{},   // channel_id
+			sql.NullString{},  // model_mapping_chain
+			sql.NullString{},  // billing_tier
+			sql.NullString{},  // billing_mode
+			sql.NullFloat64{}, // account_stats_cost
+			sql.NullFloat64{}, // kiro_credits
+			sql.NullString{},  // upstream_request_id
+
 			sql.NullString{},                      // session_id
 			sql.NullBool{Valid: true, Bool: true}, // native_compaction_v2 (NULL-safe scan)
 			now,
@@ -1181,12 +1188,14 @@ func TestScanUsageLogRequestTypeAndLegacyFallback(t *testing.T) {
 			sql.NullString{},
 			false,
 			false,
-			sql.NullInt64{},           // channel_id
-			sql.NullString{},          // model_mapping_chain
-			sql.NullString{},          // billing_tier
-			sql.NullString{},          // billing_mode
-			sql.NullFloat64{},         // account_stats_cost
-			sql.NullFloat64{},         // kiro_credits
+			sql.NullInt64{},   // channel_id
+			sql.NullString{},  // model_mapping_chain
+			sql.NullString{},  // billing_tier
+			sql.NullString{},  // billing_mode
+			sql.NullFloat64{}, // account_stats_cost
+			sql.NullFloat64{}, // kiro_credits
+			sql.NullString{},  // upstream_request_id
+
 			sql.NullString{},          // session_id
 			sql.NullBool{Valid: true}, // native_compaction_v2 (NULL-safe scan)
 			now,

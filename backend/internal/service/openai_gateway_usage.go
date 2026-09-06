@@ -402,6 +402,7 @@ func (s *OpenAIGatewayService) RecordUsage(ctx context.Context, input *OpenAIRec
 		APIKeyID:                 apiKey.ID,
 		AccountID:                account.ID,
 		RequestID:                requestID,
+		UpstreamRequestID:        usageUpstreamRequestIDPtr(account, result.UpstreamHeaders, result.OpenAIWSMode),
 		Model:                    result.Model,
 		RequestedModel:           requestedModel,
 		UpstreamModel:            optionalTrimmedStringPtr(result.UpstreamModel),
@@ -654,6 +655,7 @@ func (s *OpenAIGatewayService) calculateOpenAIRecordUsageCost(
 				tokens,
 				serviceTier,
 				serviceTierSnapshot,
+				optionalStringValue(result.ReasoningEffort),
 				longContextBillingGate,
 			)
 			if err == nil {
@@ -748,6 +750,7 @@ func (s *OpenAIGatewayService) calculateOpenAIRecordUsageTokenCost(
 	tokens UsageTokens,
 	serviceTier string,
 	serviceTierSnapshot *ChannelServiceTierSnapshot,
+	reasoningEffort string,
 	longContextBillingGate *bool,
 ) (*CostBreakdown, error) {
 	if s.resolver != nil && apiKey.Group != nil {
@@ -763,18 +766,23 @@ func (s *OpenAIGatewayService) calculateOpenAIRecordUsageTokenCost(
 			PricingAt:                 pricingAt,
 			ServiceTier:               serviceTier,
 			ServiceTierSnapshot:       serviceTierSnapshot,
+			ReasoningEffort:           reasoningEffort,
 			Resolver:                  s.resolver,
 			LongContextBillingEnabled: longContextBillingGate,
 		})
 	}
 	tierAdjustedMultiplier, legacyServiceTier := applyChannelServiceTierRateMultiplier(multiplier, serviceTier, serviceTierSnapshot)
-	return s.billingService.calculateCostWithServiceTierPolicy(
+	breakdown, err := s.billingService.calculateCostWithServiceTierPolicy(
 		billingModel,
 		tokens,
 		tierAdjustedMultiplier,
 		legacyServiceTier,
 		longContextBillingGate == nil || *longContextBillingGate,
 	)
+	if err == nil {
+		applyCostBreakdownMultiplier(breakdown, maxReasoningEffortBillingMultiplier(billingModel, reasoningEffort, nil))
+	}
+	return breakdown, err
 }
 
 func (s *OpenAIGatewayService) calculateOpenAIImageCost(
