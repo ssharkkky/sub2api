@@ -72,6 +72,12 @@ for arch in amd64 arm64; do
 done
 cp -R "$REPO_ROOT/backend/resources" "$CANDIDATE_DIR/oci-context/backend/resources"
 install -m 0755 "$REPO_ROOT/deploy/docker-entrypoint.sh" "$CANDIDATE_DIR/oci-context/deploy/docker-entrypoint.sh"
+# Seed catalog for Dockerfile.goreleaser (COPY deploy/data/models.json ...):
+# the OCI context only contains staged files, so the repo-owned merged model
+# document must be staged explicitly or the image build fails with "not found".
+[[ -f "$REPO_ROOT/deploy/data/models.json" ]] || { echo "seed model catalog is missing: $REPO_ROOT/deploy/data/models.json" >&2; exit 1; }
+mkdir -p "$CANDIDATE_DIR/oci-context/deploy/data"
+install -m 0644 "$REPO_ROOT/deploy/data/models.json" "$CANDIDATE_DIR/oci-context/deploy/data/models.json"
 install -m 0644 "$CONTROL_MANIFEST" "$CANDIDATE_DIR/CONTROL-PLANE-MANIFEST.json"
 
 mapfile -t archives < <(jq -er '
