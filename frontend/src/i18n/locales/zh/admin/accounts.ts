@@ -2,6 +2,7 @@ export default {
     accounts: {
       title: '账号管理',
       description: '管理 AI 平台账号和 Cookie',
+      add: '添加',
       createAccount: '添加账号',
       autoRefresh: '自动刷新',
       enableAutoRefresh: '启用自动刷新',
@@ -849,6 +850,8 @@ export default {
       modelRestriction: '模型限制（可选）',
       modelWhitelist: '模型白名单',
       modelMapping: '模型映射',
+      fromModel: '请求模型',
+      toModel: '目标模型',
       selectAllowedModels: '选择允许的模型。留空则支持所有模型。新账号默认不要开白名单，用户能看见和调用的模型由渠道决定。',
       mapRequestModels: '只把请求名改成上游名，不会挡住没写在映射里的模型。左边是请求的模型，右边是发给上游的实际模型。',
       selectedModels: '已选择 {count} 个模型',

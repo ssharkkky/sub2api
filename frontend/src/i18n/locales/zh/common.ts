@@ -1,6 +1,7 @@
 export default {
   common: {
     loading: '加载中...',
+    retry: '重试',
     submitting: '提交中...',
     justNow: '刚刚',
     peakRateTooltip: '高峰倍率：{window}',
@@ -12,6 +13,12 @@ export default {
     delete: '删除',
     edit: '编辑',
     create: '创建',
+    apply: '应用',
+    clear: '清除',
+    creating: '创建中...',
+    required: '必填',
+    sending: '发送中...',
+    tryAgain: '请重试',
     update: '更新',
     confirm: '确认',
     reset: '重置',

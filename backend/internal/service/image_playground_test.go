@@ -74,7 +74,7 @@ func imagePlaygroundGroup(id int64, platform string) Group {
 		Platform:             platform,
 		Status:               StatusActive,
 		AllowImageGeneration: true,
-		ModelsListConfig:     GroupModelsListConfig{Enabled: true, Models: models},
+		ModelAllowlist:       GroupModelAllowlist{Enabled: true, Models: models},
 	}
 }
 
@@ -117,9 +117,9 @@ func TestImagePlaygroundOptionsFiltersGroupsModelsAndAvailability(t *testing.T) 
 func TestImagePlaygroundOptionsExcludesMixedAndUnrestrictedGroups(t *testing.T) {
 	dedicated := imagePlaygroundGroup(1, PlatformOpenAI)
 	mixed := imagePlaygroundGroup(2, PlatformOpenAI)
-	mixed.ModelsListConfig.Models = []string{"gpt-image-2", "gpt-5.4"}
+	mixed.ModelAllowlist.Models = []string{"gpt-image-2", "gpt-5.4"}
 	unrestricted := imagePlaygroundGroup(3, PlatformOpenAI)
-	unrestricted.ModelsListConfig = GroupModelsListConfig{}
+	unrestricted.ModelAllowlist = GroupModelAllowlist{}
 	svc := &ImagePlaygroundService{
 		keys: &imagePlaygroundKeySourceStub{
 			groups: []Group{mixed, unrestricted, dedicated},
@@ -140,7 +140,7 @@ func TestImagePlaygroundOptionsExcludesMixedAndUnrestrictedGroups(t *testing.T) 
 
 func TestImagePlaygroundOptionsExcludesEmptyCustomModelList(t *testing.T) {
 	empty := imagePlaygroundGroup(1, PlatformOpenAI)
-	empty.ModelsListConfig.Models = nil
+	empty.ModelAllowlist.Models = nil
 	svc := &ImagePlaygroundService{
 		keys: &imagePlaygroundKeySourceStub{
 			groups: []Group{empty},
@@ -281,7 +281,7 @@ func TestImagePlaygroundDisabledRejectsOptionsAndKeyResolution(t *testing.T) {
 
 func TestImagePlaygroundValidateModelHonorsCustomModelList(t *testing.T) {
 	group := imagePlaygroundGroup(1, PlatformOpenAI)
-	group.ModelsListConfig = GroupModelsListConfig{Enabled: true, Models: []string{"gpt-image-2"}}
+	group.ModelAllowlist = GroupModelAllowlist{Enabled: true, Models: []string{"gpt-image-2"}}
 	svc := &ImagePlaygroundService{
 		models: &imagePlaygroundModelSourceStub{byGroup: map[int64][]string{
 			group.ID: {"gpt-image-1", "gpt-image-2"},
