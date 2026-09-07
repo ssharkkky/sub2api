@@ -25,8 +25,6 @@ type paymentFulfillmentTestProvider struct {
 
 type paymentFulfillmentRedeemCacheStub struct {
 	count          int
-	getErr         error
-	incrementErr   error
 	getCalls       int
 	incrementCalls int
 	acquireCalls   int
@@ -52,14 +50,11 @@ func (r *paymentFulfillmentRedeemRepo) Create(_ context.Context, code *RedeemCod
 
 func (c *paymentFulfillmentRedeemCacheStub) GetRedeemAttemptCount(context.Context, int64) (int, error) {
 	c.getCalls++
-	return c.count, c.getErr
+	return c.count, nil
 }
 
 func (c *paymentFulfillmentRedeemCacheStub) IncrementRedeemAttemptCount(context.Context, int64) error {
 	c.incrementCalls++
-	if c.incrementErr != nil {
-		return c.incrementErr
-	}
 	c.count++
 	return nil
 }

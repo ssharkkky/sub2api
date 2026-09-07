@@ -40,6 +40,7 @@ func (s *RedeemCacheSuite) TestIncrementAndGetRedeemAttemptCount() {
 	ttl, err := s.rdb.TTL(s.ctx, key).Result()
 	require.NoError(s.T(), err, "TTL")
 	s.AssertTTLWithin(ttl, redeemRateLimitWindow-time.Second, redeemRateLimitWindow)
+
 }
 
 func (s *RedeemCacheSuite) TestMultipleIncrements() {

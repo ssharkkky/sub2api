@@ -1174,8 +1174,24 @@ func (h *GatewayHandler) Models(c *gin.Context) {
 		platform = forcedPlatform
 	}
 
+	if platform == service.PlatformOpenAI && apiKey != nil && apiKey.Group != nil &&
+		apiKey.Group.Platform == service.PlatformOpenAI && apiKey.Group.CodexModelsManifestConfig.Enabled {
+		h.pinnedOpenAIModels(c, apiKey.Group)
+		return
+	}
+
 	if platform == service.PlatformComposite {
 		availableModels := h.compositeAvailableModels(c.Request.Context(), groupID)
+		if apiKey != nil && apiKey.Group != nil && apiKey.Group.ModelAllowlistEnabled() {
+			source := availableModels
+			if len(source) == 0 {
+				source = defaultModelIDsForPlatform(service.PlatformComposite)
+			}
+			allowlisted := apiKey.Group.ModelAllowlist.FilterForListing(source)
+			writeAllowlistedModelsList(c, service.PlatformComposite, allowlisted, h.resolveModelLimits(allowlisted))
+			return
+		}
+		// fork: bound channels with RestrictModels own the user-facing shelf
 		if _, restricted := h.channelStorefrontModels(c.Request.Context(), groupID, ""); restricted {
 			writePlatformModelsList(c, service.PlatformComposite, availableModels, h.resolveModelLimits(availableModels))
 			return
@@ -1195,6 +1211,14 @@ func (h *GatewayHandler) Models(c *gin.Context) {
 	}
 
 	availableModels := h.gatewayService.GetAvailableModels(c.Request.Context(), groupID, platform)
+	if apiKey != nil && apiKey.Group != nil && apiKey.Group.ModelAllowlistEnabled() {
+		// 白名单展开需要账号映射键参与（通配条目按来源展开）；渠道 storefront
+		// 已在上方优先返回，此处来源 = 账号映射键 ∪ 平台默认。
+		source := modelListingSource(platform, h.gatewayService.ListGroupAvailableModels(c.Request.Context(), groupID, platform), defaultModelIDsForPlatform(platform))
+		allowlisted := apiKey.Group.ModelAllowlist.FilterForListing(source)
+		writeAllowlistedModelsList(c, platform, allowlisted, h.resolveModelLimits(allowlisted))
+		return
+	}
 	if len(availableModels) == 0 {
 		availableModels = service.PlatformDefaultModelIDs(platform)
 	}
@@ -1332,8 +1356,12 @@ func (h *GatewayHandler) codexModelIDsForGroup(ctx context.Context, group *servi
 			return availableModels
 		}
 		fallbackModels := defaultCodexModelIDsForPlatform(service.PlatformComposite)
-		if group.CustomModelsListEnabled() {
-			return filterModelsByCustomList(availableModels, fallbackModels, group.ModelsListConfig.Models)
+		if group.ModelAllowlistEnabled() {
+			source := availableModels
+			if len(source) == 0 {
+				source = fallbackModels
+			}
+			return group.ModelAllowlist.FilterForListing(source)
 		}
 		if len(availableModels) > 0 {
 			return availableModels
@@ -1348,12 +1376,8 @@ func (h *GatewayHandler) codexModelIDsForGroup(ctx context.Context, group *servi
 
 	availableModels := h.gatewayService.ListGroupAvailableModels(ctx, groupID, platform)
 	fallbackModels := defaultCodexModelIDsForPlatform(platform)
-	if group.CustomModelsListEnabled() {
-		return filterModelsByCustomList(
-			customModelsListSource(platform, availableModels, fallbackModels),
-			fallbackModels,
-			group.ModelsListConfig.Models,
-		)
+	if group.ModelAllowlistEnabled() {
+		return group.ModelAllowlist.FilterForListing(modelListingSource(platform, availableModels, fallbackModels))
 	}
 	if len(availableModels) > 0 {
 		return availableModels
@@ -1461,6 +1485,18 @@ func writeModelsList(c *gin.Context, platform string, modelIDs []string, limits 
 	}, limits))
 }
 
+func writeAllowlistedModelsList(c *gin.Context, platform string, modelIDs []string, limits map[string]modelTokenLimits) {
+	if platform == service.PlatformOpenAI {
+		writeOpenAIModelsList(c, modelIDs, limits)
+		return
+	}
+	if platform == service.PlatformGemini {
+		writeGeminiModelsList(c, modelIDs, limits)
+		return
+	}
+	writeModelsList(c, platform, modelIDs, limits)
+}
+
 type grokReasoningEffortOption struct {
 	Value   string `json:"value"`
 	Label   string `json:"label"`
@@ -1551,74 +1587,22 @@ func writeOpenAIModelsList(c *gin.Context, modelIDs []string, limits map[string]
 	}, limits))
 }
 
-func customModelsListSource(platform string, availableModels, fallbackModels []string) []string {
-	if platform == service.PlatformAnthropic && len(availableModels) > 0 {
+// modelListingSource 汇总模型列表过滤的候选来源：账号映射键（availableModels）
+// 与平台默认列表（fallbackModels）。账号映射为空时回落默认列表；Anthropic
+// 平台两者取并集，其余平台以账号映射键为准。
+func modelListingSource(platform string, availableModels, fallbackModels []string) []string {
+	if len(availableModels) == 0 {
+		return fallbackModels
+	}
+	if platform == service.PlatformAnthropic {
 		return mergeModelIDs(availableModels, fallbackModels)
 	}
 	return availableModels
 }
 
-func filterModelsByCustomList(availableModels, fallbackModels, selectedModels []string) []string {
-	if len(selectedModels) == 0 {
-		return availableModels
-	}
-	source := availableModels
-	if len(source) == 0 {
-		source = fallbackModels
-	}
-	if len(source) == 0 {
-		return nil
-	}
-
-	allowed := make([]string, 0, len(source))
-	for _, model := range source {
-		model = strings.TrimSpace(model)
-		if model != "" {
-			allowed = append(allowed, model)
-		}
-	}
-
-	seen := make(map[string]struct{}, len(selectedModels))
-	filtered := make([]string, 0, len(selectedModels))
-	for _, model := range selectedModels {
-		model = strings.TrimSpace(model)
-		if model == "" {
-			continue
-		}
-		if !customModelsListAllowsModel(allowed, model) {
-			continue
-		}
-		if _, ok := seen[model]; ok {
-			continue
-		}
-		seen[model] = struct{}{}
-		filtered = append(filtered, model)
-	}
-	return filtered
-}
-
-func customModelsListAllowsModel(availablePatterns []string, model string) bool {
-	for _, pattern := range availablePatterns {
-		if pattern == model {
-			return true
-		}
-		if strings.HasSuffix(pattern, "*") && strings.HasPrefix(model, strings.TrimSuffix(pattern, "*")) {
-			return true
-		}
-	}
-	normalizedClaudeModel := claude.NormalizeModelID(strings.TrimSuffix(model, "-thinking"))
-	if normalizedClaudeModel != model {
-		for _, pattern := range availablePatterns {
-			if pattern == normalizedClaudeModel {
-				return true
-			}
-		}
-	}
-	return false
-}
-
 // defaultCodexModelIDsForPlatform 保留上游的 DeepSeek 特例；其余平台（含 composite）
 // 统一委托 service 层，保持与 Models 接口一致（含 Kiro 与公共目录模型）。
+
 func defaultCodexModelIDsForPlatform(platform string) []string {
 	if platform == service.PlatformDeepseek {
 		return []string{"deepseek-v4-pro", "deepseek-v4-flash"}
@@ -1653,10 +1637,21 @@ func mergeModelIDs(primary, secondary []string) []string {
 
 // AntigravityModels 返回 Antigravity 支持的全部模型
 // GET /antigravity/models
+// 分组级模型白名单开启时按白名单过滤。
 func (h *GatewayHandler) AntigravityModels(c *gin.Context) {
+	models := antigravity.DefaultModels()
+	if apiKey, ok := middleware2.GetAPIKeyFromContext(c); ok && apiKey != nil && apiKey.Group != nil && apiKey.Group.ModelAllowlistEnabled() {
+		filtered := make([]antigravity.ClaudeModel, 0, len(models))
+		for _, model := range models {
+			if apiKey.Group.ModelAllowlist.Allows(model.ID) {
+				filtered = append(filtered, model)
+			}
+		}
+		models = filtered
+	}
 	c.JSON(http.StatusOK, gin.H{
 		"object": "list",
-		"data":   antigravity.DefaultModels(),
+		"data":   models,
 	})
 }
 

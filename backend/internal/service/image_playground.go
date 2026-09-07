@@ -467,10 +467,10 @@ func isImagePlaygroundGroup(group *Group) bool {
 // image models. This keeps dashboard-generated traffic out of general-purpose
 // chat groups and gives administrators one unambiguous place to set pricing.
 func isDedicatedImagePlaygroundGroup(group *Group) bool {
-	if group == nil || !group.CustomModelsListEnabled() {
+	if group == nil || !group.ModelAllowlistEnabled() || len(group.ModelAllowlist.Models) == 0 {
 		return false
 	}
-	for _, model := range group.ModelsListConfig.Models {
+	for _, model := range group.ModelAllowlist.Models {
 		if !isImagePlaygroundModelPattern(group.Platform, model) {
 			return false
 		}
@@ -509,10 +509,10 @@ func isImagePlaygroundModel(platform, model string) bool {
 }
 
 func groupAllowsPlaygroundModel(group *Group, model string) bool {
-	if group == nil || !group.CustomModelsListEnabled() {
+	if group == nil || !group.ModelAllowlistEnabled() || len(group.ModelAllowlist.Models) == 0 {
 		return true
 	}
-	for _, allowed := range group.ModelsListConfig.Models {
+	for _, allowed := range group.ModelAllowlist.Models {
 		allowed = strings.TrimSpace(allowed)
 		if allowed == model || (strings.HasSuffix(allowed, "*") && strings.HasPrefix(model, strings.TrimSuffix(allowed, "*"))) {
 			return true

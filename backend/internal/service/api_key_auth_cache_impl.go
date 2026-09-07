@@ -14,12 +14,13 @@ import (
 	"github.com/dgraph-io/ristretto"
 )
 
-// v24 adds the group codex_models_manifest_config field (upstream v0.2.1)
-// on top of the v23 group Fast fields (force_openai_fast / free_openai_fast,
-// upstream v0.2.0) and the v21 Kiro runtime fields. Rejecting
-// older versions is required because a cache hit on an older snapshot
-// would silently fall back to zero values and lose runtime settings.
-const apiKeyAuthSnapshotVersion = 24
+// v25 adds the group model_allowlist field (renamed from
+// models_list_config, enforcing semantics, upstream v0.2.2) on top of the
+// v24 group codex_models_manifest_config field (upstream v0.2.1) and the
+// fork v21 Kiro runtime fields. Rejecting older versions is required
+// because a cache hit on an older snapshot would silently fall back to
+// zero values and lose runtime settings.
+const apiKeyAuthSnapshotVersion = 25
 
 type apiKeyAuthCacheConfig struct {
 	l1Size        int
@@ -434,7 +435,7 @@ func (s *APIKeyService) snapshotFromAPIKey(ctx context.Context, apiKey *APIKey) 
 			FreeOpenAIFast:                    groupForSnapshot.FreeOpenAIFast,
 			DefaultMappedModel:                groupForSnapshot.DefaultMappedModel,
 			MessagesDispatchModelConfig:       groupForSnapshot.MessagesDispatchModelConfig,
-			ModelsListConfig:                  groupForSnapshot.ModelsListConfig,
+			ModelAllowlist:                    groupForSnapshot.ModelAllowlist,
 			CodexModelsManifestConfig:         apiKey.Group.CodexModelsManifestConfig,
 			RPMLimit:                          groupForSnapshot.RPMLimit,
 			MaxReasoningEffort:                groupForSnapshot.MaxReasoningEffort,
@@ -545,7 +546,7 @@ func (s *APIKeyService) snapshotToAPIKey(key string, snapshot *APIKeyAuthSnapsho
 			FreeOpenAIFast:                    snapshot.Group.FreeOpenAIFast,
 			DefaultMappedModel:                snapshot.Group.DefaultMappedModel,
 			MessagesDispatchModelConfig:       snapshot.Group.MessagesDispatchModelConfig,
-			ModelsListConfig:                  snapshot.Group.ModelsListConfig,
+			ModelAllowlist:                    snapshot.Group.ModelAllowlist,
 			CodexModelsManifestConfig:         snapshot.Group.CodexModelsManifestConfig,
 			RPMLimit:                          snapshot.Group.RPMLimit,
 			MaxReasoningEffort:                snapshot.Group.MaxReasoningEffort,
