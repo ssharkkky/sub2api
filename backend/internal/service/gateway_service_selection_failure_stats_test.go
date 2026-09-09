@@ -34,7 +34,7 @@ func TestCollectSelectionFailureStats(t *testing.T) {
 			Status:      StatusActive,
 			Schedulable: true,
 		},
-		// model unsupported
+		// model unsupported：映射不再当白名单，靠上游原生快照（只含 gpt-image）判不支持 gpt-5.4
 		{
 			ID:          4,
 			Platform:    PlatformOpenAI,
@@ -43,6 +43,12 @@ func TestCollectSelectionFailureStats(t *testing.T) {
 			Credentials: map[string]any{
 				"model_mapping": map[string]any{
 					"gpt-image": "gpt-image",
+				},
+			},
+			Extra: map[string]any{
+				"upstream_model_snapshot": &UpstreamModelSnapshot{
+					Models:   []string{"gpt-image"},
+					SyncedAt: "2024-01-01T00:00:00Z",
 				},
 			},
 		},

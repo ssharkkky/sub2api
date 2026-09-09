@@ -60,6 +60,13 @@ func TestSelectAccountWithScheduler_LegacyProfitDiagnostics(t *testing.T) {
 		account := legacyProfitDiagnosticAccount(53133)
 		profitControlTestAccountWithRate(account, 0.9)
 		account.Credentials = map[string]any{"model_mapping": map[string]any{"other-model": "other-model"}}
+		// 零默认映射：映射不再当白名单；快照只含 other-model，故 gpt-test 在模型门即被拒（ineligible）。
+		account.Extra = map[string]any{
+			"upstream_model_snapshot": &UpstreamModelSnapshot{
+				Models:   []string{"other-model"},
+				SyncedAt: "2024-01-01T00:00:00Z",
+			},
+		}
 		svc := legacyProfitDiagnosticService([]Account{*account})
 
 		selection, _, err := svc.SelectAccountWithScheduler(ctx, &groupID, "", "", "gpt-test", nil, OpenAIUpstreamTransportAny, false)

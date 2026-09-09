@@ -586,7 +586,8 @@ func TestAntigravityGatewayService_Forward_ModelRateLimitTriggersFailover(t *tes
 		},
 		Extra: map[string]any{
 			modelRateLimitsKey: map[string]any{
-				"claude-opus-4-6-thinking": map[string]any{
+				// 零默认映射：限流 key 用透传后的请求模型（claude-opus-4-6）。
+				"claude-opus-4-6": map[string]any{
 					"rate_limit_reset_at": futureResetAt,
 				},
 			},
@@ -698,7 +699,8 @@ func TestAntigravityGatewayService_Forward_StickySessionForceCacheBilling(t *tes
 		},
 		Extra: map[string]any{
 			modelRateLimitsKey: map[string]any{
-				"claude-opus-4-6-thinking": map[string]any{
+				// 零默认映射：限流 key 用透传后的请求模型（claude-opus-4-6）。
+				"claude-opus-4-6": map[string]any{
 					"rate_limit_reset_at": futureResetAt,
 				},
 			},

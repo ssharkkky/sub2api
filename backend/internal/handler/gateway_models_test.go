@@ -243,6 +243,8 @@ func TestGatewayModels_UnmappedOpenAIAccountsSupplementMappedModels(t *testing.T
 			ID: 2, Platform: service.PlatformOpenAI, Type: service.AccountTypeOAuth,
 			ParentAccountID: &parentID, QuotaDimension: "spark",
 			Credentials: map[string]any{"model_mapping": map[string]any{sparkModel: sparkModel}},
+			// 零默认映射：快照限定可服务集（不含 gpt-5.6-sol），使 IsModelSupported 回退判定成立。
+			Extra: map[string]any{service.UpstreamModelSnapshotExtraKey: &service.UpstreamModelSnapshot{Models: []string{sparkModel}, SyncedAt: "2024-01-01T00:00:00Z"}},
 		},
 		{
 			ID: 3, Platform: service.PlatformOpenAI, Type: service.AccountTypeAPIKey,

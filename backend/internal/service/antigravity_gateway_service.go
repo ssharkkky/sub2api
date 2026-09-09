@@ -269,6 +269,7 @@ func mapAntigravityModel(account *Account, requestedModel string) string {
 	if requestedModel == "" {
 		return ""
 	}
+	// 快照命中：上游原生支持，透传请求名。
 	if snapshot := account.UpstreamModelSnapshot(); snapshot != nil {
 		for _, model := range snapshot.Models {
 			if strings.TrimSpace(model) == requestedModel {
@@ -276,18 +277,14 @@ func mapAntigravityModel(account *Account, requestedModel string) string {
 			}
 		}
 	}
-
-	// 历史账号兼容：快照尚未包含该模型时，继续使用旧映射处理已有模型。
-	// 调度阶段随后仍会用 HasSyncedUpstreamModel 做真实能力检查。
-	mapping := account.GetModelMapping()
-	if len(mapping) == 0 {
-		return ""
+	// 显式映射命中：改写成映射值（精确 > 通配，由 GetMappedModel 处理）。
+	if mapping := account.GetModelMapping(); len(mapping) > 0 {
+		if mapped := account.GetMappedModel(requestedModel); mapped != requestedModel {
+			return mapped
+		}
 	}
-	mapped := account.GetMappedModel(requestedModel)
-	if mapped != requestedModel || account.IsModelSupported(requestedModel) {
-		return mapped
-	}
-	return ""
+	// 零默认映射：无快照命中且无显式覆盖 = 透传，原样转发请求名。
+	return requestedModel
 }
 
 // getMappedModel 获取映射后的模型名

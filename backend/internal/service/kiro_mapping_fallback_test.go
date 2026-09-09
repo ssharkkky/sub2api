@@ -9,13 +9,15 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-func TestAccountKiroDefaultMappingRestrictsUnsupportedModels(t *testing.T) {
+func TestAccountKiroPassthroughWithoutExplicitMapping(t *testing.T) {
 	account := &Account{Platform: PlatformKiro}
 
-	require.False(t, account.IsModelSupported("gpt-4o"))
-	require.False(t, account.IsModelSupported("kiro-gpt-4o"))
-	require.False(t, account.IsModelSupported("auto"))
-	require.Equal(t, "claude-sonnet-4.6", account.GetMappedModel("claude-sonnet-4-6"))
+	// 零默认映射：Kiro 不再注入默认映射；无显式映射 = 透传。
+	// 无快照 → fail-open 放行；GetMappedModel 无映射时原样返回。
+	require.True(t, account.IsModelSupported("gpt-4o"))
+	require.True(t, account.IsModelSupported("kiro-gpt-4o"))
+	require.True(t, account.IsModelSupported("auto"))
+	require.Equal(t, "claude-sonnet-4-6", account.GetMappedModel("claude-sonnet-4-6"))
 }
 
 func TestGatewayServiceCalculateTokenCost_KiroAutoUsesConservativeFallback(t *testing.T) {
