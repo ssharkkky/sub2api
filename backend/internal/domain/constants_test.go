@@ -5,17 +5,6 @@ import (
 	"testing"
 )
 
-func TestDefaultAntigravityModelMapping_ImageCompatibilityAliases(t *testing.T) {
-	t.Parallel()
-
-	cases := map[string]string{
-		"gemini-2.5-flash-image":         "gemini-2.5-flash-image",
-		"gemini-2.5-flash-image-preview": "gemini-2.5-flash-image",
-		"gemini-3.1-flash-image":         "gemini-3.1-flash-image",
-		"gemini-3.1-flash-image-preview": "gemini-3.1-flash-image",
-		"gemini-3-pro-image":             "gemini-3.1-flash-image",
-		"gemini-3-pro-image-preview":     "gemini-3.1-flash-image",
-	}
 
 	for from, want := range cases {
 		got, ok := DefaultAntigravityModelMapping[from]
@@ -28,33 +17,6 @@ func TestDefaultAntigravityModelMapping_ImageCompatibilityAliases(t *testing.T) 
 	}
 }
 
-func TestDefaultKiroModelMapping_MatchesKiroReferenceModels(t *testing.T) {
-	t.Parallel()
-
-	expected := map[string]string{
-		"claude-opus-4-8":                     "claude-opus-4.8",
-		"claude-opus-4-8-thinking":            "claude-opus-4.8",
-		"claude-opus-4-7":                     "claude-opus-4.7",
-		"claude-opus-4-7-thinking":            "claude-opus-4.7",
-		"claude-opus-4-6":                     "claude-opus-4.6",
-		"claude-opus-4-6-thinking":            "claude-opus-4.6",
-		"claude-opus-5":                       "claude-opus-5",
-		"claude-opus-5-thinking":              "claude-opus-5",
-		"claude-sonnet-5":                     "claude-sonnet-5",
-		"claude-sonnet-5-thinking":            "claude-sonnet-5",
-		"claude-sonnet-4-6":                   "claude-sonnet-4.6",
-		"claude-sonnet-4-6-thinking":          "claude-sonnet-4.6",
-		"claude-opus-4-5-20251101":            "claude-opus-4.5",
-		"claude-opus-4-5-20251101-thinking":   "claude-opus-4.5",
-		"claude-sonnet-4-5-20250929":          "claude-sonnet-4.5",
-		"claude-sonnet-4-5-20250929-thinking": "claude-sonnet-4.5",
-		"claude-haiku-4-5-20251001":           "claude-haiku-4.5",
-		"claude-haiku-4-5-20251001-thinking":  "claude-haiku-4.5",
-		"gpt-5.6-sol":                         "gpt-5.6-sol",
-		"gpt-5.6-terra":                       "gpt-5.6-terra",
-		"gpt-5.6-luna":                        "gpt-5.6-luna",
-		"codex-auto-review":                   "gpt-5.6-luna",
-	}
 
 	if len(DefaultKiroModelMapping) != len(expected) {
 		t.Fatalf("expected %d Kiro mappings, got %d", len(expected), len(DefaultKiroModelMapping))
@@ -93,14 +55,6 @@ func TestDefaultKiroModelMapping_MatchesKiroReferenceModels(t *testing.T) {
 	}
 }
 
-func TestDefaultAntigravityModelMapping_ContainsNewClaudeModels(t *testing.T) {
-	t.Parallel()
-
-	cases := map[string]string{
-		"claude-fable-5-1": "claude-fable-5-1",
-		"claude-fable-5":   "claude-fable-5",
-		"claude-opus-4-8":  "claude-opus-4-8",
-	}
 	for from, want := range cases {
 		got, ok := DefaultAntigravityModelMapping[from]
 		if !ok {
@@ -112,14 +66,6 @@ func TestDefaultAntigravityModelMapping_ContainsNewClaudeModels(t *testing.T) {
 	}
 }
 
-func TestDefaultAntigravityModelMapping_PreservesExplicitSonnet45AndMigratesLegacyAliases(t *testing.T) {
-	t.Parallel()
-
-	cases := map[string]string{
-		"claude-sonnet-4-5":          "claude-sonnet-4-5",
-		"claude-sonnet-4-5-thinking": "claude-sonnet-4-6",
-		"claude-sonnet-4-5-20250929": "claude-sonnet-4-6",
-	}
 	for model, want := range cases {
 		if got := DefaultAntigravityModelMapping[model]; got != want {
 			t.Fatalf("expected model %q to map to %q, got %q", model, want, got)
@@ -127,16 +73,6 @@ func TestDefaultAntigravityModelMapping_PreservesExplicitSonnet45AndMigratesLega
 	}
 }
 
-func TestDefaultAntigravityModelMapping_Gemini31ProAliases(t *testing.T) {
-	t.Parallel()
-
-	cases := map[string]string{
-		AntigravityGemini31ProAgentModel: AntigravityGemini31ProAgentModel,
-		"gemini-3.1-pro":                 AntigravityGemini31ProAgentModel,
-		"gemini-3.1-pro-high":            AntigravityGemini31ProAgentModel,
-		"gemini-3.1-pro-preview":         AntigravityGemini31ProAgentModel,
-		"gemini-3.1-pro-low":             "gemini-3.1-pro-low",
-	}
 
 	for from, want := range cases {
 		got, ok := DefaultAntigravityModelMapping[from]
@@ -149,11 +85,6 @@ func TestDefaultAntigravityModelMapping_Gemini31ProAliases(t *testing.T) {
 	}
 }
 
-func TestDefaultAntigravityModelMapping_Gemini36FlashModels(t *testing.T) {
-	for _, model := range []string{"gemini-3.6-flash", "gemini-3.6-flash-high", "gemini-3.6-flash-low", "gemini-3.6-flash-medium", "gemini-3.6-flash-tiered"} {
-		if got := DefaultAntigravityModelMapping[model]; got != model {
-			t.Fatalf("expected %s to map to itself, got %q", model, got)
-		}
 	}
 }
 

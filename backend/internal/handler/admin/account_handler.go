@@ -18,7 +18,6 @@ import (
 	"time"
 
 	"github.com/Wei-Shaw/sub2api/internal/config"
-	"github.com/Wei-Shaw/sub2api/internal/domain"
 	"github.com/Wei-Shaw/sub2api/internal/handler/dto"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/antigravity"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/claude"
@@ -3402,18 +3401,6 @@ func antigravitySnapshotModels(account *service.Account) []antigravity.ClaudeMod
 		})
 	}
 	return models
-}
-
-// GetAntigravityDefaultModelMapping 获取 Antigravity 平台的默认模型映射
-// GET /api/v1/admin/accounts/antigravity/default-model-mapping
-func (h *AccountHandler) GetAntigravityDefaultModelMapping(c *gin.Context) {
-	response.Success(c, domain.DefaultAntigravityModelMapping)
-}
-
-// GetKiroDefaultModelMapping 获取 Kiro 平台的默认模型映射
-// GET /api/v1/admin/accounts/kiro/default-model-mapping
-func (h *AccountHandler) GetKiroDefaultModelMapping(c *gin.Context) {
-	response.Success(c, domain.DefaultKiroModelMapping)
 }
 
 // sanitizeExtraBaseRPM 对 extra map 中的 base_rpm 值进行范围校验和归一化。
