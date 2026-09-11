@@ -349,6 +349,6 @@ PR-A~D 全部踩在上游持续改动的文件上（`account.go` 映射解析、
 - Bedrock = 账号别名（留）；catalog `upstream` 改写 = 建议/参考（前端手动应用）。
 
 **待办**（发布前）：
-- 本地"整台 sub2api"测试环境搭建 + 全链路冒烟（A→B→C）。
+- ~~本地"整台 sub2api"测试环境搭建 + 全链路冒烟（A→B→C）~~ **【完成 2026-09-11】**：新分支构建 `/tmp/sub2api-server` 接入本地 sub2api-pg（204 accounts / 21 groups）+ sub2api-redis，`/health` 200 + `/v1/models` 6 模型（渠道定价）+ PR-C allowlist 不约束 + PR-A 显式 mapping keys / 无映射透传 均验证通过。
 - 走 `FORK_RELEASE_WORKFLOW.md` 蓝绿发布；发布前后各跑 `verify_coverage.sql`。
 - 更新 SOP「fork 删除/覆写清单」。
