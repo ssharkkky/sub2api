@@ -162,24 +162,96 @@ func storefrontModelKey(model string) string {
 // display when a model is not catalog-known. First-seen order is group
 // order, then account order, then snapshot order (deterministic for
 // identical inputs).
+// storefrontModelUnion returns the union of all servable public names across the
+// given (already platform-filtered) accounts. A servable public name is either an
+// explicit mapping key (a public name the operator can request) or a native
+// snapshot model (served via passthrough). Wildcard mapping keys are expanded
+// against the account's synced snapshot, then the platform catalog.
 func storefrontModelUnion(accounts []Account) map[string]string {
 	union := make(map[string]string)
 	for i := range accounts {
-		snapshot := accounts[i].UpstreamModelSnapshot()
-		if snapshot == nil || len(snapshot.Models) == 0 {
-			continue
-		}
-		for _, model := range snapshot.Models {
-			key := storefrontModelKey(model)
-			if key == "" {
-				continue
+		acct := &accounts[i]
+		// Native snapshot models (passthrough public names).
+		if snapshot := acct.UpstreamModelSnapshot(); snapshot != nil {
+			for _, model := range snapshot.Models {
+				addToStorefrontUnion(union, model)
 			}
-			if _, ok := union[key]; !ok {
-				union[key] = strings.TrimSpace(model)
+		}
+		// Explicit mapping keys (public names).
+		if mapping := acct.GetModelMapping(); mapping != nil {
+			keys := make([]string, 0, len(mapping))
+			for key := range mapping {
+				keys = append(keys, key)
+			}
+			sort.Strings(keys)
+			for _, key := range keys {
+				addStorefrontMappingKey(union, acct, key)
 			}
 		}
 	}
 	return union
+}
+
+func addToStorefrontUnion(union map[string]string, model string) {
+	key := storefrontModelKey(model)
+	if key == "" {
+		return
+	}
+	if _, ok := union[key]; !ok {
+		union[key] = strings.TrimSpace(model)
+	}
+}
+
+// addStorefrontMappingKey adds an explicit mapping key (a public name) to the
+// picker union. Exact keys are added directly; wildcard keys are expanded into
+// concrete public names (snapshot first, then platform catalog).
+func addStorefrontMappingKey(union map[string]string, acct *Account, key string) {
+	key = strings.TrimSpace(key)
+	if key == "" {
+		return
+	}
+	if !strings.Contains(key, "*") {
+		addToStorefrontUnion(union, key)
+		return
+	}
+	for _, model := range expandWildcardForStorefront(acct, key) {
+		addToStorefrontUnion(union, model)
+	}
+}
+
+// expandWildcardForStorefront expands a wildcard mapping key into concrete
+// public names: prefer the account's synced native snapshot, then the platform
+// catalog defaults (PlatformDefaultModelIDs). If neither matches, nothing is
+// added (no fabricated models; the operator can still price a specific model).
+func expandWildcardForStorefront(acct *Account, pattern string) []string {
+	if snapshot := acct.UpstreamModelSnapshot(); snapshot != nil && len(snapshot.Models) > 0 {
+		if matched := matchWildcardAgainst(snapshot.Models, pattern); len(matched) > 0 {
+			return matched
+		}
+	}
+	return matchWildcardAgainst(PlatformDefaultModelIDs(acct.Platform), pattern)
+}
+
+// matchWildcardAgainst returns the models (from the given list) that match the
+// wildcard pattern, deduplicated by normalized key, preserving list order.
+func matchWildcardAgainst(models []string, pattern string) []string {
+	out := make([]string, 0)
+	seen := make(map[string]struct{})
+	for _, model := range models {
+		if !matchWildcard(pattern, model) {
+			continue
+		}
+		key := strings.ToLower(strings.TrimSpace(model))
+		if key == "" {
+			continue
+		}
+		if _, ok := seen[key]; ok {
+			continue
+		}
+		seen[key] = struct{}{}
+		out = append(out, strings.TrimSpace(model))
+	}
+	return out
 }
 
 // storefrontModelsFromUnion maps the bound-account model union onto picker
@@ -253,47 +325,26 @@ func filterStorefrontCoverageAccounts(accounts []Account, platform string) []Acc
 
 // AnnotateCatalogStorefrontCoverage fills per-model account coverage from
 // snapshots. It never uses the intersection as the user-facing shelf.
-// storefrontCoverageAccount is one snapshot-bearing bound account with its
-// snapshot models pre-normalized so coverage counting matches the
-// group-scoped union's normalization (case-insensitive, models/-prefix
-// tolerant) without touching snapshotCoversRequestedModel's scheduling
-// semantics.
-type storefrontCoverageAccount struct {
-	account *Account
-	models  []string
-	byKey   map[string]struct{}
-}
-
+// AnnotateCatalogStorefrontCoverage fills per-model account coverage. Coverage
+// = how many bound accounts can PARTICIPATE IN ROUTING this public name, via the
+// actual routing judgment (IsModelSupported: explicit mapping hit or native
+// snapshot hit, including the OpenAI OAuth vendor guard). It is a
+// routing-participation count (fail-open for unmapped accounts without a
+// snapshot), not a "confirmed served" count; CoverageSynced separately reports
+// the number of accounts that currently hold a valid snapshot.
 func AnnotateCatalogStorefrontCoverage(models []CatalogStorefrontModel, accounts []Account) []CatalogStorefrontModel {
 	total := len(accounts)
 	synced := 0
-	indexed := make([]storefrontCoverageAccount, 0, len(accounts))
 	for i := range accounts {
-		snapshot := accounts[i].UpstreamModelSnapshot()
-		if snapshot == nil || len(snapshot.Models) == 0 {
-			continue
+		if snapshot := accounts[i].UpstreamModelSnapshot(); snapshot != nil && len(snapshot.Models) > 0 {
+			synced++
 		}
-		synced++
-		byKey := make(map[string]struct{}, len(snapshot.Models))
-		for _, model := range snapshot.Models {
-			if key := storefrontModelKey(model); key != "" {
-				byKey[key] = struct{}{}
-			}
-		}
-		indexed = append(indexed, storefrontCoverageAccount{account: &accounts[i], models: snapshot.Models, byKey: byKey})
 	}
 	for i := range models {
 		have := 0
-		key := storefrontModelKey(models[i].ID)
-		for _, item := range indexed {
-			if snapshotCoversRequestedModel(item.account, item.models, models[i].ID) {
+		for j := range accounts {
+			if storefrontAccountCoversModel(&accounts[j], models[i].ID) {
 				have++
-				continue
-			}
-			if key != "" {
-				if _, ok := item.byKey[key]; ok {
-					have++
-				}
 			}
 		}
 		haveCopy, totalCopy, syncedCopy := have, total, synced
@@ -302,4 +353,31 @@ func AnnotateCatalogStorefrontCoverage(models []CatalogStorefrontModel, accounts
 		models[i].CoverageSynced = &syncedCopy
 	}
 	return models
+}
+
+// storefrontAccountCoversModel reports whether the account has EVIDENCE it can
+// serve the public name for storefront coverage: an explicit mapping key hit
+// (exact or wildcard), or a synced snapshot that covers the model (case/
+// models/-tolerant match, or the model's mapped upstream name present in the
+// snapshot). Unsynced accounts without a matching mapping key do not count, so
+// coverage never pretends an unprobed account has a model it may not.
+func storefrontAccountCoversModel(acct *Account, model string) bool {
+	if acct == nil {
+		return false
+	}
+	if mapping := acct.GetModelMapping(); mapping != nil && mappingSupportsRequestedModel(mapping, model) {
+		return true
+	}
+	snapshot := acct.UpstreamModelSnapshot()
+	if snapshot == nil || len(snapshot.Models) == 0 {
+		return false
+	}
+	if key := storefrontModelKey(model); key != "" {
+		for _, m := range snapshot.Models {
+			if storefrontModelKey(m) == key {
+				return true
+			}
+		}
+	}
+	return snapshotCoversRequestedModel(acct, snapshot.Models, model)
 }

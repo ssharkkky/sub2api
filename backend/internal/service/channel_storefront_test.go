@@ -273,3 +273,53 @@ func TestListCatalogStorefrontModelsWithCoverage_IgnoresOtherPlatforms(t *testin
 	require.Equal(t, "gemini-3.7-flash", models[0].ID)
 	require.Equal(t, 1, *models[0].CoverageTotal) // total 只算 antigravity 账号
 }
+
+// 账号显式映射名（公开名）进入渠道选择器并集：精确 key 直接入并集，映射目标
+// 由原生快照覆盖；并集 = 显式映射 keys ∪ 原生快照。
+func TestListCatalogStorefrontModelsWithCoverage_MappingKeysInUnion(t *testing.T) {
+	svc := newStorefrontService(t, map[int64][]Account{
+		2: {
+			{
+				ID:       1,
+				Platform: PlatformAntigravity,
+				Credentials: map[string]any{
+					"model_mapping": map[string]any{"team-coder": "gemini-3.5-flash-medium"},
+				},
+				Extra: ApplyUpstreamModelSnapshot(nil, []string{"gemini-3.5-flash-medium"}, time.Unix(1, 0).UTC()),
+			},
+		},
+	})
+
+	models := svc.ListCatalogStorefrontModelsWithCoverage(context.Background(), "antigravity", []int64{2})
+	ids := make(map[string]bool)
+	for i := range models {
+		ids[models[i].ID] = true
+	}
+	require.True(t, ids["team-coder"], "explicit mapping key (public name) should be in the picker union")
+	require.True(t, ids["gemini-3.5-flash-medium"], "snapshot model should be in the picker union")
+}
+
+// 通配映射 key 按账号原生快照展开成具体公开名进入并集（通配符本身不入并集）。
+func TestListCatalogStorefrontModelsWithCoverage_WildcardKeyExpandedBySnapshot(t *testing.T) {
+	svc := newStorefrontService(t, map[int64][]Account{
+		2: {
+			{
+				ID:       1,
+				Platform: PlatformOpenAI,
+				Credentials: map[string]any{
+					"model_mapping": map[string]any{"gpt-*": "gpt-5.6-sol"},
+				},
+				Extra: ApplyUpstreamModelSnapshot(nil, []string{"gpt-4o", "gpt-4.1"}, time.Unix(1, 0).UTC()),
+			},
+		},
+	})
+
+	models := svc.ListCatalogStorefrontModelsWithCoverage(context.Background(), "openai", []int64{2})
+	ids := make(map[string]bool)
+	for i := range models {
+		ids[models[i].ID] = true
+	}
+	require.True(t, ids["gpt-4o"], "wildcard-expanded gpt-4o should be in the union")
+	require.True(t, ids["gpt-4.1"], "wildcard-expanded gpt-4.1 should be in the union")
+	require.False(t, ids["gpt-*"], "wildcard pattern should not be added as a literal model")
+}

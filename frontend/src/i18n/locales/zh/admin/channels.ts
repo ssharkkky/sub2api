@@ -243,10 +243,10 @@ export default {
         syncModelsSuccess: '已同步 {count} 个新模型',
         syncModelsAlreadyUpToDate: '模型列表已是最新',
         syncModelsError: '加载目录失败',
-        catalogPickerHint: '列表来自所选分组账号最近同步的模型并集：目录内模型会带上底稿价（仍可再改），账号里有但目录没有的模型不带价；分组没有任何已同步账号时回退全目录。覆盖率表示多少绑定账号支持该模型。',
-        catalogPickerEmpty: '列表为空：所选分组账号尚未同步到模型（或平台目录为空）',
+        catalogPickerHint: '列表为所选分组各账号可服务公开名的并集（账号显式映射名 ∪ 已同步上游原生快照）：目录内模型会带上底稿价（仍可再改），账号里有但目录没有的模型不带价；分组既无已同步账号也无显式映射时回退全目录。覆盖率表示多少绑定账号可参与路由此公开名（映射名命中或原生快照命中；非 0 不保证一定成功）。',
+        catalogPickerEmpty: '列表为空：所选分组账号既无已同步模型也无显式映射（或平台目录为空）',
         catalogPickerAdd: '添加已选模型',
-        catalogCoverage: '{have}/{total} 账号有',
+        catalogCoverage: '{have}/{total} 账号可参与路由',
         catalogCoverageNone: '暂无账号',
         catalogCoverageSynced: '已同步 {synced}/{total} 个账号'
       }

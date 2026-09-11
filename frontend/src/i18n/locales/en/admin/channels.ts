@@ -243,10 +243,10 @@ export default {
          syncModelsSuccess: 'Synced {count} new model(s)',
          syncModelsAlreadyUpToDate: 'Models already up to date',
          syncModelsError: 'Failed to load catalog',
-        catalogPickerHint: 'Listed models come from the selected group\'s accounts (last synced union). Catalog models carry draft prices (still editable); account-only models have none. If no bound account has synced data, the full catalog is shown. Coverage shows how many bound accounts support each model.',
-        catalogPickerEmpty: 'List is empty: bound accounts have no synced models yet (or the platform catalog is empty)',
+        catalogPickerHint: 'Listed models are the union of each bound account\'s servable public names (explicit mapping keys ∪ synced upstream snapshots). Catalog entries carry draft prices (still editable); account-only models have none. If no bound account has synced data or explicit mappings, the full catalog is shown. Coverage shows how many bound accounts can route each public name (mapping-key or snapshot evidence; a non-zero count does not guarantee success).',
+        catalogPickerEmpty: 'List is empty: bound accounts have no synced models and no explicit mappings (or the platform catalog is empty)',
         catalogPickerAdd: 'Add selected models',
-        catalogCoverage: '{have}/{total} accounts have it',
+        catalogCoverage: '{have}/{total} accounts can route',
         catalogCoverageNone: 'No accounts',
         catalogCoverageSynced: 'Synced {synced}/{total} accounts'
        }
