@@ -257,10 +257,11 @@ func (s *AntigravityGatewayService) handleAntigravityModelRateLimitBeforePolicy(
 
 // mapAntigravityModel 返回 Antigravity 要发送给上游的模型名。
 //
-// 渠道映射在请求进入账号调度前已经完成。对最近一次探测结果中出现的
-// 模型，直接透传请求名，不再要求账号先把它写进 model_mapping；这就是
-// 新模型自动可用的关键。旧账号的 model_mapping 仅作为历史兼容兜底，
-// 不再阻断探测快照中的新模型。
+// 优先级（零默认映射，显式优先）：
+//  1. 显式 model_mapping 命中 → 改写成映射值（即使请求名也在上游快照中）。
+//     运维显式配置的改写必须生效，例如 claude-opus-4-6 → claude-opus-4-6-thinking。
+//  2. 上游快照命中（无显式覆盖）→ 透传请求名，新模型自动可用。
+//  3. 两者皆无 → 透传请求名（默认态）。
 func mapAntigravityModel(account *Account, requestedModel string) string {
 	if account == nil {
 		return ""
@@ -269,6 +270,13 @@ func mapAntigravityModel(account *Account, requestedModel string) string {
 	if requestedModel == "" {
 		return ""
 	}
+	// 显式映射优先：运维显式配置的改写必须生效（精确 > 通配，由 GetMappedModel 处理）。
+	if mapping := account.GetModelMapping(); len(mapping) > 0 {
+		if mapped := account.GetMappedModel(requestedModel); mapped != requestedModel {
+			return mapped
+		}
+	}
+	// 快照命中（无显式覆盖）：上游原生支持，透传请求名。
 	if snapshot := account.UpstreamModelSnapshot(); snapshot != nil {
 		for _, model := range snapshot.Models {
 			if strings.TrimSpace(model) == requestedModel {
@@ -276,22 +284,12 @@ func mapAntigravityModel(account *Account, requestedModel string) string {
 			}
 		}
 	}
-
-	// 历史账号兼容：快照尚未包含该模型时，继续使用旧映射处理已有模型。
-	// 调度阶段随后仍会用 HasSyncedUpstreamModel 做真实能力检查。
-	mapping := account.GetModelMapping()
-	if len(mapping) == 0 {
-		return ""
-	}
-	mapped := account.GetMappedModel(requestedModel)
-	if mapped != requestedModel || account.IsModelSupported(requestedModel) {
-		return mapped
-	}
-	return ""
+	// 零默认映射：无显式覆盖且无快照命中 = 透传，原样转发请求名。
+	return requestedModel
 }
 
 // getMappedModel 获取映射后的模型名
-// 完全依赖映射配置：账户映射（通配符）→ 默认映射兜底
+// 零默认映射：显式 model_mapping（精确 > 通配）→ 上游快照透传 → 原样透传。无默认映射兜底（已删除）。
 func (s *AntigravityGatewayService) getMappedModel(account *Account, requestedModel string) string {
 	return mapAntigravityModel(account, requestedModel)
 }

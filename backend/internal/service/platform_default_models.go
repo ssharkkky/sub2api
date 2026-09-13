@@ -87,34 +87,4 @@ func mergeUniqueModelIDs(groups ...[]string) []string {
 	return out
 }
 
-func applyCatalogDefaultMappings(account *Account, mapping map[string]string) map[string]string {
-	if account == nil || account.ModelMappingRestricts() {
-		return mapping
-	}
-	extras := modelcatalog.DefaultMappings(account.Platform)
-	if len(extras) == 0 {
-		return mapping
-	}
-	out := mapping
-	cloned := false
-	for src, dst := range extras {
-		src = strings.TrimSpace(src)
-		dst = strings.TrimSpace(dst)
-		if src == "" || dst == "" {
-			continue
-		}
-		if _, exists := out[src]; exists {
-			continue
-		}
-		if !cloned {
-			next := make(map[string]string, len(mapping)+len(extras))
-			for key, value := range mapping {
-				next[key] = value
-			}
-			out = next
-			cloned = true
-		}
-		out[src] = dst
-	}
-	return out
-}
+

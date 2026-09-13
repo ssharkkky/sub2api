@@ -302,10 +302,10 @@
             <div class="mb-4 flex gap-2">
               <button
                 type="button"
-                @click="modelRestrictionMode = 'whitelist'"
+                @click="modelRestrictionMode = 'mapping'"
                 :class="[
                   'flex-1 rounded-lg px-4 py-2 text-sm font-medium transition-all',
-                  modelRestrictionMode === 'whitelist'
+                  false
                     ? 'bg-primary-100 text-primary-700 dark:bg-primary-900/30 dark:text-primary-400'
                     : 'bg-gray-100 text-gray-600 hover:bg-gray-200 dark:bg-dark-600 dark:text-gray-400 dark:hover:bg-dark-500'
                 ]"
@@ -353,7 +353,7 @@
             </div>
 
             <!-- Whitelist Mode -->
-            <div v-if="modelRestrictionMode === 'whitelist'">
+            <div v-if="false">
               <ModelWhitelistSelector
                 v-model="allowedModels"
                 :platform="account?.platform || 'anthropic'"
@@ -838,10 +838,10 @@
           <div class="mb-4 flex gap-2">
             <button
               type="button"
-              @click="modelRestrictionMode = 'whitelist'"
+              @click="modelRestrictionMode = 'mapping'"
               :class="[
                 'flex-1 rounded-lg px-4 py-2 text-sm font-medium transition-all',
-                modelRestrictionMode === 'whitelist'
+                false
                   ? 'bg-primary-100 text-primary-700 dark:bg-primary-900/30 dark:text-primary-400'
                   : 'bg-gray-100 text-gray-600 hover:bg-gray-200 dark:bg-dark-600 dark:text-gray-400 dark:hover:bg-dark-500'
               ]"
@@ -863,7 +863,7 @@
           </div>
 
           <!-- Whitelist Mode -->
-          <div v-if="modelRestrictionMode === 'whitelist'">
+          <div v-if="false">
             <ModelWhitelistSelector
               v-model="allowedModels"
               :platform="account?.platform || 'anthropic'"
@@ -1043,10 +1043,10 @@
           <div class="mb-4 flex gap-2">
             <button
               type="button"
-              @click="modelRestrictionMode = 'whitelist'"
+              @click="modelRestrictionMode = 'mapping'"
               :class="[
                 'flex-1 rounded-lg px-4 py-2 text-sm font-medium transition-all',
-                modelRestrictionMode === 'whitelist'
+                false
                   ? 'bg-primary-100 text-primary-700 dark:bg-primary-900/30 dark:text-primary-400'
                   : 'bg-gray-100 text-gray-600 hover:bg-gray-200 dark:bg-dark-600 dark:text-gray-400 dark:hover:bg-dark-500'
               ]"
@@ -1094,7 +1094,7 @@
           </div>
 
           <!-- Whitelist Mode -->
-          <div v-if="modelRestrictionMode === 'whitelist'">
+          <div v-if="false">
             <ModelWhitelistSelector
               v-model="allowedModels"
               :platform="account?.platform || 'anthropic'"
@@ -1296,10 +1296,10 @@
           <div class="mb-4 flex gap-2">
             <button
               type="button"
-              @click="modelRestrictionMode = 'whitelist'"
+              @click="modelRestrictionMode = 'mapping'"
               :class="[
                 'flex-1 rounded-lg px-4 py-2 text-sm font-medium transition-all',
-                modelRestrictionMode === 'whitelist'
+                false
                   ? 'bg-primary-100 text-primary-700 dark:bg-primary-900/30 dark:text-primary-400'
                   : 'bg-gray-100 text-gray-600 hover:bg-gray-200 dark:bg-dark-600 dark:text-gray-400 dark:hover:bg-dark-500'
               ]"
@@ -1321,7 +1321,7 @@
           </div>
 
           <!-- Whitelist Mode -->
-          <div v-if="modelRestrictionMode === 'whitelist'">
+          <div v-if="false">
             <ModelWhitelistSelector v-model="allowedModels" platform="anthropic" />
             <p class="text-xs text-gray-500 dark:text-gray-400">
               {{ t('admin.accounts.selectedModels', { count: allowedModels.length }) }}
@@ -3225,8 +3225,6 @@ import {
   resolveOpenAIWSModeFromExtra
 } from '@/utils/openaiWsMode'
 import {
-  fetchKiroDefaultMappings,
-  getPresetMappingsByPlatform,
   commonErrorCodes,
   buildModelMappingObject,
   splitModelMappingObject,
@@ -3273,8 +3271,8 @@ const baseUrlHint = computed(() => {
   return t('admin.accounts.baseUrlHint')
 })
 
-const antigravityPresetMappings = computed(() => getPresetMappingsByPlatform('antigravity'))
-const bedrockPresets = computed(() => getPresetMappingsByPlatform('bedrock'))
+const antigravityPresetMappings = computed(() => [] as { label: string; from: string; to: string; color: string }[])
+const bedrockPresets = computed(() => [] as { label: string; from: string; to: string; color: string }[])
 const isKiroOAuthAccount = computed(() => props.account?.platform === 'kiro' && props.account?.type === 'oauth')
 // Kiro 积分单价适用于所有 Kiro 账号(OAuth 与 API Key 都直连 AWS、消费积分)。
 const isKiroAccount = computed(() => props.account?.platform === 'kiro')
@@ -3440,7 +3438,7 @@ const isBedrockAPIKeyMode = computed(() =>
 )
 const modelMappings = ref<ModelMapping[]>([])
 const openAICompactModelMappings = ref<ModelMapping[]>([])
-const modelRestrictionMode = ref<'whitelist' | 'mapping'>('whitelist')
+const modelRestrictionMode = ref<'mapping'>('mapping')
 const allowedModels = ref<string[]>([])
 const originalHadMappingRestrictsFlag = ref(false)
 const DEFAULT_POOL_MODE_RETRY_COUNT = 3
@@ -3548,12 +3546,11 @@ const applyKiroModelMappings = (entries: Array<[string, string]>) => {
 }
 
 const loadDefaultKiroModelMappings = () => {
-  fetchKiroDefaultMappings().then(mappings => {
-    if (!isKiroOAuthAccount.value) return
-    modelRestrictionMode.value = 'mapping'
-    modelMappings.value = mappings.map(({ from, to }) => ({ from, to }))
-    allowedModels.value = []
-  })
+  // Kiro 默认映射已删除（R2）：无显式映射 = 透传
+  if (!isKiroOAuthAccount.value) return
+  modelRestrictionMode.value = 'mapping'
+  modelMappings.value = []
+  allowedModels.value = []
 }
 
 const showMixedChannelWarning = ref(false)
@@ -3863,7 +3860,7 @@ const openAICompactStatusKey = computed(() => {
 })
 
 // Computed: current preset mappings based on platform
-const presetMappings = computed(() => getPresetMappingsByPlatform(props.account?.platform || 'anthropic'))
+const presetMappings = computed(() => [] as { label: string; from: string; to: string; color: string }[])
 const tempUnschedPresets = computed(() => [
   {
     label: t('admin.accounts.tempUnschedulable.presets.overloadLabel'),
@@ -3990,13 +3987,10 @@ const loadModelRestrictionFromMapping = (credentials?: Record<string, unknown>) 
     return
   }
   if (restricts === true) {
-    modelRestrictionMode.value = 'whitelist'
+    modelRestrictionMode.value = 'mapping'
     return
   }
-  modelRestrictionMode.value =
-    parsed.modelMappings.length > 0 && parsed.allowedModels.length === 0
-      ? 'mapping'
-      : 'whitelist'
+  modelRestrictionMode.value = 'mapping'
 }
 
 const buildModelRestrictionMapping = () =>
@@ -4374,14 +4368,8 @@ const syncFormFromAccount = (newAccount: Account | null) => {
       if (existingMappings && typeof existingMappings === 'object' && Object.keys(existingMappings).length > 0) {
         applyKiroModelMappings(Object.entries(existingMappings))
       } else {
-        fetchKiroDefaultMappings().then(mappings => {
-          if (props.account?.id !== newAccount.id || props.account?.type !== 'apikey' || props.account?.platform !== 'kiro') {
-            return
-          }
-          modelRestrictionMode.value = 'mapping'
-          modelMappings.value = mappings.map(({ from, to }) => ({ from, to }))
-          allowedModels.value = []
-        })
+        // Kiro 默认映射已删除（R2）：无显式映射 = 透传
+        modelRestrictionMode.value = 'mapping'
       }
     } else {
       loadModelRestrictionFromMapping(credentials)
@@ -4468,7 +4456,7 @@ const syncFormFromAccount = (newAccount: Account | null) => {
       const oauthCredentials = newAccount.credentials as Record<string, unknown>
       loadModelRestrictionFromMapping(oauthCredentials)
     } else {
-      modelRestrictionMode.value = 'whitelist'
+      modelRestrictionMode.value = 'mapping'
       modelMappings.value = []
       allowedModels.value = []
     }
@@ -5019,7 +5007,7 @@ const currentModelMappingRestricts = () => {
   if (openaiPassthroughEnabled.value) {
     return false
   }
-  return modelRestrictionMode.value === 'whitelist' && allowedModels.value.length > 0
+  return false
 }
 
 const submitUpdateAccount = async (accountID: number, updatePayload: Record<string, unknown>) => {

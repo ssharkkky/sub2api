@@ -246,13 +246,14 @@ func TestCodexModelsAPIKeyCacheDoesNotLeakGroupFilters(t *testing.T) {
 		},
 	}
 
+	// R3：白名单不再过滤，两个分组共享同一缓存模型列表。
 	firstA := performCodexModelsRequestForGroup(t, handler, groupA, "")
 	require.Equal(t, http.StatusOK, firstA.Code, firstA.Body.String())
-	require.Equal(t, []string{"model-a"}, codexHandlerManifestSlugs(t, firstA))
+	require.Equal(t, []string{"model-a", "model-b"}, codexHandlerManifestSlugs(t, firstA))
 
 	firstB := performCodexModelsRequestForGroup(t, handler, groupB, "")
 	require.Equal(t, http.StatusOK, firstB.Code, firstB.Body.String())
-	require.Equal(t, []string{"model-b"}, codexHandlerManifestSlugs(t, firstB))
+	require.Equal(t, []string{"model-a", "model-b"}, codexHandlerManifestSlugs(t, firstB))
 
 	etagA := firstA.Header().Get("ETag")
 	require.NotEmpty(t, etagA)
@@ -272,24 +273,17 @@ func TestCodexModelsAPIKeyCacheDoesNotLeakGroupFilters(t *testing.T) {
 	}
 	wg.Wait()
 
-	sawGroupB := false
 	for _, recorder := range results {
 		require.NotNil(t, recorder)
 		switch recorder.Code {
 		case http.StatusNotModified:
 			require.Empty(t, recorder.Body.Bytes())
 		case http.StatusOK:
-			slugs := codexHandlerManifestSlugs(t, recorder)
-			if len(slugs) == 1 && slugs[0] == "model-b" {
-				sawGroupB = true
-				continue
-			}
-			require.Equal(t, []string{"model-a"}, slugs)
+			require.Equal(t, []string{"model-a", "model-b"}, codexHandlerManifestSlugs(t, recorder))
 		default:
 			t.Fatalf("unexpected status %d body=%s", recorder.Code, recorder.Body.String())
 		}
 	}
-	require.True(t, sawGroupB)
 }
 
 func TestCodexModelsSupplementsConfiguredModelsWithUnmappedAccountDefaults(t *testing.T) {
@@ -395,13 +389,13 @@ func TestCodexModelsUnmappedParentAndSparkShadowHonorCustomListAndETag(t *testin
 	firstETag := first.Header().Get("ETag")
 	require.NotEmpty(t, firstETag)
 
+	// R3：白名单不再过滤，second 返回与 first 相同的模型列表（ETag 相同 → 304）。
 	group.ModelAllowlist = service.GroupModelAllowlist{
 		Enabled: true, Models: []string{"gpt-5.6-sol", sparkModel, "unknown-model"},
 	}
 	second := performCodexModelsRequestForGroup(t, handler, group, firstETag)
-	require.Equal(t, http.StatusOK, second.Code, second.Body.String())
-	require.ElementsMatch(t, []string{"gpt-5.6-sol", sparkModel}, codexHandlerManifestSlugs(t, second))
-	require.NotEqual(t, firstETag, second.Header().Get("ETag"))
+	require.Equal(t, http.StatusNotModified, second.Code, second.Body.String())
+	require.Empty(t, second.Body.Bytes())
 	third := performCodexModelsRequestForGroup(t, handler, group, second.Header().Get("ETag"))
 	require.Equal(t, http.StatusNotModified, third.Code)
 	require.Empty(t, third.Body.Bytes())
@@ -970,7 +964,8 @@ func TestCodexModelsPinnedAccountsStillApplyCustomModelsListFilter(t *testing.T)
 
 	recorder := performPinnedCodexModelsRequest(t, handler, group, "")
 	require.Equal(t, http.StatusOK, recorder.Code, recorder.Body.String())
-	require.Equal(t, []string{"model-b"}, codexHandlerManifestSlugs(t, recorder), "分组自定义模型列表过滤仍生效")
+	// R3：白名单不再过滤，model-a + model-b 都保留。
+	require.Equal(t, []string{"model-a", "model-b"}, codexHandlerManifestSlugs(t, recorder))
 }
 
 func TestCodexModelsPinnedAccountsETagMatchReturns304(t *testing.T) {

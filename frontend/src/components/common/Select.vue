@@ -249,7 +249,14 @@ const getOptionValue = (option: any): any => {
 
 const getOptionLabel = (option: any): string => {
   if (typeof option === 'object' && option !== null) {
-    return String(option[props.labelKey] ?? '')
+    const raw = option[props.labelKey]
+    if (raw == null || String(raw).trim() === '') {
+      // Fall back to the option's value (e.g. model id) when the label field is
+      // empty, so options without a display_name still render a readable label
+      // instead of a blank entry (regression from 6c036d7b5).
+      return String(getOptionValue(option) ?? '')
+    }
+    return String(raw)
   }
   return String(option ?? '')
 }

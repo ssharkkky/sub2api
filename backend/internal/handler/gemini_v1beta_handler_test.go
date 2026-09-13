@@ -15,15 +15,10 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-func TestGeminiV1BetaListModels_AllowlistFiltersNativeResponse(t *testing.T) {
-	body := []byte(`{"models":[{"name":"models/gemini-2.5-pro"},{"name":"models/gemini-2.5-flash"}],"nextPageToken":"next"}`)
-	filtered, dropped, ok := filterUpstreamGeminiModelsBody(body, service.GroupModelAllowlist{Enabled: true, Models: []string{"gemini-2.5-pro"}})
-	require.True(t, ok)
-	require.True(t, dropped)
-	require.JSONEq(t, `{"models":[{"name":"models/gemini-2.5-pro"}],"nextPageToken":"next"}`, string(filtered))
-}
-
-func TestGeminiV1BetaListModels_ForcedAntigravityAppliesAllowlist(t *testing.T) {
+// TestGeminiV1BetaListModels_AllowlistNotApplied 验证 PR-C：Gemini 模型列表不再按
+// 分组 allowlist 过滤。强制 Antigravity 路径返回完整静态列表，即使分组启用了
+// 只含单个模型的 allowlist（零默认映射：allowlist 不再是独立用户可见约束源）。
+func TestGeminiV1BetaListModels_AllowlistNotApplied(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	rec := httptest.NewRecorder()
 	c, _ := gin.CreateTestContext(rec)
@@ -44,15 +39,28 @@ func TestGeminiV1BetaListModels_ForcedAntigravityAppliesAllowlist(t *testing.T) 
 	require.Equal(t, http.StatusOK, rec.Code)
 	var got antigravity.GeminiModelsListResponse
 	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &got))
-	require.Empty(t, got.Models)
+	// PR-C：allowlist 不再过滤 → 返回完整 Antigravity 静态列表（而非被过滤到 gemini-custom）。
+	require.Len(t, got.Models, len(antigravity.DefaultGeminiModels()))
 }
 
-func TestGeminiModelAllowlist_DisabledPreservesNativeResponse(t *testing.T) {
-	body := []byte(`{"models":[{"name":"models/gemini-2.5-pro"}]}`)
-	filtered, dropped, ok := filterUpstreamGeminiModelsBody(body, service.GroupModelAllowlist{Enabled: false, Models: []string{"other"}})
-	require.True(t, ok)
-	require.False(t, dropped)
-	require.Equal(t, body, filtered)
+// TestGeminiV1BetaListModels_ForcedAntigravityBaseline 验证强制 Antigravity 路径
+// 在无 allowlist 时返回完整静态列表（基线行为，回归保护）。
+func TestGeminiV1BetaListModels_ForcedAntigravityBaseline(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	c.Request = httptest.NewRequest(http.MethodGet, "/antigravity/v1beta/models", nil)
+	c.Set(string(middleware.ContextKeyAPIKey), &service.APIKey{
+		Group: &service.Group{Platform: service.PlatformGemini},
+	})
+	c.Set(string(middleware.ContextKeyForcePlatform), service.PlatformAntigravity)
+
+	(&GatewayHandler{}).GeminiV1BetaListModels(c)
+
+	require.Equal(t, http.StatusOK, rec.Code)
+	var got antigravity.GeminiModelsListResponse
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &got))
+	require.Len(t, got.Models, len(antigravity.DefaultGeminiModels()))
 }
 
 // TestGeminiV1BetaHandler_PlatformRoutingInvariant 文档化并验证 Handler 层的平台路由逻辑不变量

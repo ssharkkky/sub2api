@@ -14,7 +14,9 @@ import (
 func TestGatewayService_isModelSupportedByAccount_AntigravityModelMapping(t *testing.T) {
 	svc := &GatewayService{}
 
-	// 使用 model_mapping 作为白名单（通配符匹配）
+	// 使用 model_mapping 作为白名单（通配符匹配）。
+	// 零默认：显式 keys ∪ 快照 决定可服务集；给快照限定可服务集，
+	// 未含的模型（gemini-2.5-*/gpt-4）→ 不支持。
 	account := &Account{
 		Platform: PlatformAntigravity,
 		Credentials: map[string]any{
@@ -23,6 +25,7 @@ func TestGatewayService_isModelSupportedByAccount_AntigravityModelMapping(t *tes
 				"gemini-3-*": "gemini-3-flash",
 			},
 		},
+		Extra: ApplyUpstreamModelSnapshot(nil, []string{"claude-sonnet-4-5", "gemini-3-flash"}, testTimeUTC()),
 	}
 
 	// claude-* 通配符匹配
@@ -48,11 +51,12 @@ func TestGatewayService_isModelSupportedByAccount_AntigravityModelMapping(t *tes
 func TestGatewayService_isModelSupportedByAccount_AntigravityNoMapping(t *testing.T) {
 	svc := &GatewayService{}
 
-	// 未配置 model_mapping 时，使用默认映射（domain.DefaultAntigravityModelMapping）
-	// 只有默认映射中的模型才被支持
+	// 零默认：无显式映射时不再自动填充默认映射，可服务集 = 上游快照。
+	// 给快照限定可服务集，未含的模型不被支持。
 	account := &Account{
 		Platform:    PlatformAntigravity,
 		Credentials: map[string]any{},
+		Extra:       ApplyUpstreamModelSnapshot(nil, []string{"claude-sonnet-4-5", "gemini-3-flash", "gemini-2.5-pro", "claude-haiku-4-5"}, testTimeUTC()),
 	}
 
 	// 默认映射中的模型应该被支持
@@ -74,37 +78,42 @@ func TestGatewayService_isModelSupportedByAccount_AntigravityNoMapping(t *testin
 func TestGatewayService_isModelSupportedByAccountWithContext_ThinkingMode(t *testing.T) {
 	svc := &GatewayService{}
 
+	// 零默认：可服务集 = 显式 keys ∪ 快照。每个用例通过 snapshot 限定可服务集，
+	// 使 thinking 后缀判定保持可区分（最终模型不在 显式 keys ∪ 快照 → 不支持）。
 	tests := []struct {
 		name            string
 		modelMapping    map[string]any
 		requestedModel  string
 		thinkingEnabled bool
+		extra           map[string]any
 		expected        bool
 	}{
 		// 场景 1: 只配置 claude-sonnet-4-5-thinking，请求 claude-sonnet-4-5 + thinking=true
-		// mapAntigravityModel 找不到 claude-sonnet-4-5 的映射 → 返回 false
+		// 最终模型 claude-sonnet-4-5-thinking 是显式 key → 支持。
 		{
-			name: "thinking_enabled_no_base_mapping_returns_false",
+			name: "thinking_enabled_thinking_variant_explicitly_mapped",
 			modelMapping: map[string]any{
 				"claude-sonnet-4-5-thinking": "claude-sonnet-4-5-thinking",
 			},
 			requestedModel:  "claude-sonnet-4-5",
 			thinkingEnabled: true,
-			expected:        false,
+			extra:           ApplyUpstreamModelSnapshot(nil, []string{"claude-sonnet-4-5-thinking"}, testTimeUTC()),
+			expected:        true,
 		},
 		// 场景 2: 只配置 claude-sonnet-4-5-thinking，请求 claude-sonnet-4-5 + thinking=false
-		// mapAntigravityModel 找不到 claude-sonnet-4-5 的映射 → 返回 false
+		// 最终模型 = claude-sonnet-4-5（基础名，非显式 key 且不在快照）→ 不支持。
 		{
-			name: "thinking_disabled_no_base_mapping_returns_false",
+			name: "thinking_disabled_base_not_in_serviceable_set",
 			modelMapping: map[string]any{
 				"claude-sonnet-4-5-thinking": "claude-sonnet-4-5-thinking",
 			},
 			requestedModel:  "claude-sonnet-4-5",
 			thinkingEnabled: false,
+			extra:           ApplyUpstreamModelSnapshot(nil, []string{"claude-sonnet-4-5-thinking"}, testTimeUTC()),
 			expected:        false,
 		},
 		// 场景 3: 配置 claude-sonnet-4-5（非 thinking），请求 claude-sonnet-4-5 + thinking=true
-		// 最终模型名 = claude-sonnet-4-5-thinking，不在 mapping 中，应该不匹配
+		// 最终模型 claude-sonnet-4-5-thinking 非显式 key 且不在快照 → 不支持。
 		{
 			name: "thinking_enabled_no_match_non_thinking_mapping",
 			modelMapping: map[string]any{
@@ -112,6 +121,7 @@ func TestGatewayService_isModelSupportedByAccountWithContext_ThinkingMode(t *tes
 			},
 			requestedModel:  "claude-sonnet-4-5",
 			thinkingEnabled: true,
+			extra:           ApplyUpstreamModelSnapshot(nil, []string{"claude-sonnet-4-5"}, testTimeUTC()),
 			expected:        false,
 		},
 		// 场景 4: 配置两种模型，请求 claude-sonnet-4-5 + thinking=true，应该匹配 thinking 版本
@@ -123,6 +133,7 @@ func TestGatewayService_isModelSupportedByAccountWithContext_ThinkingMode(t *tes
 			},
 			requestedModel:  "claude-sonnet-4-5",
 			thinkingEnabled: true,
+			extra:           ApplyUpstreamModelSnapshot(nil, []string{"claude-sonnet-4-5", "claude-sonnet-4-5-thinking"}, testTimeUTC()),
 			expected:        true,
 		},
 		// 场景 5: 配置两种模型，请求 claude-sonnet-4-5 + thinking=false，应该匹配非 thinking 版本
@@ -134,6 +145,7 @@ func TestGatewayService_isModelSupportedByAccountWithContext_ThinkingMode(t *tes
 			},
 			requestedModel:  "claude-sonnet-4-5",
 			thinkingEnabled: false,
+			extra:           ApplyUpstreamModelSnapshot(nil, []string{"claude-sonnet-4-5", "claude-sonnet-4-5-thinking"}, testTimeUTC()),
 			expected:        true,
 		},
 		// 场景 6: 通配符 claude-* 应该同时匹配 thinking 和非 thinking
@@ -144,17 +156,20 @@ func TestGatewayService_isModelSupportedByAccountWithContext_ThinkingMode(t *tes
 			},
 			requestedModel:  "claude-sonnet-4-5",
 			thinkingEnabled: true,
+			extra:           ApplyUpstreamModelSnapshot(nil, []string{"claude-sonnet-4-5", "claude-sonnet-4-5-thinking"}, testTimeUTC()),
 			expected:        true, // claude-sonnet-4-5-thinking 匹配 claude-*
 		},
-		// 场景 7: 只配置 thinking 变体但没有基础模型映射 → 返回 false
-		// mapAntigravityModel 找不到 claude-opus-4-6 的映射
+		// 场景 7: 只配置 thinking 变体，请求 claude-opus-4-6 + thinking=true。
+		// thinking 后缀仅对 claude-sonnet-4-5 自动应用（见 applyThinkingModelSuffix），
+		// opus 基础名不会自动加 -thinking；基础名不在 显式 keys ∪ 快照 → 不支持。
 		{
-			name: "opus_thinking_no_base_mapping_returns_false",
+			name: "opus_thinking_base_not_in_serviceable_set",
 			modelMapping: map[string]any{
 				"claude-opus-4-6-thinking": "claude-opus-4-6-thinking",
 			},
 			requestedModel:  "claude-opus-4-6",
 			thinkingEnabled: true,
+			extra:           ApplyUpstreamModelSnapshot(nil, []string{"claude-opus-4-6-thinking"}, testTimeUTC()),
 			expected:        false,
 		},
 	}
@@ -166,6 +181,7 @@ func TestGatewayService_isModelSupportedByAccountWithContext_ThinkingMode(t *tes
 				Credentials: map[string]any{
 					"model_mapping": tt.modelMapping,
 				},
+				Extra: tt.extra,
 			}
 
 			ctx := context.WithValue(context.Background(), ctxkey.ThinkingEnabled, tt.thinkingEnabled)
@@ -183,7 +199,9 @@ func TestGatewayService_isModelSupportedByAccountWithContext_ThinkingMode(t *tes
 func TestGatewayService_isModelSupportedByAccount_CustomMappingNotInDefault(t *testing.T) {
 	svc := &GatewayService{}
 
-	// 自定义映射中包含不在默认映射中的模型
+	// 自定义映射中包含不在默认映射中的模型。
+	// 零默认：可服务集 = 显式 keys ∪ 快照。快照含显式映射的 upstream 目标，
+	// 未配置的模型（gpt-3.5-turbo/unknown-model）不在可服务集 → 不支持。
 	account := &Account{
 		Platform: PlatformAntigravity,
 		Credentials: map[string]any{
@@ -194,6 +212,7 @@ func TestGatewayService_isModelSupportedByAccount_CustomMappingNotInDefault(t *t
 				"claude-sonnet-4-5": "claude-sonnet-4-5",
 			},
 		},
+		Extra: ApplyUpstreamModelSnapshot(nil, []string{"actual-upstream-model", "some-upstream-model", "llama-3-70b-upstream", "claude-sonnet-4-5"}, testTimeUTC()),
 	}
 
 	// 自定义模型应该通过（不在 DefaultAntigravityModelMapping 中也可以）

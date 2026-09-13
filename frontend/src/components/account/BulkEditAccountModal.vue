@@ -272,11 +272,11 @@
                 type="button"
                 :class="[
                   'flex-1 rounded-lg px-4 py-2 text-sm font-medium transition-all',
-                  modelRestrictionMode === 'whitelist'
+                  false
                     ? 'bg-primary-100 text-primary-700 dark:bg-primary-900/30 dark:text-primary-400'
                     : 'bg-gray-100 text-gray-600 hover:bg-gray-200 dark:bg-dark-600 dark:text-gray-400 dark:hover:bg-dark-500'
                 ]"
-                @click="modelRestrictionMode = 'whitelist'"
+                @click="modelRestrictionMode = 'mapping'"
               >
                 <svg
                   class="mr-1.5 inline h-4 w-4"
@@ -321,7 +321,7 @@
             </div>
 
             <!-- Whitelist Mode -->
-            <div v-if="modelRestrictionMode === 'whitelist'">
+            <div v-if="false">
               <div class="mb-3 rounded-lg bg-blue-50 p-3 dark:bg-blue-900/20">
                 <p class="text-xs text-blue-700 dark:text-blue-400">
                   <svg
@@ -1494,8 +1494,7 @@ import GroupSelector from '@/components/common/GroupSelector.vue'
 import ModelWhitelistSelector from '@/components/account/ModelWhitelistSelector.vue'
 import Icon from '@/components/icons/Icon.vue'
 import {
-  buildModelMappingObject as buildModelMappingPayload,
-  getPresetMappingsByPlatform
+  buildModelMappingObject as buildModelMappingPayload
 } from '@/composables/useModelWhitelist'
 import HeaderOverrideEditor from '@/components/account/HeaderOverrideEditor.vue'
 import {
@@ -1623,19 +1622,8 @@ const allAnthropicOAuthOrSetupToken = computed(() => {
 })
 
 const filteredPresets = computed(() => {
-  if (targetSelectedPlatforms.value.length === 0) return []
-
-  const dedupedPresets = new Map<string, ReturnType<typeof getPresetMappingsByPlatform>[number]>()
-  for (const platform of targetSelectedPlatforms.value) {
-    for (const preset of getPresetMappingsByPlatform(platform)) {
-      const key = `${preset.from}=>${preset.to}`
-      if (!dedupedPresets.has(key)) {
-        dedupedPresets.set(key, preset)
-      }
-    }
-  }
-
-  return Array.from(dedupedPresets.values())
+  // 预设映射已删除（R2）：无默认映射，运维显式配置
+  return [] as { label: string; from: string; to: string; color: string }[]
 })
 
 // Model mapping type
@@ -1677,7 +1665,7 @@ const showMixedChannelWarning = ref(false)
 const mixedChannelWarningMessage = ref('')
 const pendingUpdatesForConfirm = ref<Record<string, unknown> | null>(null)
 const baseUrl = ref('')
-const modelRestrictionMode = ref<'whitelist' | 'mapping'>('whitelist')
+const modelRestrictionMode = ref<'mapping'>('mapping')
 const allowedModels = ref<string[]>([])
 const modelMappings = ref<ModelMapping[]>([])
 const selectedErrorCodes = ref<number[]>([])
@@ -2015,7 +2003,7 @@ const buildUpdatePayload = (): Record<string, unknown> | null => {
 
   if (enableModelRestriction.value && !isOpenAIModelRestrictionDisabled.value) {
     // 统一使用 model_mapping 字段
-    if (modelRestrictionMode.value === 'whitelist') {
+    if (modelRestrictionMode.value === 'mapping') {
       // 白名单模式：将模型转换为 model_mapping 格式（key=value）
       // 空白名单表示“支持所有模型”，需显式发送空对象以覆盖已有限制。
       const mapping: Record<string, string> = {}
@@ -2386,7 +2374,7 @@ watch(
       openAILongContextBillingEnabled.value = false
       openAIEndpointCapabilities.value = ['chat_completions', 'embeddings']
       openAIResponsesMode.value = 'auto'
-      modelRestrictionMode.value = 'whitelist'
+      modelRestrictionMode.value = 'mapping'
       allowedModels.value = []
       modelMappings.value = []
       selectedErrorCodes.value = []

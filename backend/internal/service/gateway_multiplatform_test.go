@@ -981,6 +981,8 @@ func TestGatewayService_SelectAccountForModelWithPlatform_NoModelSupport(t *test
 				Status:      StatusActive,
 				Schedulable: true,
 				Credentials: map[string]any{"model_mapping": map[string]any{"claude-3-5-haiku-20241022": "claude-3-5-haiku-20241022"}},
+				// 零默认：快照限定可服务集，未含 claude-3-5-sonnet-20241022 → 该账号不支持请求模型。
+				Extra: ApplyUpstreamModelSnapshot(nil, []string{"claude-3-5-haiku-20241022"}, time.Now().UTC()),
 			},
 		},
 		accountsByID: map[int64]*Account{},
@@ -1044,6 +1046,8 @@ func TestGatewayService_SelectAccountForModelWithPlatform_GeminiAPIKeyModelMappi
 				Status:      StatusActive,
 				Schedulable: true,
 				Credentials: map[string]any{"model_mapping": map[string]any{"gemini-2.5-pro": "gemini-2.5-pro"}},
+				// 零默认：快照限定可服务集（仅 gemini-2.5-pro），不含 gemini-2.5-flash → 不支持请求模型。
+				Extra: ApplyUpstreamModelSnapshot(nil, []string{"gemini-2.5-pro"}, time.Now().UTC()),
 			},
 			{
 				ID:          2,
@@ -1053,6 +1057,8 @@ func TestGatewayService_SelectAccountForModelWithPlatform_GeminiAPIKeyModelMappi
 				Status:      StatusActive,
 				Schedulable: true,
 				Credentials: map[string]any{"model_mapping": map[string]any{"gemini-2.5-flash": "gemini-2.5-flash"}},
+				// 零默认：快照含 gemini-2.5-flash（显式 key 命中优先），不含 gemini-3-pro-preview。
+				Extra: ApplyUpstreamModelSnapshot(nil, []string{"gemini-2.5-flash"}, time.Now().UTC()),
 			},
 		},
 		accountsByID: map[int64]*Account{},
@@ -1123,6 +1129,8 @@ func TestGatewayService_SelectAccountForModelWithPlatform_StickyModelMismatchFal
 				Status:      StatusActive,
 				Schedulable: true,
 				Credentials: map[string]any{"model_mapping": map[string]any{"claude-3-5-haiku-20241022": "claude-3-5-haiku-20241022"}},
+				// 零默认：快照未含 claude-3-5-sonnet-20241022 → 账号 1 不支持，回退到账号 2（无快照 = 透传）。
+				Extra: ApplyUpstreamModelSnapshot(nil, []string{"claude-3-5-haiku-20241022"}, time.Now().UTC()),
 			},
 			{ID: 2, Platform: PlatformAnthropic, Priority: 2, Status: StatusActive, Schedulable: true},
 		},
@@ -1214,8 +1222,13 @@ func TestGatewayService_isModelSupportedByAccount(t *testing.T) {
 			expected: true,
 		},
 		{
-			name:     "Antigravity平台-不支持非默认映射中的claude模型",
-			account:  &Account{Platform: PlatformAntigravity},
+			name: "Antigravity平台-不支持非默认映射中的claude模型",
+			// 零默认：账号可服务集 = 显式 keys ∪ 快照。给快照限定可服务集，
+			// 未含该模型 → 不支持。
+			account: &Account{
+				Platform: PlatformAntigravity,
+				Extra:    ApplyUpstreamModelSnapshot(nil, []string{"claude-sonnet-4-5"}, time.Now().UTC()),
+			},
 			model:    "claude-3-5-sonnet-20241022",
 			expected: false,
 		},
@@ -1226,8 +1239,12 @@ func TestGatewayService_isModelSupportedByAccount(t *testing.T) {
 			expected: true,
 		},
 		{
-			name:     "Antigravity平台-不支持gpt模型",
-			account:  &Account{Platform: PlatformAntigravity},
+			name: "Antigravity平台-不支持gpt模型",
+			// 零默认：快照限定可服务集，未含 gpt-4 → 不支持。
+			account: &Account{
+				Platform: PlatformAntigravity,
+				Extra:    ApplyUpstreamModelSnapshot(nil, []string{"claude-sonnet-4-5"}, time.Now().UTC()),
+			},
 			model:    "gpt-4",
 			expected: false,
 		},
@@ -1239,9 +1256,11 @@ func TestGatewayService_isModelSupportedByAccount(t *testing.T) {
 		},
 		{
 			name: "Anthropic平台-有映射配置-只支持配置的模型",
+			// 零默认：可服务集 = 显式 keys ∪ 快照。快照未含该模型 → 不支持。
 			account: &Account{
 				Platform:    PlatformAnthropic,
 				Credentials: map[string]any{"model_mapping": map[string]any{"claude-opus-4": "x"}},
+				Extra:       ApplyUpstreamModelSnapshot(nil, []string{"claude-opus-4"}, time.Now().UTC()),
 			},
 			model:    "claude-3-5-sonnet-20241022",
 			expected: false,
@@ -1263,12 +1282,14 @@ func TestGatewayService_isModelSupportedByAccount(t *testing.T) {
 		},
 		{
 			name: "Gemini平台-有映射配置-只支持配置的模型",
+			// 零默认：可服务集 = 显式 keys ∪ 快照。快照未含 gemini-2.5-flash → 不支持。
 			account: &Account{
 				Platform: PlatformGemini,
 				Type:     AccountTypeAPIKey,
 				Credentials: map[string]any{
 					"model_mapping": map[string]any{"gemini-2.5-pro": "gemini-2.5-pro"},
 				},
+				Extra: ApplyUpstreamModelSnapshot(nil, []string{"gemini-2.5-pro"}, time.Now().UTC()),
 			},
 			model:    "gemini-2.5-flash",
 			expected: false,
@@ -1663,6 +1684,8 @@ func TestGatewayService_selectAccountWithMixedScheduling(t *testing.T) {
 					Status:      StatusActive,
 					Schedulable: true,
 					Credentials: map[string]any{"model_mapping": map[string]any{"claude-3-5-haiku-20241022": "claude-3-5-haiku-20241022"}},
+					// 零默认：快照未含 claude-3-5-sonnet-20241022 → 账号 5 不支持，被过滤，选中账号 7。
+					Extra: ApplyUpstreamModelSnapshot(nil, []string{"claude-3-5-haiku-20241022"}, time.Now().UTC()),
 				},
 				{ID: 6, Platform: PlatformAnthropic, Priority: 2, Status: StatusActive, Schedulable: true},
 				{ID: 7, Platform: PlatformAnthropic, Priority: 1, Status: StatusActive, Schedulable: true},
@@ -1969,6 +1992,8 @@ func TestGatewayService_selectAccountWithMixedScheduling(t *testing.T) {
 					Status:      StatusActive,
 					Schedulable: true,
 					Credentials: map[string]any{"model_mapping": map[string]any{"claude-3-5-haiku-20241022": "claude-3-5-haiku-20241022"}},
+					// 零默认：快照限定可服务集，未含 claude-3-5-sonnet-20241022 → 无账号支持 → 报错。
+					Extra: ApplyUpstreamModelSnapshot(nil, []string{"claude-3-5-haiku-20241022"}, time.Now().UTC()),
 				},
 			},
 			accountsByID: map[int64]*Account{},
@@ -3120,6 +3145,8 @@ func TestGatewayService_SelectAccountWithLoadAwareness(t *testing.T) {
 					Schedulable: true,
 					Concurrency: 5,
 					Credentials: map[string]any{"model_mapping": map[string]any{"claude-3-5-haiku-20241022": "claude-3-5-haiku-20241022"}},
+					// 零默认：快照未含 claude-3-5-sonnet-20241022 → 账号 6 不支持，路由集无可用账号，回退选中账号 7。
+					Extra: ApplyUpstreamModelSnapshot(nil, []string{"claude-3-5-haiku-20241022"}, time.Now().UTC()),
 				},
 				{ID: 7, Platform: PlatformAnthropic, Priority: 2, Status: StatusActive, Schedulable: true, Concurrency: 5},
 			},

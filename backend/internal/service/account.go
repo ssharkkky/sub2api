@@ -16,8 +16,6 @@ import (
 	"time"
 
 	"github.com/Wei-Shaw/sub2api/internal/config"
-	"github.com/Wei-Shaw/sub2api/internal/domain"
-	"github.com/Wei-Shaw/sub2api/internal/pkg/geminicli"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/openai_compat"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/xai"
 )
@@ -633,78 +631,27 @@ func (a *Account) GetModelMapping() map[string]string {
 }
 
 func (a *Account) resolveModelMapping(rawMapping map[string]any) map[string]string {
-	return applyCatalogDefaultMappings(a, a.resolveStoredModelMapping(rawMapping))
+	return a.resolveStoredModelMapping(rawMapping)
 }
 
+// resolveStoredModelMapping 只返回账号显式配置的 model_mapping（零默认映射）。
+// 空映射返回 nil = 透传：除显式覆盖的名字外，其余请求名原样转发。
+// 不再注入任何平台默认映射（Antigravity/Kiro/Grok/GoogleOne 的历史自动注入已删除）。
+// 底层协议别名（Bedrock region、Claude 长短名）在转发层处理，不在此。
 func (a *Account) resolveStoredModelMapping(rawMapping map[string]any) map[string]string {
-	if a.Credentials == nil {
-		// Antigravity / Kiro 平台使用默认映射
-		if a.Platform == domain.PlatformAntigravity {
-			return domain.DefaultAntigravityModelMapping
-		}
-		if a.Platform == domain.PlatformKiro {
-			return domain.DefaultKiroModelMapping
-		}
-		if a.Platform == domain.PlatformGrok {
-			return xai.DefaultModelMapping()
-		}
-		// Bedrock 默认映射由 forwardBedrock 统一处理（需配合 region prefix 调整）
-		return nil
-	}
 	if len(rawMapping) == 0 {
-		if a.IsGeminiGoogleOne() {
-			return geminicli.GoogleOneModelMapping()
-		}
-		// Antigravity / Kiro 平台使用默认映射
-		if a.Platform == domain.PlatformAntigravity {
-			return domain.DefaultAntigravityModelMapping
-		}
-		if a.Platform == domain.PlatformKiro {
-			return domain.DefaultKiroModelMapping
-		}
-		if a.Platform == domain.PlatformGrok {
-			return xai.DefaultModelMapping()
-		}
 		return nil
 	}
-
 	result := make(map[string]string)
 	for k, v := range rawMapping {
 		if s, ok := v.(string); ok {
 			result[k] = s
 		}
 	}
-	if len(result) > 0 {
-		if a.Platform == domain.PlatformAntigravity {
-			ensureAntigravityDefaultPassthroughs(result, []string{
-				"gemini-3-flash",
-				"gemini-3.1-pro-high",
-				"gemini-3.1-pro-low",
-				"gemini-3.6-flash",
-				"gemini-3.6-flash-high",
-				"gemini-3.6-flash-low",
-				"gemini-3.6-flash-medium",
-				"gemini-3.6-flash-tiered",
-			})
-			applyAntigravityGemini31ProAliases(result)
-		}
-		return result
+	if len(result) == 0 {
+		return nil
 	}
-
-	if a.IsGeminiGoogleOne() {
-		return geminicli.GoogleOneModelMapping()
-	}
-	// Antigravity / Kiro 平台使用默认映射
-	if a.Platform == domain.PlatformAntigravity {
-		return domain.DefaultAntigravityModelMapping
-	}
-	if a.Platform == domain.PlatformKiro {
-		return domain.DefaultKiroModelMapping
-	}
-	if a.Platform == domain.PlatformGrok {
-		return xai.DefaultModelMapping()
-	}
-	return nil
+	return result
 }
 
 func mapPtr(m map[string]any) uintptr {
@@ -736,82 +683,6 @@ func modelMappingSignature(rawMapping map[string]any) uint64 {
 		_, _ = h.Write([]byte{0xff})
 	}
 	return h.Sum64()
-}
-
-func ensureAntigravityDefaultPassthrough(mapping map[string]string, model string) {
-	if mapping == nil || model == "" {
-		return
-	}
-	if _, exists := mapping[model]; exists {
-		return
-	}
-	for pattern := range mapping {
-		if matchWildcard(pattern, model) {
-			return
-		}
-	}
-	mapping[model] = model
-}
-
-func ensureAntigravityDefaultPassthroughs(mapping map[string]string, models []string) {
-	for _, model := range models {
-		ensureAntigravityDefaultPassthrough(mapping, model)
-	}
-}
-
-func applyAntigravityGemini31ProAliases(mapping map[string]string) {
-	target := strings.TrimSpace(mapping[domain.AntigravityGemini31ProAgentModel])
-	if target == "" {
-		return
-	}
-
-	aliases := []struct {
-		model         string
-		legacyTargets map[string]struct{}
-	}{
-		{
-			model: "gemini-3.1-pro",
-			legacyTargets: map[string]struct{}{
-				"gemini-3.1-pro": {},
-			},
-		},
-		{
-			model: "gemini-3.1-pro-high",
-			legacyTargets: map[string]struct{}{
-				"gemini-3.1-pro-high": {},
-			},
-		},
-		{
-			model: "gemini-3.1-pro-preview",
-			legacyTargets: map[string]struct{}{
-				"gemini-3.1-pro-preview": {},
-				"gemini-3.1-pro-high":    {},
-			},
-		},
-	}
-
-	for _, alias := range aliases {
-		current, exists := mapping[alias.model]
-		if exists {
-			if _, legacy := alias.legacyTargets[current]; legacy {
-				mapping[alias.model] = target
-			}
-			continue
-		}
-		if mappingHasWildcardForModel(mapping, alias.model) {
-			continue
-		}
-		mapping[alias.model] = target
-	}
-}
-
-func mappingHasWildcardForModel(mapping map[string]string, model string) bool {
-	for pattern := range mapping {
-		if matchWildcard(pattern, model) {
-			return true
-		}
-	}
-	return false
 }
 
 func normalizeRequestedModelForLookup(platform, requestedModel string) string {
@@ -877,57 +748,37 @@ func hasExplicitStoredModelMapping(credentials map[string]any) bool {
 	}
 }
 
-// ModelMappingRestricts reports whether account model_mapping is still a
-// whitelist. New accounts persist false so mapping only renames. Missing flag
-// keeps the old behavior: a non-empty mapping, including Antigravity/Grok
-// default mappings, continues to restrict.
-func (a *Account) ModelMappingRestricts() bool {
-	if a == nil {
-		return true
-	}
-	if value, ok := credentialBool(a.Credentials, CredentialKeyModelMappingRestricts); ok {
-		return value
-	}
-	return true
-}
-
-// IsModelSupported 检查模型是否在 model_mapping 中（支持通配符）
-// 如果未配置 mapping，返回 true（允许所有模型）。
+// IsModelSupported 判断账号能否服务请求模型（零默认映射语义）。
 //
-// 新账号会写入 model_mapping_restricts=false：映射只改名，不再当白名单。
-// 旧账号缺这个字段时保持原白名单语义，避免突然放行以前故意藏起来的模型。
+// 映射只改名、不决定可服务集合；可服务公开名集合 = 显式 mapping keys ∪ 账号
+// 上游原生快照：
 //
-// 例外：OpenAI OAuth 账号（Codex 上游）的空映射会排除明确属于其他厂商
-// 家族的模型（deepseek-*/glm-* 等）——转发阶段 normalizeOpenAIModelForUpstream
-// 会把未知模型原样透传，Codex 上游对这类模型必然返回不可重试的 400，导致
-// 请求卡死在该账号上、无法 failover 到真正支持该模型的 API Key 账号（#3662）。
-// 未知/自定义别名仍保持允许（兼容渠道级映射），见 isOpenAIOAuthServableModel。
+//	1. OpenAI 透传账号：模型语义完全交由上游，放行所有模型。该短路必须在映射
+//	   判定之前：账号从"白名单模式"切换到透传后，credentials 里常残留旧的非空
+//	   model_mapping，若不在此放行，透传账号会被错误排除出候选集（issue #4936）。
+//	2. OpenAI OAuth 且无显式映射：保留厂商族守卫（#3662，防 Codex 上游对
+//	   deepseek-*/glm-* 等返回不可重试 400 卡死）。未知/自定义别名仍允许。
+//	3. 命中显式 mapping keys（精确 > 通配，含归一化回退查找）：改写成 mapping 值，允许。
+//	4. 否则（透传）：原样转发；上游须原生支持（账号原生快照
+//	   HasSyncedUpstreamModel；从未同步快照的平台 fail-open）。
 func (a *Account) IsModelSupported(requestedModel string) bool {
-	// 透传模式仅替换认证、模型语义完全交由上游决定，因此放行所有模型。
-	// 该短路必须在 model_mapping 判定之前：账号从"白名单模式"切换到透传后，
-	// credentials 里常残留旧的非空 model_mapping，若不在此放行，透传账号会被
-	// model_mapping 白名单错误排除出候选集，导致 no available accounts / 404（issue #4936）。
 	if a.IsOpenAIPassthroughEnabled() {
 		return true
 	}
-	if !a.ModelMappingRestricts() {
-		if a.IsOpenAIOAuth() && !hasExplicitStoredModelMapping(a.Credentials) {
-			return isOpenAIOAuthServableModel(requestedModel)
-		}
-		return true
+	if a.IsOpenAIOAuth() && !hasExplicitStoredModelMapping(a.Credentials) {
+		return isOpenAIOAuthServableModel(requestedModel)
 	}
 	mapping := a.GetModelMapping()
-	if len(mapping) == 0 {
-		if a.IsOpenAIOAuth() {
-			return isOpenAIOAuthServableModel(requestedModel)
+	if len(mapping) > 0 {
+		if mappingSupportsRequestedModel(mapping, requestedModel) {
+			return true
 		}
-		return true // 无映射 = 允许所有
+		normalized := normalizeRequestedModelForLookup(a.Platform, requestedModel)
+		if normalized != requestedModel && mappingSupportsRequestedModel(mapping, normalized) {
+			return true
+		}
 	}
-	if mappingSupportsRequestedModel(mapping, requestedModel) {
-		return true
-	}
-	normalized := normalizeRequestedModelForLookup(a.Platform, requestedModel)
-	return normalized != requestedModel && mappingSupportsRequestedModel(mapping, normalized)
+	return a.HasSyncedUpstreamModel(requestedModel)
 }
 
 // GetMappedModel 获取映射后的模型名（支持通配符，最长优先匹配）

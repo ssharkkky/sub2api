@@ -4,6 +4,7 @@ package service
 
 import (
 	"testing"
+	"time"
 
 	"github.com/Wei-Shaw/sub2api/internal/domain"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/xai"
@@ -12,16 +13,24 @@ import (
 func TestGrokAccountModelMappingCacheInvalidatesWithRuntimeSettings(t *testing.T) {
 	original := xai.RuntimeModelMappingOptions()
 	t.Cleanup(func() { xai.SetRuntimeModelMappingOptions(original) })
-	account := &Account{Platform: PlatformGrok, Credentials: map[string]any{}}
+
+	// 零默认映射：账号 GetMappedModel 只返回显式 model_mapping，不再注入 Grok
+	// cross-client 运行时映射（该行为已上移到分组调度层 ResolveMessagesDispatchModel，P3）。
+	// 这里验证：账号显式映射在运行时设置变化（触发缓存失效重算）后仍稳定返回，
+	// 不受 cross-client 运行时映射影响。
+	account := &Account{Platform: PlatformGrok, Credentials: map[string]any{
+		"model_mapping": map[string]any{"claude-sonnet-4-5": "grok-explicit-target"},
+	}}
 
 	xai.SetRuntimeModelMappingOptions(xai.ModelMappingOptions{})
-	requireMappedModel(t, account, "claude-sonnet-4-5", "claude-sonnet-4-5")
+	requireMappedModel(t, account, "claude-sonnet-4-5", "grok-explicit-target")
 
 	xai.SetRuntimeModelMappingOptions(xai.ModelMappingOptions{
 		DefaultText:          "grok-build-0.1",
 		EnableCrossClientMap: true,
 	})
-	requireMappedModel(t, account, "claude-sonnet-4-5", "grok-build-0.1")
+	// 运行时设置变化后缓存失效重算，显式映射仍稳定返回（cross-client 不泄漏进账号映射）。
+	requireMappedModel(t, account, "claude-sonnet-4-5", "grok-explicit-target")
 }
 
 func requireMappedModel(t *testing.T, account *Account, requested, expected string) {
@@ -160,6 +169,7 @@ func TestAccountIsModelSupported(t *testing.T) {
 		name           string
 		platform       string
 		credentials    map[string]any
+		extra          map[string]any
 		requestedModel string
 		expected       bool
 	}{
@@ -195,6 +205,8 @@ func TestAccountIsModelSupported(t *testing.T) {
 					"claude-sonnet-4-5": "target-model",
 				},
 			},
+			// 零默认：显式映射 key claude-sonnet-4-5 可服务；claude-opus-4-5 未映射且不在上游快照 → 不支持。
+			extra:          ApplyUpstreamModelSnapshot(nil, []string{"target-model"}, time.Now().UTC()),
 			requestedModel: "claude-opus-4-5",
 			expected:       false,
 		},
@@ -228,6 +240,8 @@ func TestAccountIsModelSupported(t *testing.T) {
 					"claude-*": "claude-sonnet-4-5",
 				},
 			},
+			// 零默认：gemini-3-flash 不匹配 claude-* 且不在上游快照 → 不支持。
+			extra:          ApplyUpstreamModelSnapshot(nil, []string{"claude-sonnet-4-5"}, time.Now().UTC()),
 			requestedModel: "gemini-3-flash",
 			expected:       false,
 		},
@@ -251,6 +265,9 @@ func TestAccountIsModelSupported(t *testing.T) {
 					"gemini-3.6-flash": "gemini-3.6-flash-tiered",
 				},
 			},
+			// 零默认：legacy restricts flag 已不再参与判定；可服务集 = 显式 key ∪ 快照。
+			// gemini-3.7-flash 未映射且不在快照 → 不支持（限制来自快照，非 legacy flag）。
+			extra:          ApplyUpstreamModelSnapshot(nil, []string{"gemini-3.6-flash-tiered"}, time.Now().UTC()),
 			requestedModel: "gemini-3.7-flash",
 			expected:       false,
 		},
@@ -258,6 +275,8 @@ func TestAccountIsModelSupported(t *testing.T) {
 			name:           "legacy antigravity empty mapping still uses default whitelist",
 			platform:       PlatformAntigravity,
 			credentials:    map[string]any{},
+			// 零默认：无默认白名单；可服务集 = 上游原生快照。claude-unknown-model 不在快照 → 不支持。
+			extra:          ApplyUpstreamModelSnapshot(nil, []string{"claude-sonnet-4-5"}, time.Now().UTC()),
 			requestedModel: "claude-unknown-model",
 			expected:       false,
 		},
@@ -277,6 +296,7 @@ func TestAccountIsModelSupported(t *testing.T) {
 			account := &Account{
 				Platform:    tt.platform,
 				Credentials: tt.credentials,
+				Extra:       tt.extra,
 			}
 			result := account.IsModelSupported(tt.requestedModel)
 			if result != tt.expected {
@@ -387,6 +407,9 @@ func TestAccountGetMappedModel(t *testing.T) {
 func TestAccountGetModelMapping_AntigravityNormalizesGemini31ProAliases(t *testing.T) {
 	t.Parallel()
 
+	// 零默认映射：GetModelMapping 只返回账号显式 model_mapping，不再自动归一化
+	// gemini-3.1-pro 别名到上游路由（历史 DefaultAntigravityModelMapping 已删除）。
+	// 需要别名→路由改写的运维在账号上显式配置即可。
 	account := &Account{
 		Platform: PlatformAntigravity,
 		Credentials: map[string]any{
@@ -400,14 +423,19 @@ func TestAccountGetModelMapping_AntigravityNormalizesGemini31ProAliases(t *testi
 
 	mapping := account.GetModelMapping()
 
-	if got := mapping["gemini-3.1-pro"]; got != domain.AntigravityGemini31ProAgentModel {
-		t.Fatalf("expected gemini-3.1-pro to map to %q, got %q", domain.AntigravityGemini31ProAgentModel, got)
+	// 显式映射原样返回。
+	if got := mapping[domain.AntigravityGemini31ProAgentModel]; got != domain.AntigravityGemini31ProAgentModel {
+		t.Fatalf("expected explicit %q preserved, got %q", domain.AntigravityGemini31ProAgentModel, got)
 	}
-	if got := mapping["gemini-3.1-pro-high"]; got != domain.AntigravityGemini31ProAgentModel {
-		t.Fatalf("expected gemini-3.1-pro-high to map to %q, got %q", domain.AntigravityGemini31ProAgentModel, got)
+	if got := mapping["gemini-3.1-pro-high"]; got != "gemini-3.1-pro-high" {
+		t.Fatalf("expected explicit gemini-3.1-pro-high preserved as-is, got %q", got)
 	}
-	if got := mapping["gemini-3.1-pro-preview"]; got != domain.AntigravityGemini31ProAgentModel {
-		t.Fatalf("expected gemini-3.1-pro-preview to map to %q, got %q", domain.AntigravityGemini31ProAgentModel, got)
+	if got := mapping["gemini-3.1-pro-preview"]; got != "gemini-3.1-pro-high" {
+		t.Fatalf("expected explicit gemini-3.1-pro-preview preserved as-is, got %q", got)
+	}
+	// 未显式配置的别名不再自动归一化（零默认）。
+	if _, ok := mapping["gemini-3.1-pro"]; ok {
+		t.Fatalf("did not expect auto-normalized gemini-3.1-pro alias, got %v", mapping)
 	}
 }
 
@@ -433,8 +461,9 @@ func TestAccountGetModelMapping_AntigravityPreservesGemini31ProOverrides(t *test
 	if got := mapping["gemini-3.1-pro-preview"]; got != "custom-preview" {
 		t.Fatalf("expected gemini-3.1-pro-preview override to be preserved, got %q", got)
 	}
-	if got := mapping["gemini-3.1-pro"]; got != domain.AntigravityGemini31ProAgentModel {
-		t.Fatalf("expected gemini-3.1-pro alias to default to %q, got %q", domain.AntigravityGemini31ProAgentModel, got)
+	// 未显式配置的 gemini-3.1-pro 别名不再自动归一化（零默认映射）。
+	if _, ok := mapping["gemini-3.1-pro"]; ok {
+		t.Fatalf("did not expect auto-normalized gemini-3.1-pro alias, got %v", mapping)
 	}
 }
 
@@ -564,15 +593,19 @@ func TestAccountGetModelMapping_AntigravityEnsuresGeminiDefaultPassthroughs(t *t
 		},
 	}
 
+	// 零默认映射：Antigravity 账号 GetModelMapping 只返回显式 model_mapping，
+	// 不再自动填充 gemini 默认透传（历史 DefaultAntigravityModelMapping 已删除）。
 	mapping := account.GetModelMapping()
-	if mapping["gemini-3-flash"] != "gemini-3-flash" {
-		t.Fatalf("expected gemini-3-flash passthrough to be auto-filled, got: %q", mapping["gemini-3-flash"])
+
+	// 显式映射保留。
+	if got := mapping["gemini-3-pro-high"]; got != "gemini-3.1-pro-high" {
+		t.Fatalf("expected explicit gemini-3-pro-high mapping preserved, got %q", got)
 	}
-	if mapping["gemini-3.1-pro-high"] != "gemini-3.1-pro-high" {
-		t.Fatalf("expected gemini-3.1-pro-high passthrough to be auto-filled, got: %q", mapping["gemini-3.1-pro-high"])
-	}
-	if mapping["gemini-3.1-pro-low"] != "gemini-3.1-pro-low" {
-		t.Fatalf("expected gemini-3.1-pro-low passthrough to be auto-filled, got: %q", mapping["gemini-3.1-pro-low"])
+	// 未显式配置的模型不再自动填充透传。
+	for _, model := range []string{"gemini-3-flash", "gemini-3.1-pro-high", "gemini-3.1-pro-low"} {
+		if _, ok := mapping[model]; ok {
+			t.Fatalf("did not expect auto-filled passthrough for %q, got %v", model, mapping)
+		}
 	}
 }
 
@@ -585,19 +618,32 @@ func TestAccountGetModelMapping_GoogleOneUsesConservativeDefaults(t *testing.T) 
 		},
 	}
 
+	// 零默认映射：google_one 账号无显式 model_mapping 时 GetModelMapping 为空，
+	// 不再自动填充保守默认透传（历史 geminicli.GoogleOneModelMapping 已删除）。
 	mapping := account.GetModelMapping()
-	for _, model := range []string{"gemini-2.0-flash", "gemini-2.5-flash", "gemini-2.5-pro"} {
-		if mapping[model] != model {
-			t.Fatalf("expected Google One model %q to map to itself, got %q", model, mapping[model])
-		}
+	if len(mapping) != 0 {
+		t.Fatalf("expected empty mapping for google_one account without explicit mapping, got %v", mapping)
 	}
-	for _, model := range []string{"gemini-2.5-flash-image", "gemini-3.1-flash-image", "gemini-3.5-flash"} {
-		if _, ok := mapping[model]; ok {
-			t.Fatalf("did not expect unsupported Google One model %q", model)
-		}
+
+	// 无快照且无显式映射：支持判定回退到上游快照；快照缺失不限制调度（透传）→ 支持。
+	if !account.IsModelSupported("gemini-3.5-flash") {
+		t.Fatal("google_one account without snapshot should passthrough (no restriction) and report the model as supported")
 	}
-	if account.IsModelSupported("gemini-3.5-flash") {
-		t.Fatal("Google One defaults must not treat unsupported models as eligible")
+
+	// 有快照且快照不含该模型时，按证据型判定 → 不支持。
+	withSnapshot := &Account{
+		Platform: PlatformGemini,
+		Type:     AccountTypeOAuth,
+		Credentials: map[string]any{
+			"oauth_type": "google_one",
+		},
+		Extra: ApplyUpstreamModelSnapshot(nil, []string{"gemini-2.5-flash"}, time.Now().UTC()),
+	}
+	if withSnapshot.IsModelSupported("gemini-3.5-flash") {
+		t.Fatal("google_one account with a snapshot lacking the model must not report it as supported")
+	}
+	if !withSnapshot.IsModelSupported("gemini-2.5-flash") {
+		t.Fatal("google_one account snapshot covering the model should report it as supported")
 	}
 }
 

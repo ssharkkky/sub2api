@@ -6,6 +6,7 @@ import (
 	"context"
 	"errors"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/require"
 )
@@ -152,6 +153,8 @@ func TestImagePlaygroundModelEligible_ChannelMappedRequiresExecutableAccountMapp
 		Credentials: map[string]any{
 			"model_mapping": map[string]any{"gpt-image-1": "gpt-image-1"},
 		},
+		// 零默认：快照未含渠道映射目标 gpt-image-2 → 无账号接受渠道映射模型 → 不可用。
+		Extra: ApplyUpstreamModelSnapshot(nil, []string{"gpt-image-1"}, time.Now().UTC()),
 	}}}
 	svc := &GatewayService{accountRepo: repo, channelService: channelSvc}
 
@@ -462,7 +465,7 @@ func TestResolveAccountUpstreamModel_Antigravity(t *testing.T) {
 	account := &Account{
 		Platform: PlatformAntigravity,
 	}
-	// Antigravity 平台使用 DefaultAntigravityModelMapping
+	// 零默认：无显式映射、无快照 → 透传（支持性由 IsModelSupported 单独判定）。
 	got := resolveAccountUpstreamModel(account, "claude-sonnet-4-6")
 	require.Equal(t, "claude-sonnet-4-6", got)
 }
@@ -472,8 +475,9 @@ func TestResolveAccountUpstreamModel_Antigravity_Unsupported(t *testing.T) {
 	account := &Account{
 		Platform: PlatformAntigravity,
 	}
+	// 零默认：无显式映射、无快照 → 未知模型透传（不再因不在默认映射而返回空）。
 	got := resolveAccountUpstreamModel(account, "totally-unknown-model")
-	require.Equal(t, "", got, "unsupported model should return empty")
+	require.Equal(t, "totally-unknown-model", got, "zero-default: unknown model passes through")
 }
 
 func TestResolveAccountUpstreamModel_NonAntigravity(t *testing.T) {
@@ -707,7 +711,8 @@ func TestIsUpstreamModelRestrictedByChannel_UnsupportedModel(t *testing.T) {
 	svc := &GatewayService{channelService: channelSvc}
 
 	account := &Account{Platform: PlatformAntigravity}
-	// totally-unknown-model 不在 DefaultAntigravityModelMapping 中 → 映射结果为空
-	require.False(t, svc.isUpstreamModelRestrictedByChannel(context.Background(), 10, account, "totally-unknown-model"),
-		"unmappable model → upstream model empty → not restricted (account filter handles this)")
+	// 零默认：无显式映射、无快照 → totally-unknown-model 透传为上游模型；
+	// 不在渠道定价 ["claude-opus-4-6"] 中 → 受限。
+	require.True(t, svc.isUpstreamModelRestrictedByChannel(context.Background(), 10, account, "totally-unknown-model"),
+		"zero-default: passthrough model not in channel pricing → restricted")
 }

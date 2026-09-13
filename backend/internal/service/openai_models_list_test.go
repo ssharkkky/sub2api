@@ -265,7 +265,7 @@ func TestPinnedOpenAIModelsListMixedAccountsShareColdCacheAcrossGroups(t *testin
 		}()
 	}
 	wait.Wait()
-	for i, result := range results {
+	for _, result := range results {
 		require.NoError(t, result.err)
 		require.EqualValues(t, 2, result.account.ID)
 		var catalog struct {
@@ -282,11 +282,8 @@ func TestPinnedOpenAIModelsListMixedAccountsShareColdCacheAcrossGroups(t *testin
 				require.Equal(t, "api-provider", model.Owner)
 			}
 		}
-		if i == 0 {
-			require.Equal(t, []string{"oauth-special", "shared-model"}, ids)
-		} else {
-			require.Equal(t, []string{"shared-model", "api-special", "oauth-special"}, ids)
-		}
+		// R3：白名单不再过滤，两组返回相同模型列表。
+		require.Equal(t, []string{"shared-model", "api-special", "oauth-special"}, ids)
 	}
 	require.EqualValues(t, 1, apiCalls.Load())
 	require.EqualValues(t, 1, oauthCalls.Load())

@@ -1416,7 +1416,8 @@ func TestMergeGroupConfiguredCodexModelsKeepsExplicitAutoReviewSelection(t *test
 	}
 
 	require.NoError(t, svc.MergeGroupConfiguredCodexModels(context.Background(), group, manifest, ""))
-	require.Equal(t, []string{"codex-auto-review"}, codexManifestModelSlugs(t, manifest.Body))
+	// R3：白名单不再过滤常规模型，上游 gpt-5.6 保留；codex-auto-review 因显式启用保留。
+	require.Equal(t, []string{"codex-auto-review", "gpt-5.6"}, codexManifestModelSlugs(t, manifest.Body))
 }
 
 func TestMergeGroupConfiguredCodexModelsHonorsCustomListAndFinalETag(t *testing.T) {
@@ -1451,8 +1452,11 @@ func TestMergeGroupConfiguredCodexModelsHonorsCustomListAndFinalETag(t *testing.
 
 	require.NoError(t, svc.MergeGroupConfiguredCodexModels(context.Background(), group, manifest, ""))
 	models := decodeCodexManifestModels(t, manifest.Body)
-	require.Len(t, models, 1)
-	requireCompleteConfiguredCodexModel(t, models[0], "deepseek-4-pro")
+	// R3：白名单不再过滤，上游 gpt-5.6 保留（在前）+ 配置模型（mapping keys）加入。
+	require.Len(t, models, 3)
+	require.Equal(t, "gpt-5.6", models[0]["slug"])
+	requireCompleteConfiguredCodexModel(t, models[1], "deepseek-4-pro")
+	require.Equal(t, "hidden-alias", models[2]["slug"])
 
 	finalETag := manifest.ETag
 	second := &OpenAIModelsResponse{Body: upstreamBody}
@@ -2716,7 +2720,8 @@ func TestFetchCodexModelsManifestAPIKeyCacheSurvivesClientMutation(t *testing.T)
 		first,
 		"",
 	))
-	require.Equal(t, []string{"model-a"}, codexManifestModelSlugs(t, first.Body))
+	// R3：白名单不再过滤，first 保留 model-a + model-b。
+	require.Equal(t, []string{"model-a", "model-b"}, codexManifestModelSlugs(t, first.Body))
 
 	second, err := s.FetchCodexModelsManifest(context.Background(), account, "0.144.0", "")
 	require.NoError(t, err)
@@ -2743,7 +2748,7 @@ func TestFetchCodexModelsManifestAPIKeyCacheSurvivesClientMutation(t *testing.T)
 				manifest,
 				"",
 			))
-			require.Equal(t, []string{"model-b"}, codexManifestModelSlugs(t, manifest.Body))
+			require.Equal(t, []string{"model-a", "model-b"}, codexManifestModelSlugs(t, manifest.Body))
 		}()
 	}
 	wg.Wait()
@@ -3606,19 +3611,11 @@ func TestFetchCodexModelsManifestOAuthSharedAcrossGroupsWithIndependentFiltering
 	}
 	close(release)
 
-	got := map[int64][]string{91: nil, 92: nil}
+	// R3：白名单不再过滤，两个分组共享同一缓存模型列表。
 	for i := 0; i < 2; i++ {
 		r := <-results
 		require.NoError(t, r.err)
-		if len(r.slugs) == 1 && r.slugs[0] == "model-a" {
-			got[91] = r.slugs
-		} else if len(r.slugs) == 1 && r.slugs[0] == "model-b" {
-			got[92] = r.slugs
-		} else {
-			t.Fatalf("unexpected filtered slugs: %v", r.slugs)
-		}
+		require.Equal(t, []string{"model-a", "model-b"}, r.slugs)
 	}
-	require.Equal(t, []string{"model-a"}, got[91])
-	require.Equal(t, []string{"model-b"}, got[92])
 	require.EqualValues(t, 1, calls.Load(), "同一账号两个分组同时请求时只发一次上游请求")
 }
