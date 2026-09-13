@@ -726,14 +726,6 @@ func resolveRequestedModelInMapping(mapping map[string]string, requestedModel st
 
 const CredentialKeyModelMappingRestricts = "model_mapping_restricts"
 
-func credentialBool(credentials map[string]any, key string) (bool, bool) {
-	if credentials == nil {
-		return false, false
-	}
-	value, ok := credentials[key].(bool)
-	return value, ok
-}
-
 func hasExplicitStoredModelMapping(credentials map[string]any) bool {
 	if credentials == nil {
 		return false
@@ -753,14 +745,14 @@ func hasExplicitStoredModelMapping(credentials map[string]any) bool {
 // 映射只改名、不决定可服务集合；可服务公开名集合 = 显式 mapping keys ∪ 账号
 // 上游原生快照：
 //
-//	1. OpenAI 透传账号：模型语义完全交由上游，放行所有模型。该短路必须在映射
-//	   判定之前：账号从"白名单模式"切换到透传后，credentials 里常残留旧的非空
-//	   model_mapping，若不在此放行，透传账号会被错误排除出候选集（issue #4936）。
-//	2. OpenAI OAuth 且无显式映射：保留厂商族守卫（#3662，防 Codex 上游对
-//	   deepseek-*/glm-* 等返回不可重试 400 卡死）。未知/自定义别名仍允许。
-//	3. 命中显式 mapping keys（精确 > 通配，含归一化回退查找）：改写成 mapping 值，允许。
-//	4. 否则（透传）：原样转发；上游须原生支持（账号原生快照
-//	   HasSyncedUpstreamModel；从未同步快照的平台 fail-open）。
+//  1. OpenAI 透传账号：模型语义完全交由上游，放行所有模型。该短路必须在映射
+//     判定之前：账号从"白名单模式"切换到透传后，credentials 里常残留旧的非空
+//     model_mapping，若不在此放行，透传账号会被错误排除出候选集（issue #4936）。
+//  2. OpenAI OAuth 且无显式映射：保留厂商族守卫（#3662，防 Codex 上游对
+//     deepseek-*/glm-* 等返回不可重试 400 卡死）。未知/自定义别名仍允许。
+//  3. 命中显式 mapping keys（精确 > 通配，含归一化回退查找）：改写成 mapping 值，允许。
+//  4. 否则（透传）：原样转发；上游须原生支持（账号原生快照
+//     HasSyncedUpstreamModel；从未同步快照的平台 fail-open）。
 func (a *Account) IsModelSupported(requestedModel string) bool {
 	if a.IsOpenAIPassthroughEnabled() {
 		return true

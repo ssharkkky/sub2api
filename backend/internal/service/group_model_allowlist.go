@@ -95,11 +95,9 @@ func (a GroupModelAllowlist) Allows(model string) bool {
 	return true
 }
 
-
 // FilterForListing 已随 R3 删除：分组模型白名单不再作为独立用户可见约束源，
 // 模型列表不再按白名单过滤（渠道定价是唯一约束）。保留方法以兼容既有调用点，
 // 直接返回 source（无过滤）。
 func (a GroupModelAllowlist) FilterForListing(source []string) []string {
 	return source
 }
-

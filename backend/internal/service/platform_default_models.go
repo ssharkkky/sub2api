@@ -86,5 +86,3 @@ func mergeUniqueModelIDs(groups ...[]string) []string {
 	}
 	return out
 }
-
-

@@ -947,7 +947,7 @@ func TestGeminiMessagesCompatService_isModelSupportedByAccount(t *testing.T) {
 			expected: true,
 		},
 		{
-			name:     "Antigravity平台-不支持gpt模型",
+			name: "Antigravity平台-不支持gpt模型",
 			// 零默认：快照未含 gpt-4 → 不支持（限制来自快照）。
 			account:  &Account{Platform: PlatformAntigravity, Extra: ApplyUpstreamModelSnapshot(nil, []string{"claude-sonnet-4-5"}, time.Now().UTC())},
 			model:    "gpt-4",

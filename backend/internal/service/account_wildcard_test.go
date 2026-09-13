@@ -272,9 +272,9 @@ func TestAccountIsModelSupported(t *testing.T) {
 			expected:       false,
 		},
 		{
-			name:           "legacy antigravity empty mapping still uses default whitelist",
-			platform:       PlatformAntigravity,
-			credentials:    map[string]any{},
+			name:        "legacy antigravity empty mapping still uses default whitelist",
+			platform:    PlatformAntigravity,
+			credentials: map[string]any{},
 			// 零默认：无默认白名单；可服务集 = 上游原生快照。claude-unknown-model 不在快照 → 不支持。
 			extra:          ApplyUpstreamModelSnapshot(nil, []string{"claude-sonnet-4-5"}, time.Now().UTC()),
 			requestedModel: "claude-unknown-model",

@@ -15,4 +15,3 @@ func TestPlatformDefaultModelIDs_IncludesCatalogOnlyModels(t *testing.T) {
 	require.Contains(t, gemini, "gemini-3.7-flash")
 	require.Contains(t, gemini, "gemini-2.5-flash")
 }
-
