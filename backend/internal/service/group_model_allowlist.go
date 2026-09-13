@@ -82,7 +82,9 @@ func normalizeGroupModelAllowlist(cfg GroupModelAllowlist) (GroupModelAllowlist,
 }
 
 // ModelAllowlistEnabled 报告该分组是否启用了模型白名单。
-// 开启后所有携带模型的网关请求与模型列表接口都受白名单约束。
+// 注：R3 后分组白名单不再是独立用户可见约束源（渠道定价是唯一约束），
+// 请求/列表门禁已移除。此方法保留给 auto 模式 opt-in 与
+// mergeConfiguredCodexModelsManifest 的 filterBySelection 使用。
 func (g *Group) ModelAllowlistEnabled() bool {
 	return g != nil && g.ModelAllowlist.Enabled
 }

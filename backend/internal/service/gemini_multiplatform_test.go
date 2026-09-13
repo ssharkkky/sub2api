@@ -695,6 +695,8 @@ func TestGeminiMessagesCompatService_SelectAccountForModelWithExclusions_NoModel
 				Status:      StatusActive,
 				Schedulable: true,
 				Credentials: map[string]any{"model_mapping": map[string]any{"gemini-1.0-pro": "gemini-1.0-pro"}},
+				// 零默认：快照未含 gemini-2.5-flash → 无账号支持 → 报错。
+				Extra: ApplyUpstreamModelSnapshot(nil, []string{"gemini-1.0-pro"}, time.Now().UTC()),
 			},
 		},
 		accountsByID: map[int64]*Account{},
@@ -946,7 +948,8 @@ func TestGeminiMessagesCompatService_isModelSupportedByAccount(t *testing.T) {
 		},
 		{
 			name:     "Antigravity平台-不支持gpt模型",
-			account:  &Account{Platform: PlatformAntigravity},
+			// 零默认：快照未含 gpt-4 → 不支持（限制来自快照）。
+			account:  &Account{Platform: PlatformAntigravity, Extra: ApplyUpstreamModelSnapshot(nil, []string{"claude-sonnet-4-5"}, time.Now().UTC())},
 			model:    "gpt-4",
 			expected: false,
 		},
@@ -972,6 +975,7 @@ func TestGeminiMessagesCompatService_isModelSupportedByAccount(t *testing.T) {
 		},
 		{
 			name: "Antigravity平台-自定义映射-不在映射中的模型不支持",
+			// 零默认：claude-sonnet-4-5 未映射且不在快照 → 不支持。
 			account: &Account{
 				Platform: PlatformAntigravity,
 				Credentials: map[string]any{
@@ -979,6 +983,7 @@ func TestGeminiMessagesCompatService_isModelSupportedByAccount(t *testing.T) {
 						"my-custom-model": "upstream-model",
 					},
 				},
+				Extra: ApplyUpstreamModelSnapshot(nil, []string{"upstream-model"}, time.Now().UTC()),
 			},
 			model:    "claude-sonnet-4-5",
 			expected: false,
@@ -991,9 +996,11 @@ func TestGeminiMessagesCompatService_isModelSupportedByAccount(t *testing.T) {
 		},
 		{
 			name: "Gemini平台-有映射配置-只支持配置的模型",
+			// 零默认：gemini-2.5-flash 未映射且不在快照 → 不支持（限制来自快照）。
 			account: &Account{
 				Platform:    PlatformGemini,
 				Credentials: map[string]any{"model_mapping": map[string]any{"gemini-2.5-pro": "x"}},
+				Extra:       ApplyUpstreamModelSnapshot(nil, []string{"x"}, time.Now().UTC()),
 			},
 			model:    "gemini-2.5-flash",
 			expected: false,

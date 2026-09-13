@@ -323,14 +323,14 @@ func filterStorefrontCoverageAccounts(accounts []Account, platform string) []Acc
 	return out
 }
 
-// AnnotateCatalogStorefrontCoverage fills per-model account coverage from
-// snapshots. It never uses the intersection as the user-facing shelf.
-// AnnotateCatalogStorefrontCoverage fills per-model account coverage. Coverage
-// = how many bound accounts can PARTICIPATE IN ROUTING this public name, via the
-// actual routing judgment (IsModelSupported: explicit mapping hit or native
-// snapshot hit, including the OpenAI OAuth vendor guard). It is a
-// routing-participation count (fail-open for unmapped accounts without a
-// snapshot), not a "confirmed served" count; CoverageSynced separately reports
+// AnnotateCatalogStorefrontCoverage fills per-model account coverage. It never
+// uses the intersection as the user-facing shelf.
+//
+// Coverage = how many bound accounts can PARTICIPATE IN ROUTING this public
+// name, judged by evidence (storefrontAccountCoversModel): an account counts
+// only if it has an explicit mapping hit OR a native snapshot hit (including the
+// OpenAI OAuth vendor guard). Accounts with neither a mapping nor a snapshot are
+// NOT counted (evidence-based, not fail-open). CoverageSynced separately reports
 // the number of accounts that currently hold a valid snapshot.
 func AnnotateCatalogStorefrontCoverage(models []CatalogStorefrontModel, accounts []Account) []CatalogStorefrontModel {
 	total := len(accounts)

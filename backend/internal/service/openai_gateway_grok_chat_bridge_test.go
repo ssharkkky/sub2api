@@ -707,6 +707,8 @@ func grokChatBridgeTestAccount(id int64) *Account {
 			"refresh_token": "refresh-token",
 			"expires_at":    time.Now().Add(2 * time.Hour).UTC().Format(time.RFC3339),
 			"base_url":      xai.DefaultCLIBaseURL,
+			// 零默认映射：显式配置 grok → grok-4.6（典型 Grok 账号）。
+			"model_mapping": map[string]any{"grok": "grok-4.6"},
 		},
 	}
 }

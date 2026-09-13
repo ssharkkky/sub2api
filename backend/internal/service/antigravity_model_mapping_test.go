@@ -4,6 +4,7 @@ package service
 
 import (
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/require"
 )
@@ -37,42 +38,43 @@ func TestAntigravityGatewayService_GetMappedModel(t *testing.T) {
 			expected:       "my-opus",
 		},
 
-		// 2. 默认映射（DefaultAntigravityModelMapping）
+		// 2. 零默认映射：无显式 mapping（且无快照）= 透传，请求名原样返回。
+		//    （历史 DefaultAntigravityModelMapping 的自动改写已删除。）
 		{
-			name:           "默认映射 - claude-opus-4-6 → claude-opus-4-6-thinking",
+			name:           "透传 - claude-opus-4-6（无显式映射）",
 			requestedModel: "claude-opus-4-6",
 			accountMapping: nil,
-			expected:       "claude-opus-4-6-thinking",
+			expected:       "claude-opus-4-6",
 		},
 		{
-			name:           "默认映射 - claude-opus-4-5-20251101 → claude-opus-4-6-thinking",
+			name:           "透传 - claude-opus-4-5-20251101（无显式映射）",
 			requestedModel: "claude-opus-4-5-20251101",
 			accountMapping: nil,
-			expected:       "claude-opus-4-6-thinking",
+			expected:       "claude-opus-4-5-20251101",
 		},
 		{
-			name:           "默认映射 - claude-opus-4-5-thinking → claude-opus-4-6-thinking",
+			name:           "透传 - claude-opus-4-5-thinking（无显式映射）",
 			requestedModel: "claude-opus-4-5-thinking",
 			accountMapping: nil,
-			expected:       "claude-opus-4-6-thinking",
+			expected:       "claude-opus-4-5-thinking",
 		},
 		{
-			name:           "默认映射 - claude-haiku-4-5 → claude-sonnet-4-6",
+			name:           "透传 - claude-haiku-4-5（无显式映射）",
 			requestedModel: "claude-haiku-4-5",
 			accountMapping: nil,
-			expected:       "claude-sonnet-4-6",
+			expected:       "claude-haiku-4-5",
 		},
 		{
-			name:           "默认映射 - claude-haiku-4-5-20251001 → claude-sonnet-4-6",
+			name:           "透传 - claude-haiku-4-5-20251001（无显式映射）",
 			requestedModel: "claude-haiku-4-5-20251001",
 			accountMapping: nil,
-			expected:       "claude-sonnet-4-6",
+			expected:       "claude-haiku-4-5-20251001",
 		},
 		{
-			name:           "默认映射 - claude-sonnet-4-5-20250929 → claude-sonnet-4-6",
+			name:           "透传 - claude-sonnet-4-5-20250929（无显式映射）",
 			requestedModel: "claude-sonnet-4-5-20250929",
 			accountMapping: nil,
-			expected:       "claude-sonnet-4-6",
+			expected:       "claude-sonnet-4-5-20250929",
 		},
 
 		// 3. 默认映射中的透传（映射到自己）
@@ -119,10 +121,10 @@ func TestAntigravityGatewayService_GetMappedModel(t *testing.T) {
 			expected:       "claude-opus-4-6-thinking",
 		},
 		{
-			name:           "默认映射 - claude-sonnet-4-5-thinking → claude-sonnet-4-6",
+			name:           "透传 - claude-sonnet-4-5-thinking（无显式映射）",
 			requestedModel: "claude-sonnet-4-5-thinking",
 			accountMapping: nil,
-			expected:       "claude-sonnet-4-6",
+			expected:       "claude-sonnet-4-5-thinking",
 		},
 		{
 			name:           "账户显式目标只映射一步 - custom-sonnet → claude-sonnet-4-5",
@@ -152,36 +154,36 @@ func TestAntigravityGatewayService_GetMappedModel(t *testing.T) {
 			expected:       "gemini-3-flash",
 		},
 
-		// 4. 未在默认映射中的模型返回空字符串（不支持）
+		// 4. 零默认映射：无显式 mapping 的模型一律透传（不再返回空）。
 		{
-			name:           "未知模型 - claude-unknown 返回空",
+			name:           "透传 - claude-unknown（无显式映射）",
 			requestedModel: "claude-unknown",
 			accountMapping: nil,
-			expected:       "",
+			expected:       "claude-unknown",
 		},
 		{
-			name:           "未知模型 - claude-3-5-sonnet-20241022 返回空（未在默认映射）",
+			name:           "透传 - claude-3-5-sonnet-20241022（无显式映射）",
 			requestedModel: "claude-3-5-sonnet-20241022",
 			accountMapping: nil,
-			expected:       "",
+			expected:       "claude-3-5-sonnet-20241022",
 		},
 		{
-			name:           "未知模型 - claude-3-opus-20240229 返回空",
+			name:           "透传 - claude-3-opus-20240229（无显式映射）",
 			requestedModel: "claude-3-opus-20240229",
 			accountMapping: nil,
-			expected:       "",
+			expected:       "claude-3-opus-20240229",
 		},
 		{
-			name:           "未知模型 - claude-opus-4 返回空",
+			name:           "透传 - claude-opus-4（无显式映射）",
 			requestedModel: "claude-opus-4",
 			accountMapping: nil,
-			expected:       "",
+			expected:       "claude-opus-4",
 		},
 		{
-			name:           "未知模型 - gemini-future-model 返回空",
+			name:           "透传 - gemini-future-model（无显式映射）",
 			requestedModel: "gemini-future-model",
 			accountMapping: nil,
-			expected:       "",
+			expected:       "gemini-future-model",
 		},
 	}
 
@@ -215,10 +217,10 @@ func TestAntigravityGatewayService_GetMappedModel_EdgeCases(t *testing.T) {
 		requestedModel string
 		expected       string
 	}{
-		// 空字符串和非 claude/gemini 前缀返回空字符串
+		// 空字符串返回空；零默认映射下非空请求名一律透传（不再区分前缀返回空）。
 		{"空字符串", "", ""},
-		{"非claude/gemini前缀 - gpt", "gpt-4", ""},
-		{"非claude/gemini前缀 - llama", "llama-3", ""},
+		{"透传 - gpt（无显式映射）", "gpt-4", "gpt-4"},
+		{"透传 - llama（无显式映射）", "llama-3", "llama-3"},
 	}
 
 	for _, tt := range tests {
@@ -287,10 +289,10 @@ func TestMapAntigravityModel_WildcardTargetEqualsRequest(t *testing.T) {
 			expected:       "claude-sonnet-4-5",
 		},
 		{
-			name:           "wildcard no match",
+			name:           "wildcard no match（零默认：未命中显式映射 = 透传）",
 			modelMapping:   map[string]any{"claude-*": "claude-sonnet-4-5"},
 			requestedModel: "gpt-4o",
-			expected:       "",
+			expected:       "gpt-4o",
 		},
 		{
 			name:           "explicit passthrough same name",
@@ -339,4 +341,29 @@ func TestMapAntigravityModel_RenameOnlyPassesUnmappedModels(t *testing.T) {
 
 	require.Equal(t, "gemini-3.6-flash-tiered", mapAntigravityModel(account, "gemini-3.6-flash"))
 	require.Equal(t, "gemini-3.7-flash", mapAntigravityModel(account, "gemini-3.7-flash"))
+}
+
+// TestMapAntigravityModel_ExplicitMappingWinsOverSnapshot 验证 M-1：
+// 当请求名同时存在于上游快照且账号有显式非恒等改写时，显式改写必须优先
+// （不得被快照透传静默覆盖）。无显式覆盖的快照模型仍走透传。
+func TestMapAntigravityModel_ExplicitMappingWinsOverSnapshot(t *testing.T) {
+	now := time.Now().UTC()
+	account := &Account{
+		Platform: PlatformAntigravity,
+		Extra:    ApplyUpstreamModelSnapshot(nil, []string{"claude-opus-4-6", "gemini-3.7-flash"}, now),
+		Credentials: map[string]any{
+			"model_mapping": map[string]any{
+				// 显式改写：claude-opus-4-6 → claude-opus-4-6-thinking
+				// 该名字同时在上游快照中，改写必须优先。
+				"claude-opus-4-6": "claude-opus-4-6-thinking",
+			},
+		},
+	}
+
+	// 重叠名：显式改写优先于快照透传。
+	require.Equal(t, "claude-opus-4-6-thinking", mapAntigravityModel(account, "claude-opus-4-6"))
+	// 快照内但无显式覆盖：透传。
+	require.Equal(t, "gemini-3.7-flash", mapAntigravityModel(account, "gemini-3.7-flash"))
+	// 既不在快照也无显式映射：透传（零默认）。
+	require.Equal(t, "some-new-model", mapAntigravityModel(account, "some-new-model"))
 }
