@@ -59,8 +59,9 @@ const (
 	providerGeminiPathTemplate = "/v1beta/models/%s:generateContent"
 
 	// MonitorProviderOpenAI 等 provider 字符串常量（也是 ent enum 的实际值）。
-	// 后 5 个 provider（antigravity/kiro/kimi/zhipu/deepseek）为配额模式引入：
-	// antigravity 与 kiro 无探活 adapter（仅配额），国产 3 个复用 OpenAI 兼容探活。
+	// 配额模式引入的 provider（antigravity/kiro/kimi/zhipu/deepseek/minimax/opencode_go）：
+	// antigravity 与 kiro 无探活 adapter（仅配额），国产 3 个复用 OpenAI 兼容探活，
+	// minimax 有独立探活 adapter，opencode_go 走 OpenCode OAuth（Zen/GO）协议、无探活 adapter（仅配额）。
 	// kiro 走 AWS CodeWhisperer event-stream 协议，与 providerAdapters 假定的
 	// 「JSON POST + gjson 取文本」形态不兼容，故不注册探活。
 	MonitorProviderOpenAI      = "openai"
@@ -73,6 +74,7 @@ const (
 	MonitorProviderZhipu       = "zhipu"
 	MonitorProviderDeepseek    = "deepseek"
 	MonitorProviderMiniMax     = "minimax"
+	MonitorProviderOpenCodeGo  = "opencode_go"
 
 	// MonitorCheckMode 检测模式（channel_monitors.check_mode）。
 	//   probe       - LLM 探活（默认，原有行为）

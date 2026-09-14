@@ -366,19 +366,39 @@ func TestNormalizeMonitorPrimaryModel_QuotaDefault(t *testing.T) {
 
 func TestProviderProbeCapabilityMatrix(t *testing.T) {
 	require.False(t, providerSupportsProbe(MonitorProviderAntigravity))
+	require.False(t, providerSupportsProbe(MonitorProviderKiro))
+	require.False(t, providerSupportsProbe(MonitorProviderOpenCodeGo))
 	for _, p := range []string{
 		MonitorProviderOpenAI, MonitorProviderAnthropic, MonitorProviderGemini,
 		MonitorProviderGrok, MonitorProviderKimi, MonitorProviderZhipu, MonitorProviderDeepseek,
+		MonitorProviderMiniMax,
 	} {
 		require.True(t, providerSupportsProbe(p), p)
 	}
+	// 全 11 平台（迁移 278 CHECK 约束同集）必须通过 provider 校验：
+	// 防止新增平台时漏加 monitorProviders 导致 create/update 被 service 层拒绝。
 	for _, p := range []string{
 		MonitorProviderOpenAI, MonitorProviderAnthropic, MonitorProviderGemini,
-		MonitorProviderGrok, MonitorProviderAntigravity,
+		MonitorProviderGrok, MonitorProviderAntigravity, MonitorProviderKiro,
 		MonitorProviderKimi, MonitorProviderZhipu, MonitorProviderDeepseek,
+		MonitorProviderMiniMax, MonitorProviderOpenCodeGo,
 	} {
 		require.NoError(t, validateProvider(p), p)
 	}
+	require.Error(t, validateProvider(""))
+}
+
+// TestValidateCheckMode_QuotaOnlyProviders 验证无探活 adapter 的平台只允许 quota 模式。
+func TestValidateCheckMode_QuotaOnlyProviders(t *testing.T) {
+	for _, p := range []string{MonitorProviderAntigravity, MonitorProviderKiro, MonitorProviderOpenCodeGo} {
+		require.NoError(t, validateCheckMode(p, MonitorCheckModeQuota), p)
+		require.Error(t, validateCheckMode(p, MonitorCheckModeProbe), p+": probe 应被拒绝")
+		require.Error(t, validateCheckMode(p, ""), p+": 空 check_mode 默认 probe 应被拒绝")
+		require.Error(t, validateCheckMode(p, MonitorCheckModeQuotaProbe), p+": quota_probe 应被拒绝")
+	}
+	require.NoError(t, validateCheckMode(MonitorProviderOpenAI, ""))
+	require.NoError(t, validateCheckMode(MonitorProviderOpenAI, MonitorCheckModeQuotaProbe))
+	require.Error(t, validateCheckMode(MonitorProviderOpenAI, "bogus"))
 }
 
 // --- 关联账号校验 ---
