@@ -18,7 +18,6 @@ import (
 	"time"
 
 	"github.com/Wei-Shaw/sub2api/internal/config"
-	"github.com/Wei-Shaw/sub2api/internal/domain"
 	"github.com/Wei-Shaw/sub2api/internal/handler/dto"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/antigravity"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/claude"
@@ -2805,7 +2804,16 @@ func (h *AccountHandler) GetAvailableModels(c *gin.Context) {
 		return
 	}
 
-	if !account.ModelMappingRestricts() {
+	// GoogleOne 保守目录（legacy Google One 渠道能力上限）：优先于"无映射→默认集"回退，
+	// 确保无显式映射的 GoogleOne 账号仍返回保守集（而非平台全量默认）。
+	if account.IsGemini() && account.IsOAuth() && account.IsGeminiGoogleOne() {
+		response.Success(c, geminicli.GoogleOneModels)
+		return
+	}
+
+	// 零默认映射：无显式映射的账号透传，picker 返回平台默认集即可；
+	// 有显式映射的账号走下方平台分支，返回映射 keys（公开名）。
+	if len(account.GetModelMapping()) == 0 {
 		writeAccountDefaultModels(c, account)
 		return
 	}
@@ -3393,18 +3401,6 @@ func antigravitySnapshotModels(account *service.Account) []antigravity.ClaudeMod
 		})
 	}
 	return models
-}
-
-// GetAntigravityDefaultModelMapping 获取 Antigravity 平台的默认模型映射
-// GET /api/v1/admin/accounts/antigravity/default-model-mapping
-func (h *AccountHandler) GetAntigravityDefaultModelMapping(c *gin.Context) {
-	response.Success(c, domain.DefaultAntigravityModelMapping)
-}
-
-// GetKiroDefaultModelMapping 获取 Kiro 平台的默认模型映射
-// GET /api/v1/admin/accounts/kiro/default-model-mapping
-func (h *AccountHandler) GetKiroDefaultModelMapping(c *gin.Context) {
-	response.Success(c, domain.DefaultKiroModelMapping)
 }
 
 // sanitizeExtraBaseRPM 对 extra map 中的 base_rpm 值进行范围校验和归一化。

@@ -214,7 +214,9 @@ func TestHandleUpstreamError_429_NonModelRateLimit(t *testing.T) {
 func TestHandleUpstreamError_429_NonModelRateLimit_UsesMappedModelKey(t *testing.T) {
 	repo := &stubAntigravityAccountRepo{}
 	svc := &AntigravityGatewayService{accountRepo: repo}
-	account := &Account{ID: 20, Name: "acc-20", Platform: PlatformAntigravity}
+	// 零默认：显式映射 claude-opus-4-6 -> claude-opus-4-6-thinking，429 限流 key 使用映射后的模型。
+	account := &Account{ID: 20, Name: "acc-20", Platform: PlatformAntigravity,
+		Credentials: map[string]any{"model_mapping": map[string]any{"claude-opus-4-6": "claude-opus-4-6-thinking"}}}
 
 	body := buildGeminiRateLimitBody("5s")
 

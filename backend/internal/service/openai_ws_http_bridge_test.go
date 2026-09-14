@@ -1618,6 +1618,8 @@ func TestProxyResponsesWebSocketFromClientForGrokUsesXAIHTTPBridgeAndPreservesMa
 		Status:      StatusActive,
 		Credentials: map[string]any{
 			"base_url": xai.DefaultCLIBaseURL,
+			// 零默认映射：显式映射 grok → grok-4.6（默认文本模型），不再靠 xai 默认注入。
+			"model_mapping": map[string]any{"grok": "grok-4.6"},
 		},
 	}
 

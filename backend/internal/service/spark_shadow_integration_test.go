@@ -129,15 +129,19 @@ func TestSparkShadowIntegration(t *testing.T) {
 		sparkCreds := map[string]any{"model_mapping": defaultSparkShadowModelMapping()}
 
 		pid := int64(1)
-		sparkShadow := &Account{ID: 2, ParentAccountID: &pid, Platform: PlatformOpenAI, Credentials: sparkCreds}
+		// 零默认：影子账号上游快照仅含 spark 变体 → 拒非 spark。
+		sparkShadow := &Account{ID: 2, ParentAccountID: &pid, Platform: PlatformOpenAI, Credentials: sparkCreds,
+			Extra: ApplyUpstreamModelSnapshot(nil, sparkModelVariants(), time.Now().UTC())}
 		require.True(t, sparkShadow.IsModelSupported(sparkModel), "影子配 spark → 接 spark")
 		require.False(t, sparkShadow.IsModelSupported(normalModel), "影子（仅 spark mapping）→ 拒非 spark")
 
 		normalWithSpark := &Account{ID: 3, Platform: PlatformOpenAI, Credentials: sparkCreds}
 		require.True(t, normalWithSpark.IsModelSupported(sparkModel), "普通账号配 spark → 接 spark（不再按类型排除）")
 
+		// 零默认：普通账号快照未含 spark → 拒 spark。
 		normalNoSpark := &Account{ID: 4, Platform: PlatformOpenAI,
-			Credentials: map[string]any{"model_mapping": map[string]any{normalModel: normalModel}}}
+			Credentials: map[string]any{"model_mapping": map[string]any{normalModel: normalModel}},
+			Extra:       ApplyUpstreamModelSnapshot(nil, []string{normalModel}, time.Now().UTC())}
 		require.False(t, normalNoSpark.IsModelSupported(sparkModel), "普通账号未配 spark → 拒 spark（按配置）")
 	})
 

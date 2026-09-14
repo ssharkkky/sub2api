@@ -34,16 +34,20 @@ func TestSparkRoutingByModel(t *testing.T) {
 
 	t.Run("normal_account_without_spark_rejects_spark", func(t *testing.T) {
 		acc := &Account{ID: 1, Platform: PlatformOpenAI, Type: AccountTypeOAuth, Status: StatusActive, Schedulable: true,
-			Credentials: map[string]any{"model_mapping": map[string]any{normalModel: normalModel}}}
+			Credentials: map[string]any{"model_mapping": map[string]any{normalModel: normalModel}},
+			// 零默认映射：映射不再当白名单；该账号上游快照只含 normal，故拒 spark。
+			Extra: map[string]any{"upstream_model_snapshot": &UpstreamModelSnapshot{Models: []string{normalModel}, SyncedAt: "2024-01-01T00:00:00Z"}}}
 		require.False(t, newScheduler(nil).isAccountRequestCompatible(ctx, acc, sparkReq),
-			"普通账号未配 spark → 拒 spark（按配置而非类型）")
+			"普通账号未配 spark → 拒 spark（按上游快照而非类型）")
 	})
 
 	t.Run("shadow_with_spark_mapping_accepts_spark_rejects_non_spark", func(t *testing.T) {
 		pid := int64(100)
 		parent := &Account{ID: 100, Platform: PlatformOpenAI, Type: AccountTypeOAuth, Status: StatusActive, Schedulable: true}
 		shadow := &Account{ID: 200, ParentAccountID: &pid, QuotaDimension: QuotaDimensionSpark,
-			Platform: PlatformOpenAI, Type: AccountTypeOAuth, Status: StatusActive, Schedulable: true, Concurrency: 1, Credentials: sparkCreds}
+			Platform: PlatformOpenAI, Type: AccountTypeOAuth, Status: StatusActive, Schedulable: true, Concurrency: 1, Credentials: sparkCreds,
+			// 零默认映射：spark 影子账号上游快照只含 spark，故拒非 spark（不再靠映射白名单）。
+			Extra: map[string]any{"upstream_model_snapshot": &UpstreamModelSnapshot{Models: []string{sparkModel}, SyncedAt: "2024-01-01T00:00:00Z"}}}
 		s := newScheduler(map[int64]*Account{100: parent})
 		require.True(t, s.isAccountRequestCompatible(ctx, shadow, sparkReq), "影子配 spark + 健康母 → 接 spark")
 		require.False(t, s.isAccountRequestCompatible(ctx, shadow, normalReq), "影子（仅 spark mapping）→ 拒非 spark")

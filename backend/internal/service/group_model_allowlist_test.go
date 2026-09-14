@@ -86,57 +86,21 @@ func TestNormalizeGroupModelAllowlist(t *testing.T) {
 }
 
 func TestGroupModelAllowlistAllows(t *testing.T) {
-	allowlist := GroupModelAllowlist{
-		Enabled: true,
-		Models:  []string{"claude-sonnet-4.5", "gemini-2.5-pro", "gpt-5.5", "grok-*"},
-	}
-
-	tests := []struct {
-		name  string
-		model string
-		want  bool
-	}{
-		{name: "exact match", model: "claude-sonnet-4.5", want: true},
-		{name: "case-insensitive entry match", model: "Claude-Sonnet-4.5", want: true},
-		{name: "not listed", model: "claude-opus-4.6", want: false},
-		{name: "thinking suffix tolerated via claude normalization", model: "claude-sonnet-4.5-thinking", want: true},
-		{name: "gemini models/ prefix stripped", model: "models/gemini-2.5-pro", want: true},
-		{name: "gemini models/ prefix not in list", model: "models/gemini-2.5-flash", want: false},
-		{name: "openai reasoning suffix normalizes to base model", model: "gpt-5.5-codex-high", want: true},
-		{name: "openai reasoning suffix on unlisted model", model: "gpt-4.1-low", want: false},
-		{name: "trailing wildcard prefix match", model: "grok-4.6", want: true},
-		{name: "trailing wildcard requires prefix", model: "grok", want: false},
-		{name: "empty model passes (handler decides required-ness)", model: "", want: true},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			if got := allowlist.Allows(tt.model); got != tt.want {
-				t.Fatalf("Allows(%q) = %v, want %v", tt.model, got, tt.want)
+	// R3：白名单不再是独立约束源，Allows 恒放行。
+	for _, tc := range []struct{ name, model string }{
+		{"listed exact", "claude-sonnet-4.5"},
+		{"unlisted", "claude-opus-4.6"},
+		{"wildcard model", "grok-4.6"},
+		{"empty", ""},
+		{"models prefix", "models/gemini-2.5-pro"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			allowlist := GroupModelAllowlist{Enabled: true, Models: []string{"claude-sonnet-4.5", "gpt-5.5", "grok-*"}}
+			if !allowlist.Allows(tc.model) {
+				t.Fatalf("Allows(%q) must be true (no-op gatekeeper)", tc.model)
 			}
 		})
 	}
-
-	t.Run("disabled allowlist allows everything", func(t *testing.T) {
-		disabled := GroupModelAllowlist{Enabled: false, Models: []string{"only-model"}}
-		if !disabled.Allows("anything") {
-			t.Fatal("disabled allowlist must allow all models")
-		}
-	})
-
-	t.Run("enabled empty allowlist denies everything", func(t *testing.T) {
-		empty := GroupModelAllowlist{Enabled: true}
-		if empty.Allows("anything") {
-			t.Fatal("enabled empty allowlist must deny all models")
-		}
-	})
-
-	t.Run("bare wildcard allows everything", func(t *testing.T) {
-		all := GroupModelAllowlist{Enabled: true, Models: []string{"*"}}
-		if !all.Allows("claude-opus-4.6") || !all.Allows("models/gemini-2.5-pro") {
-			t.Fatal("bare wildcard must allow all models")
-		}
-	})
 }
 
 func TestGroupModelAllowlistEnabled(t *testing.T) {
@@ -155,100 +119,27 @@ func TestGroupModelAllowlistEnabled(t *testing.T) {
 }
 
 func TestGroupModelAllowlistFilterForListing(t *testing.T) {
-	source := []string{"claude-opus-4.6", "claude-sonnet-4.5", "gpt-5.4", "gpt-5.5-codex", "gpt-5.5-mini", "grok-4.6"}
+	// R3：白名单不再过滤模型列表，FilterForListing 直接返回 source。
+	source := []string{"claude-opus-4.6", "claude-sonnet-4.5", "gpt-5.4", "grok-4.6"}
 
-	t.Run("passthrough when disabled", func(t *testing.T) {
-		disabled := GroupModelAllowlist{Enabled: false, Models: []string{"gpt-5.4"}}
-		got := disabled.FilterForListing(source)
-		if len(got) != len(source) {
-			t.Fatalf("disabled allowlist must not filter, got %#v", got)
-		}
-	})
-
-	t.Run("exact entries keep entry order and require source membership", func(t *testing.T) {
-		cfg := GroupModelAllowlist{Enabled: true, Models: []string{"gpt-5.5-codex", "claude-sonnet-4.5", "claude-haiku-4.5"}}
-		got := cfg.FilterForListing(source)
-		want := []string{"gpt-5.5-codex", "claude-sonnet-4.5"}
-		if len(got) != len(want) || got[0] != want[0] || got[1] != want[1] {
-			t.Fatalf("got %#v want %#v", got, want)
-		}
-	})
-
-	t.Run("bare wildcard expands to the full source list", func(t *testing.T) {
-		cfg := GroupModelAllowlist{Enabled: true, Models: []string{"*"}}
-		got := cfg.FilterForListing([]string{"gpt-5.4"})
-		if strings.Join(got, ",") != "gpt-5.4" {
-			t.Fatalf("bare wildcard must expose the full source, got %#v", got)
-		}
-	})
-
-	t.Run("wildcard entries expand to source order", func(t *testing.T) {
-		cfg := GroupModelAllowlist{Enabled: true, Models: []string{"claude-*", "gpt-5.5-*"}}
-		got := cfg.FilterForListing(source)
-		want := []string{"claude-opus-4.6", "claude-sonnet-4.5", "gpt-5.5-codex", "gpt-5.5-mini"}
-		if strings.Join(got, ",") != strings.Join(want, ",") {
-			t.Fatalf("got %#v want %#v", got, want)
-		}
-	})
-
-	t.Run("mixed exact and wildcard dedupes globally", func(t *testing.T) {
-		cfg := GroupModelAllowlist{Enabled: true, Models: []string{"gpt-*", "gpt-5.4"}}
-		got := cfg.FilterForListing(source)
-		want := []string{"gpt-5.4", "gpt-5.5-codex", "gpt-5.5-mini"}
-		if strings.Join(got, ",") != strings.Join(want, ",") {
-			t.Fatalf("got %#v want %#v", got, want)
-		}
-	})
-
-	t.Run("thinking-tolerant exact entries resolve against source", func(t *testing.T) {
-		cfg := GroupModelAllowlist{Enabled: true, Models: []string{"claude-sonnet-4.5-thinking"}}
-		got := cfg.FilterForListing(source)
-		want := []string{"claude-sonnet-4.5-thinking"}
-		if strings.Join(got, ",") != strings.Join(want, ",") {
-			t.Fatalf("got %#v want %#v", got, want)
-		}
-	})
-
-	t.Run("exact entries match case-insensitively against source", func(t *testing.T) {
-		// 归一化保留首次出现的拼写：条目大写、来源小写也必须命中，
-		// 与 Allows 的大小写不敏感语义保持「准入允许 ⇒ 列表可见」。
-		cfg := GroupModelAllowlist{Enabled: true, Models: []string{"GPT-5.4"}}
-		got := cfg.FilterForListing([]string{"gpt-5.4"})
-		want := []string{"GPT-5.4"}
-		if strings.Join(got, ",") != strings.Join(want, ",") {
-			t.Fatalf("got %#v want %#v", got, want)
-		}
-	})
-
-	t.Run("wildcard source patterns match case-insensitively", func(t *testing.T) {
-		cfg := GroupModelAllowlist{Enabled: true, Models: []string{"claude-sonnet-4.20250514"}}
-		got := cfg.FilterForListing([]string{"Claude-Sonnet-4*"})
-		want := []string{"claude-sonnet-4.20250514"}
-		if strings.Join(got, ",") != strings.Join(want, ",") {
-			t.Fatalf("got %#v want %#v", got, want)
-		}
-	})
-
-	t.Run("wildcard source patterns whitelist exact entries", func(t *testing.T) {
-		cfg := GroupModelAllowlist{Enabled: true, Models: []string{"claude-sonnet-4.20250514"}}
-		got := cfg.FilterForListing([]string{"claude-sonnet-4*"})
-		want := []string{"claude-sonnet-4.20250514"}
-		if strings.Join(got, ",") != strings.Join(want, ",") {
-			t.Fatalf("got %#v want %#v", got, want)
-		}
-	})
-
-	t.Run("empty source yields empty output", func(t *testing.T) {
+	t.Run("returns source when enabled", func(t *testing.T) {
 		cfg := GroupModelAllowlist{Enabled: true, Models: []string{"gpt-5.4"}}
-		if got := cfg.FilterForListing(nil); len(got) != 0 {
-			t.Fatalf("expected empty output, got %#v", got)
+		if got := cfg.FilterForListing(source); len(got) != len(source) {
+			t.Fatalf("FilterForListing must return source, got %#v", got)
 		}
 	})
 
-	t.Run("enabled empty config yields empty output", func(t *testing.T) {
-		cfg := GroupModelAllowlist{Enabled: true}
-		if got := cfg.FilterForListing(source); len(got) != 0 {
-			t.Fatalf("expected empty output for enabled empty config, got %#v", got)
+	t.Run("returns source when disabled", func(t *testing.T) {
+		cfg := GroupModelAllowlist{Enabled: false}
+		if got := cfg.FilterForListing(source); len(got) != len(source) {
+			t.Fatalf("FilterForListing must return source, got %#v", got)
+		}
+	})
+
+	t.Run("returns nil for nil source", func(t *testing.T) {
+		cfg := GroupModelAllowlist{Enabled: true, Models: []string{"gpt-5.4"}}
+		if got := cfg.FilterForListing(nil); got != nil {
+			t.Fatalf("FilterForListing(nil) must be nil, got %#v", got)
 		}
 	})
 }

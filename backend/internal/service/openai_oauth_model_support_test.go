@@ -4,6 +4,7 @@ package service
 
 import (
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/require"
 )
@@ -73,6 +74,8 @@ func TestIsModelSupported_OpenAIOAuthExplicitMappingUnchanged(t *testing.T) {
 			"k3":          "gpt-5.4", // 显式映射优先：bare k3 仍可被账号声明支持
 		},
 	}
+	// 零默认：快照限定可服务集，未含 glm-4.7 → 未命中显式映射即不支持。
+	account.Extra = ApplyUpstreamModelSnapshot(nil, []string{"gpt-5.4"}, time.Now().UTC())
 
 	// 显式映射沿用原有语义：命中映射即支持，未命中即不支持。
 	require.True(t, account.IsModelSupported("deepseek-v4"))

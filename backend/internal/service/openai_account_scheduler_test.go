@@ -498,6 +498,14 @@ func TestOpenAIGatewayService_SelectAccountWithScheduler_DefaultDisabled_LoadBat
 		Credentials: map[string]any{
 			"model_mapping": map[string]any{"gpt-4o": "gpt-4o"},
 		},
+		// 零默认映射：映射不再当白名单；账号只在上游原生快照内服务。
+		// 快照只含 gpt-4o，故 gpt-5.4-mini 不被支持 → model_not_supported。
+		Extra: map[string]any{
+			"upstream_model_snapshot": &UpstreamModelSnapshot{
+				Models:   []string{"gpt-4o"},
+				SyncedAt: "2024-01-01T00:00:00Z",
+			},
+		},
 	}
 	excluded := Account{
 		ID:          36005,
@@ -1074,6 +1082,14 @@ func TestOpenAIGatewayService_SelectAccountWithScheduler_NoAvailableErrorAggrega
 		Concurrency: 1,
 		Credentials: map[string]any{
 			"model_mapping": map[string]any{"gpt-4o": "gpt-4o"},
+		},
+		// 零默认映射：映射不再当白名单；账号只在上游原生快照内服务。
+		// 快照只含 gpt-4o，故 gpt-5.4-mini 不被支持 → model_not_supported。
+		Extra: map[string]any{
+			"upstream_model_snapshot": &UpstreamModelSnapshot{
+				Models:   []string{"gpt-4o"},
+				SyncedAt: "2024-01-01T00:00:00Z",
+			},
 		},
 	}
 	excluded := Account{

@@ -5,6 +5,7 @@ package service
 import (
 	"context"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/require"
 )
@@ -28,6 +29,8 @@ func TestPromptAuditFallbackAccountSupportsModel(t *testing.T) {
 			CredentialKeyModelMappingRestricts: true,
 			"model_mapping":                    map[string]any{"gpt-allowed": "gpt-upstream"},
 		},
+		// 零默认：快照限定可服务集，未含 gpt-blocked → 未命中显式映射即不支持。
+		Extra: ApplyUpstreamModelSnapshot(nil, []string{"gpt-upstream"}, time.Now().UTC()),
 	}
 	require.True(t, promptAuditFallbackAccountSupportsModel(account, "gpt-allowed"))
 	require.False(t, promptAuditFallbackAccountSupportsModel(account, "gpt-blocked"))

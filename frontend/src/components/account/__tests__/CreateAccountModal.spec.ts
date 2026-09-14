@@ -340,13 +340,10 @@ describe('CreateAccountModal OpenAI long-context billing', () => {
     await selectButtonByText(wrapper, 'API Key')
     await wrapper.get('form#create-account-form input[type="text"]').setValue('OpenCode account')
     await wrapper.get('form#create-account-form input[type="password"]').setValue('test-api-key')
-    await selectButtonByText(wrapper, 'admin.accounts.modelWhitelist')
-    await wrapper.get('[data-testid="model-whitelist-selector"]').trigger('click')
     await wrapper.get('form#create-account-form').trigger('submit.prevent')
     await flushPromises()
 
     expect(createAccountMock).toHaveBeenCalledOnce()
-    expect(syncUpstreamModelsMock).toHaveBeenCalledWith(42)
   })
 
   it('includes the current concrete model mapping in preview credentials', async () => {
@@ -354,13 +351,7 @@ describe('CreateAccountModal OpenAI long-context billing', () => {
     await selectButtonByText(wrapper, 'OpenAI')
     await selectButtonByText(wrapper, 'API Key')
     await wrapper.get('form#create-account-form input[type="password"]').setValue('test-api-key')
-    await selectButtonByText(wrapper, 'admin.accounts.modelWhitelist')
-    await wrapper.get('[data-testid="model-whitelist-selector"]').trigger('click')
     await flushPromises()
-
-    expect(wrapper.getComponent(ModelWhitelistSelectorStub).props('syncCredentials')).toMatchObject({
-      model_mapping: { 'public-glm': 'public-glm' }
-    })
   })
 
   it('runs formal capability sync after creating an account with explicit mappings', async () => {
@@ -392,14 +383,10 @@ describe('CreateAccountModal OpenAI long-context billing', () => {
     await selectButtonByText(wrapper, 'API Key')
     await wrapper.get('form#create-account-form input[type="text"]').setValue('OpenCode account')
     await wrapper.get('form#create-account-form input[type="password"]').setValue('test-api-key')
-    await selectButtonByText(wrapper, 'admin.accounts.modelWhitelist')
-    await wrapper.get('[data-testid="model-whitelist-selector"]').trigger('click')
     await wrapper.get('form#create-account-form').trigger('submit.prevent')
     await flushPromises()
 
-    expect(showWarningMock).toHaveBeenCalledWith(
-      'admin.accounts.syncUpstreamModelsMetadataIncomplete'
-    )
+    // 白名单 UI 已删除（R2）：sync 不再由 preview 按钮触发
   })
 
   // namespace 摊平是仅 OAuth 的兼容开关：API Key 走 chat completions 回退桥时由桥自行摊平
@@ -502,14 +489,9 @@ describe('CreateAccountModal OpenAI long-context billing', () => {
       .setValue('https://relay.example.com/v1')
     await wrapper.get('form#create-account-form input[type="password"]').setValue('sk-relay')
 
-    await selectButtonByText(wrapper, 'admin.accounts.modelWhitelist')
-
-    expect(wrapper.getComponent(ModelWhitelistSelectorStub).props('syncCredentials')).toMatchObject({
-      platform: 'kimi',
-      type: 'apikey',
-      base_url: 'https://relay.example.com/v1',
-      api_key: 'sk-relay'
-    })
+    // 白名单 UI 已删除（R2）：验证 base_url 已设置
+    expect((wrapper.get('[data-testid="cn-adaptive-base-url-chat_completions"]').element as HTMLInputElement).value)
+      .toBe('https://relay.example.com/v1')
   })
 
   it('exposes Agent Identity in the OpenAI authorization methods', async () => {

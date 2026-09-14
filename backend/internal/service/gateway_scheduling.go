@@ -2855,9 +2855,8 @@ func (s *GatewayService) isModelSupportedByAccount(account *Account, requestedMo
 			requestedModel = claude.NormalizeModelID(requestedModel)
 		}
 	}
-	// 其他平台使用账户的模型支持检查
-	if !account.IsModelSupported(requestedModel) {
-		return false
-	}
-	return account.HasSyncedUpstreamModel(requestedModel)
+	// 其他平台：统一 eligibility 判定（显式映射命中 / OAuth 守卫 / 上游原生快照）。
+	// 快照判定已并入 IsModelSupported 的透传分支，不再额外叠加 HasSyncedUpstreamModel
+	// （否则显式映射命中的模型会被误要求出现在原生快照里）。
+	return account.IsModelSupported(requestedModel)
 }

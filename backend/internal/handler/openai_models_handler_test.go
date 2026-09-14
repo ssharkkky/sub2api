@@ -61,13 +61,13 @@ func TestOrdinaryPinnedModelsUsesSelectedAccountsAndFinalETag(t *testing.T) {
 	require.Empty(t, alias.Body.String())
 	require.Equal(t, []int64{2, 3}, upstream.accountIDs(), "fresh requests must not hit upstream")
 
+	// R3：白名单不再过滤，otherGroup 返回与 group 相同的模型列表（ETag 相同 → 304）。
 	otherGroup := *group
 	otherGroup.ID++
 	otherGroup.ModelAllowlist = service.GroupModelAllowlist{Enabled: true, Models: []string{"text-embedding-3-large", "special-model"}}
 	filtered := performOrdinaryPinnedModelsRequest(t, h, &otherGroup, "/v1/models", first.Header().Get("ETag"))
-	require.Equal(t, http.StatusOK, filtered.Code)
-	require.Equal(t, []string{"text-embedding-3-large", "special-model"}, ordinaryPinnedModelIDs(t, filtered))
-	require.NotEqual(t, first.Header().Get("ETag"), filtered.Header().Get("ETag"))
+	require.Equal(t, http.StatusNotModified, filtered.Code)
+	require.Empty(t, filtered.Body.String())
 	again := performOrdinaryPinnedModelsRequest(t, h, group, "/v1/models", "")
 	require.Equal(t, first.Body.String(), again.Body.String(), "group filters must not modify account cache")
 	require.Equal(t, []int64{2, 3}, upstream.accountIDs())
@@ -91,7 +91,7 @@ func TestOrdinaryPinnedModelsFailureAndEmptyPolicies(t *testing.T) {
 		{name: "fallback from missing members", accountIDs: []int64{99}, fallback: true, wantStatus: 200, wantIDs: []string{"from-scheduler"}},
 		{name: "fallback from failure", accountIDs: []int64{2}, statuses: map[int64]int{2: 503}, fallback: true, wantStatus: 200, wantIDs: []string{"from-scheduler"}},
 		{name: "valid empty", accountIDs: []int64{2}, bodies: map[int64]string{2: `{"data":[]}`}, fallback: true, wantStatus: 200},
-		{name: "filtered empty", accountIDs: []int64{2}, bodies: map[int64]string{2: `{"data":[{"id":"ok"}]}`}, selected: []string{"absent"}, fallback: true, wantStatus: 200},
+		{name: "allowlist no longer filters", accountIDs: []int64{2}, bodies: map[int64]string{2: `{"data":[{"id":"ok"}]}`}, selected: []string{"absent"}, fallback: true, wantStatus: 200, wantIDs: []string{"ok"}},
 		{name: "invalid envelope", accountIDs: []int64{2}, bodies: map[int64]string{2: `{"error":"denied"}`}, wantStatus: 502},
 		{name: "null data", accountIDs: []int64{2}, bodies: map[int64]string{2: `{"data":null}`}, wantStatus: 502},
 	} {
@@ -162,15 +162,16 @@ func TestPinnedModelsAllowlistExpandsWildcardsForBothRepresentations(t *testing.
 			group := &service.Group{ID: 95, Platform: service.PlatformOpenAI,
 				ModelAllowlist:            service.GroupModelAllowlist{Enabled: true, Models: []string{"public-b", "public-*"}},
 				CodexModelsManifestConfig: service.GroupCodexModelsManifestConfig{Enabled: true, AccountIDs: []int64{1}}}
+			// R3：白名单不再过滤，mapping keys 全部保留（含 blocked）。
 			if codex {
 				recorder := performPinnedCodexModelsRequest(t, h, group, "")
 				require.Equal(t, http.StatusOK, recorder.Code, recorder.Body.String())
-				require.Equal(t, []string{"public-b", "public-a"}, codexHandlerManifestSlugs(t, recorder))
+				require.Equal(t, []string{"blocked", "public-a", "public-b"}, codexHandlerManifestSlugs(t, recorder))
 				require.Contains(t, recorder.Body.String(), `"context_window":424242`)
 			} else {
 				recorder := performOrdinaryPinnedModelsRequest(t, h, group, "/v1/models", "")
 				require.Equal(t, http.StatusOK, recorder.Code, recorder.Body.String())
-				require.Equal(t, []string{"public-b", "public-a"}, ordinaryPinnedModelIDs(t, recorder))
+				require.Equal(t, []string{"blocked", "public-a", "public-b"}, ordinaryPinnedModelIDs(t, recorder))
 				require.Contains(t, recorder.Body.String(), `"owned_by":"provider"`)
 			}
 		})
@@ -205,11 +206,12 @@ func TestPinnedModelsMappingFollowsUpstreamDiscoveryForBothRepresentations(t *te
 			}
 			require.Equal(t, http.StatusOK, recorder.Code, recorder.Body.String())
 			require.Equal(t, []int64{2}, upstream.accountIDs(), "mappings must not bypass pinned discovery")
+			// R3：白名单不再过滤，顺序按 mapping keys（public-alias）+ allowlist 候选（custom-concrete）。
 			if codex {
-				require.Equal(t, []string{"custom-concrete", "public-alias"}, codexHandlerManifestSlugs(t, recorder))
+				require.Equal(t, []string{"public-alias", "custom-concrete"}, codexHandlerManifestSlugs(t, recorder))
 				require.Contains(t, recorder.Body.String(), `"context_window":424242`)
 			} else {
-				require.Equal(t, []string{"custom-concrete", "public-alias"}, ordinaryPinnedModelIDs(t, recorder))
+				require.Equal(t, []string{"public-alias", "custom-concrete"}, ordinaryPinnedModelIDs(t, recorder))
 				require.Contains(t, recorder.Body.String(), `"owned_by":"provider"`)
 			}
 		})

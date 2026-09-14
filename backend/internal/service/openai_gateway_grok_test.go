@@ -1991,6 +1991,9 @@ func healthyGrokOAuthGatewayTestAccount(id int64, token string) *Account {
 			"refresh_token": "refresh-token",
 			"expires_at":    time.Now().Add(2 * grokTokenRefreshSkew).UTC().Format(time.RFC3339),
 			"base_url":      xai.DefaultCLIBaseURL,
+			// 零默认映射：显式配置 grok → grok-4.6（典型 Grok 账号）。
+			// 需要其他模型的测试会覆写此映射（见 TestForwardGrokChatRuntimeGateFallsBackToRaw）。
+			"model_mapping": map[string]any{"grok": "grok-4.6"},
 		},
 	}
 }
@@ -2141,6 +2144,8 @@ func TestForwardGrokResponsesAPIKeyUsesXAIResponses(t *testing.T) {
 		Credentials: map[string]any{
 			"api_key":  "xai-test-key",
 			"base_url": "https://api.x.ai/v1",
+			// 零默认映射：显式配置 grok → grok-4.6。
+			"model_mapping": map[string]any{"grok": "grok-4.6"},
 		},
 	}
 	upstreamBody := strings.Join([]string{

@@ -217,3 +217,29 @@ describe('Select remote search', () => {
     expect(labels).toEqual(['Alpha account'])
   })
 })
+
+describe('Select label fallback', () => {
+  it('falls back to the option value when the label field is empty', async () => {
+    const wrapper = mount(Select, {
+      props: {
+        modelValue: null,
+        options: [
+          { id: 'claude-sonnet-5', display_name: '' },
+          { id: 'claude-opus-5', display_name: '' },
+          { id: 'gpt-6', display_name: 'GPT-6 (Astra)' },
+        ],
+        valueKey: 'id',
+        labelKey: 'display_name',
+      },
+    })
+    unmountWrapper = () => wrapper.unmount()
+    await wrapper.get('button').trigger('click')
+    await nextTick()
+
+    const dropdown = document.body.querySelector<HTMLElement>('.select-dropdown-portal')
+    expect(dropdown).not.toBeNull()
+    const labels = [...dropdown!.querySelectorAll('.select-option-label')].map((el) => el.textContent)
+    // Empty display_name falls back to the id; populated display_name is preserved.
+    expect(labels).toEqual(['claude-sonnet-5', 'claude-opus-5', 'GPT-6 (Astra)'])
+  })
+})

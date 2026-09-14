@@ -111,6 +111,10 @@ func TestIsModelRateLimited(t *testing.T) {
 			name: "antigravity platform - gemini-3-pro-preview mapped to gemini-3-pro-high",
 			account: &Account{
 				Platform: PlatformAntigravity,
+				// 零默认映射：显式映射 gemini-3-pro-preview → gemini-3-pro-high（限流 key 用映射后名）。
+				Credentials: map[string]any{
+					"model_mapping": map[string]any{"gemini-3-pro-preview": "gemini-3-pro-high"},
+				},
 				Extra: map[string]any{
 					modelRateLimitsKey: map[string]any{
 						"gemini-3-pro-high": map[string]any{
@@ -171,6 +175,10 @@ func TestIsModelRateLimited(t *testing.T) {
 			name: "antigravity platform - claude-opus-4-5-thinking mapped to opus-4-6-thinking",
 			account: &Account{
 				Platform: PlatformAntigravity,
+				// 零默认映射：显式映射 claude-opus-4-5-thinking → claude-opus-4-6-thinking（限流 key 用映射后名）。
+				Credentials: map[string]any{
+					"model_mapping": map[string]any{"claude-opus-4-5-thinking": "claude-opus-4-6-thinking"},
+				},
 				Extra: map[string]any{
 					modelRateLimitsKey: map[string]any{
 						"claude-opus-4-6-thinking": map[string]any{
@@ -372,6 +380,10 @@ func TestGetModelRateLimitRemainingTime(t *testing.T) {
 			name: "antigravity platform - claude-opus-4-5-thinking mapped to opus-4-6-thinking",
 			account: &Account{
 				Platform: PlatformAntigravity,
+				// 零默认映射：显式映射 claude-opus-4-5-thinking → claude-opus-4-6-thinking（限流 key 用映射后名）。
+				Credentials: map[string]any{
+					"model_mapping": map[string]any{"claude-opus-4-5-thinking": "claude-opus-4-6-thinking"},
+				},
 				Extra: map[string]any{
 					modelRateLimitsKey: map[string]any{
 						"claude-opus-4-6-thinking": map[string]any{

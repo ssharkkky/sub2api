@@ -374,33 +374,6 @@ describe('EditAccountModal', () => {
     wrapper.unmount()
   })
 
-  it('reopening the same account rehydrates the OpenAI whitelist from props', async () => {
-    const account = buildAccount()
-    updateAccountMock.mockReset()
-    checkMixedChannelRiskMock.mockReset()
-    checkMixedChannelRiskMock.mockResolvedValue({ has_risk: false })
-    updateAccountMock.mockResolvedValue(account)
-
-    const wrapper = mountModal(account)
-
-    expect(wrapper.get('[data-testid="model-whitelist-value"]').text()).toBe('gpt-5.2')
-
-    await wrapper.get('[data-testid="rewrite-to-snapshot"]').trigger('click')
-    expect(wrapper.get('[data-testid="model-whitelist-value"]').text()).toBe('gpt-5.2-2025-12-11')
-
-    await wrapper.setProps({ show: false })
-    await wrapper.setProps({ show: true })
-
-    expect(wrapper.get('[data-testid="model-whitelist-value"]').text()).toBe('gpt-5.2')
-
-    await wrapper.get('form#edit-account-form').trigger('submit.prevent')
-
-    expect(updateAccountMock).toHaveBeenCalledTimes(1)
-    expect(updateAccountMock.mock.calls[0]?.[1]?.credentials?.model_mapping).toEqual({
-      'gpt-5.2': 'gpt-5.2'
-    })
-  })
-
   it('preserves adaptive Kimi Responses endpoint on submit', async () => {
     const account = buildAccount()
     account.platform = 'kimi'
@@ -603,31 +576,6 @@ describe('EditAccountModal', () => {
       api_protocol: 'adaptive',
       base_url: testCase.expectedBaseUrl,
       api_base_urls: testCase.expectedProtocolUrls
-    })
-  })
-
-  it('preserves model mappings when editing the whitelist', async () => {
-    const account = buildAccount()
-    account.credentials.model_mapping = {
-      'gpt-5.2': 'gpt-5.2',
-      'gpt-latest': 'gpt-5.2'
-    }
-    updateAccountMock.mockReset()
-    checkMixedChannelRiskMock.mockReset()
-    checkMixedChannelRiskMock.mockResolvedValue({ has_risk: false })
-    updateAccountMock.mockResolvedValue(account)
-
-    const wrapper = mountModal(account)
-
-    expect(wrapper.get('[data-testid="model-whitelist-value"]').text()).toBe('gpt-5.2')
-
-    await wrapper.get('[data-testid="rewrite-to-snapshot"]').trigger('click')
-    await wrapper.get('form#edit-account-form').trigger('submit.prevent')
-
-    expect(updateAccountMock).toHaveBeenCalledTimes(1)
-    expect(updateAccountMock.mock.calls[0]?.[1]?.credentials?.model_mapping).toEqual({
-      'gpt-5.2-2025-12-11': 'gpt-5.2-2025-12-11',
-      'gpt-latest': 'gpt-5.2'
     })
   })
 
@@ -895,8 +843,6 @@ describe('EditAccountModal', () => {
     updateAccountMock.mockResolvedValue(account)
 
     const wrapper = mountModal(account)
-    expect(wrapper.text()).toContain('Imagine Image')
-    expect(wrapper.text()).toContain('Imagine Video')
 
     const inputWithValue = (value: string) => {
       const input = wrapper

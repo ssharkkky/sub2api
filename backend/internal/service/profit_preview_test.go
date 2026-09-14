@@ -19,6 +19,8 @@ func TestPreviewProfitAdmissionUsesAccountRatesAndPreinitializesModels(t *testin
 	cheap.Name = "cheap"
 	cheap.Extra[UpstreamBillingRateSyncEnabledExtraKey] = true
 	cheap.Credentials = map[string]any{"model_mapping": map[string]any{"gpt-sol": "gpt-sol"}}
+	// 零默认映射：映射不再当白名单；快照与映射一致（只含 gpt-sol），故不服务 gpt-luna / gpt-no-account。
+	cheap.Extra[UpstreamModelSnapshotExtraKey] = &UpstreamModelSnapshot{Models: []string{"gpt-sol"}, SyncedAt: "2024-01-01T00:00:00Z"}
 
 	boundary := profitControlTestAccountWithRate(
 		upstreamCostTestAccount(2, UpstreamBillingProbeStatusOK, 0.8, now.Add(-time.Minute), 30*time.Minute),
@@ -29,6 +31,8 @@ func TestPreviewProfitAdmissionUsesAccountRatesAndPreinitializesModels(t *testin
 		"gpt-sol":  "gpt-sol",
 		"gpt-luna": "gpt-luna",
 	}}
+	// 零默认映射：快照与映射一致（gpt-sol/gpt-luna），不服务 gpt-no-account。
+	boundary.Extra[UpstreamModelSnapshotExtraKey] = &UpstreamModelSnapshot{Models: []string{"gpt-sol", "gpt-luna"}, SyncedAt: "2024-01-01T00:00:00Z"}
 
 	expensive := profitControlTestAccountWithRate(
 		upstreamCostTestAccount(3, UpstreamBillingProbeStatusOK, 0.2, now.Add(-time.Minute), 30*time.Minute),

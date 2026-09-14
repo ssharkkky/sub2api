@@ -1954,10 +1954,10 @@
             <div class="mb-4 flex gap-2">
               <button
                 type="button"
-                @click="modelRestrictionMode = 'whitelist'"
+                @click="modelRestrictionMode = 'mapping'"
                 :class="[
                   'flex-1 rounded-lg px-4 py-2 text-sm font-medium transition-all',
-                  modelRestrictionMode === 'whitelist'
+                  false
                     ? 'bg-primary-100 text-primary-700 dark:bg-primary-900/30 dark:text-primary-400'
                     : 'bg-gray-100 text-gray-600 hover:bg-gray-200 dark:bg-dark-600 dark:text-gray-400 dark:hover:bg-dark-500'
                 ]"
@@ -2005,7 +2005,7 @@
             </div>
 
             <!-- Whitelist Mode -->
-            <div v-if="modelRestrictionMode === 'whitelist'">
+            <div v-if="false">
               <ModelWhitelistSelector
                 v-model="allowedModels"
                 :platform="form.platform"
@@ -2467,10 +2467,10 @@
           <div class="mb-4 flex gap-2">
             <button
               type="button"
-              @click="modelRestrictionMode = 'whitelist'"
+              @click="modelRestrictionMode = 'mapping'"
               :class="[
                 'flex-1 rounded-lg px-4 py-2 text-sm font-medium transition-all',
-                modelRestrictionMode === 'whitelist'
+                false
                   ? 'bg-primary-100 text-primary-700 dark:bg-primary-900/30 dark:text-primary-400'
                   : 'bg-gray-100 text-gray-600 hover:bg-gray-200 dark:bg-dark-600 dark:text-gray-400 dark:hover:bg-dark-500'
               ]"
@@ -2492,7 +2492,7 @@
           </div>
 
           <!-- Whitelist Mode -->
-          <div v-if="modelRestrictionMode === 'whitelist'">
+          <div v-if="false">
             <ModelWhitelistSelector
               v-model="allowedModels"
               platform="anthropic"
@@ -2808,10 +2808,10 @@
           <div class="mb-4 flex gap-2">
             <button
               type="button"
-              @click="modelRestrictionMode = 'whitelist'"
+              @click="modelRestrictionMode = 'mapping'"
               :class="[
                 'flex-1 rounded-lg px-4 py-2 text-sm font-medium transition-all',
-                modelRestrictionMode === 'whitelist'
+                false
                   ? 'bg-primary-100 text-primary-700 dark:bg-primary-900/30 dark:text-primary-400'
                   : 'bg-gray-100 text-gray-600 hover:bg-gray-200 dark:bg-dark-600 dark:text-gray-400 dark:hover:bg-dark-500'
               ]"
@@ -2833,7 +2833,7 @@
           </div>
 
           <!-- Whitelist Mode -->
-          <div v-if="modelRestrictionMode === 'whitelist'">
+          <div v-if="false">
             <ModelWhitelistSelector
               v-model="allowedModels"
               :platform="form.platform"
@@ -4432,12 +4432,9 @@ import { useI18n } from 'vue-i18n'
 import { useAppStore } from '@/stores/app'
 
 import {
-  getPresetMappingsByPlatform,
   getModelsByPlatform,
   commonErrorCodes,
   buildModelMappingObject,
-  fetchAntigravityDefaultMappings,
-  fetchKiroDefaultMappings,
   isValidWildcardPattern
 } from '@/composables/useModelWhitelist'
 import { adminAPI } from '@/api/admin'
@@ -4854,7 +4851,7 @@ const editWeeklyResetHour = ref<number | null>(null)
 const editResetTimezone = ref<string | null>(null)
 const modelMappings = ref<ModelMapping[]>([])
 const openAICompactModelMappings = ref<ModelMapping[]>([])
-const modelRestrictionMode = ref<'whitelist' | 'mapping'>('mapping')
+const modelRestrictionMode = ref<'mapping'>('mapping')
 const allowedModels = ref<string[]>([])
 const upstreamModelsPreviewed = ref(false)
 const DEFAULT_POOL_MODE_RETRY_COUNT = 3
@@ -4977,7 +4974,7 @@ const upstreamApiKey = ref('') // For upstream type: API key
 const antigravityModelRestrictionMode = ref<'whitelist' | 'mapping'>('whitelist')
 const antigravityWhitelistModels = ref<string[]>([])
 const antigravityModelMappings = ref<ModelMapping[]>([])
-const antigravityPresetMappings = computed(() => getPresetMappingsByPlatform('antigravity'))
+const antigravityPresetMappings = computed(() => [] as { label: string; from: string; to: string; color: string }[])
 const kiroAccountType = ref<'oauth' | 'idc' | 'external_idp' | 'import'>('oauth')
 const kiroOAuthProvider = ref<'google' | 'github'>('google')
 const kiroIDCStartUrl = ref('https://view.awsapps.com/start')
@@ -5001,8 +4998,8 @@ const kiroImportTokenPlaceholder = computed(() => {
 })
 const kiroModelMappings = ref<ModelMapping[]>([])
 const kiroCreditUnitPriceUsd = ref(0)
-const kiroPresetMappings = computed(() => getPresetMappingsByPlatform('kiro'))
-const bedrockPresets = computed(() => getPresetMappingsByPlatform('bedrock'))
+const kiroPresetMappings = computed(() => [] as { label: string; from: string; to: string; color: string }[])
+const bedrockPresets = computed(() => [] as { label: string; from: string; to: string; color: string }[])
 
 // Bedrock credentials
 const bedrockAuthMode = ref<'sigv4' | 'apikey'>('sigv4')
@@ -5208,7 +5205,7 @@ const geminiHelpLinks = {
 }
 
 // Computed: current preset mappings based on platform
-const presetMappings = computed(() => getPresetMappingsByPlatform(form.platform))
+const presetMappings = computed(() => [] as { label: string; from: string; to: string; color: string }[])
 const tempUnschedPresets = computed(() => [
   {
     label: t('admin.accounts.tempUnschedulable.presets.overloadLabel'),
@@ -5315,14 +5312,10 @@ watch(
       // Antigravity: 默认使用映射模式并填充默认映射
       if (form.platform === 'antigravity') {
         antigravityModelRestrictionMode.value = 'mapping'
-        fetchAntigravityDefaultMappings().then(mappings => {
-          antigravityModelMappings.value = [...mappings]
-        })
+        antigravityModelMappings.value = []  // 默认映射已删除（R2）
         antigravityWhitelistModels.value = []
       } else if (form.platform === 'kiro') {
-        fetchKiroDefaultMappings().then(mappings => {
-          kiroModelMappings.value = [...mappings]
-        })
+        kiroModelMappings.value = []  // 默认映射已删除（R2）
       } else {
         antigravityWhitelistModels.value = []
         antigravityModelMappings.value = []
@@ -5394,16 +5387,12 @@ watch(
     // Antigravity: 默认使用映射模式并填充默认映射
     if (newPlatform === 'antigravity') {
       antigravityModelRestrictionMode.value = 'mapping'
-      fetchAntigravityDefaultMappings().then(mappings => {
-        antigravityModelMappings.value = [...mappings]
-      })
+      antigravityModelMappings.value = []  // 默认映射已删除（R2）
       antigravityWhitelistModels.value = []
       accountCategory.value = 'oauth-based'
       antigravityAccountType.value = 'oauth'
     } else if (newPlatform === 'kiro') {
-      fetchKiroDefaultMappings().then(mappings => {
-        kiroModelMappings.value = [...mappings]
-      })
+      kiroModelMappings.value = []  // 默认映射已删除（R2）
       accountCategory.value = 'oauth-based'
       kiroAccountType.value = 'oauth'
       kiroOAuthProvider.value = 'google'
@@ -5539,7 +5528,7 @@ const handleSelectGeminiOAuthType = (oauthType: 'code_assist' | 'google_one' | '
 watch(
   [modelRestrictionMode, () => form.platform],
   ([newMode]) => {
-    if (newMode === 'whitelist') {
+    if (newMode === 'mapping') {
       allowedModels.value = [...getModelsByPlatform(form.platform)]
     }
   }
@@ -5917,9 +5906,7 @@ const resetForm = () => {
 
   antigravityModelRestrictionMode.value = 'mapping'
   antigravityWhitelistModels.value = []
-  fetchAntigravityDefaultMappings().then(mappings => {
-    antigravityModelMappings.value = [...mappings]
-  })
+  antigravityModelMappings.value = []  // 默认映射已删除（R2）
   kiroAccountType.value = 'oauth'
   kiroOAuthProvider.value = 'google'
   kiroIDCStartUrl.value = 'https://view.awsapps.com/start'
@@ -5928,9 +5915,7 @@ const resetForm = () => {
   kiroDeviceRegistrationJson.value = ''
   kiroImportProvider.value = 'Google'
   kiroCreditUnitPriceUsd.value = 0
-  fetchKiroDefaultMappings().then(mappings => {
-    kiroModelMappings.value = [...mappings]
-  })
+  kiroModelMappings.value = []  // 默认映射已删除（R2）
   poolModeEnabled.value = false
   poolModeRetryCount.value = DEFAULT_POOL_MODE_RETRY_COUNT
   poolModeRetryStatusCodesInput.value = ''
@@ -6129,9 +6114,9 @@ const currentModelMappingRestricts = () => {
     return false
   }
   if (form.platform === 'antigravity') {
-    return antigravityModelRestrictionMode.value === 'whitelist' && antigravityWhitelistModels.value.length > 0
+    return false
   }
-  return modelRestrictionMode.value === 'whitelist' && allowedModels.value.length > 0
+  return false
 }
 
 const doCreateAccount = async (payload: CreateAccountRequest) => {

@@ -130,6 +130,8 @@ func TestDiagnoseModelAvailabilityForPlatform_NoMatchingModel_ReturnsNotFoundSig
 					{GroupID: groupID},
 				},
 				Credentials: map[string]any{"model_mapping": map[string]any{"gpt-5": "gpt-5"}},
+				// 零默认：快照未含 gpt-5.1-codex-mini → 账号 1 不支持请求模型。
+				Extra: ApplyUpstreamModelSnapshot(nil, []string{"gpt-5"}, time.Now().UTC()),
 			},
 			{
 				ID:          2,
@@ -140,6 +142,8 @@ func TestDiagnoseModelAvailabilityForPlatform_NoMatchingModel_ReturnsNotFoundSig
 					{GroupID: groupID},
 				},
 				Credentials: map[string]any{"model_mapping": map[string]any{"gpt-5-mini": "gpt-5-mini"}},
+				// 零默认：快照未含 gpt-5.1-codex-mini → 账号 2 不支持请求模型 → 404。
+				Extra: ApplyUpstreamModelSnapshot(nil, []string{"gpt-5-mini"}, time.Now().UTC()),
 			},
 		},
 		accountsByID: map[int64]*Account{},

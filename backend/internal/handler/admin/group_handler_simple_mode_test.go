@@ -25,7 +25,6 @@ func newSimpleModeGroupRouter(svc *stubAdminService) *gin.Engine {
 	r.GET("/groups/:id", h.GetByID)
 	r.GET("/groups/:id/stats", h.GetStats)
 	r.GET("/groups/:id/api-keys", h.GetGroupAPIKeys)
-	r.GET("/groups/:id/model-allowlist-candidates", h.GetGroupModelAllowlistCandidates)
 	r.POST("/groups", h.Create)
 	r.PUT("/groups/:id", h.Update)
 	r.POST("/groups/:id/duplicate", h.Duplicate)
@@ -275,7 +274,6 @@ func TestGroupHandlerSimpleModeBlocksAdvancedOperations(t *testing.T) {
 		body   string
 	}{
 		{http.MethodPost, "/groups/1/duplicate", ""},
-		{http.MethodGet, "/groups/1/model-allowlist-candidates", ""},
 		{http.MethodGet, "/groups/1/composite-routes", ""},
 		{http.MethodPost, "/groups/1/composite-routes", `{"public_model":"x","target_platform":"openai"}`},
 		{http.MethodPost, "/groups/1/composite-routes/preview", `{"model":"x"}`},

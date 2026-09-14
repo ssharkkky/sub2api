@@ -1055,6 +1055,13 @@ func TestOpenAISelectAccountForModelWithExclusions_NoModelSupport(t *testing.T) 
 				Status:      StatusActive,
 				Schedulable: true,
 				Credentials: map[string]any{"model_mapping": map[string]any{"gpt-3.5-turbo": "gpt-3.5-turbo"}},
+				// 零默认映射：映射不再当白名单；快照只含 gpt-3.5-turbo，故 gpt-4 不被支持。
+				Extra: map[string]any{
+					"upstream_model_snapshot": &UpstreamModelSnapshot{
+						Models:   []string{"gpt-3.5-turbo"},
+						SyncedAt: "2024-01-01T00:00:00Z",
+					},
+				},
 			},
 		},
 	}

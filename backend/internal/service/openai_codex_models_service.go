@@ -51,9 +51,9 @@ const (
 // Automatic modes are retained only when the group's enabled model allowlist
 // explicitly selects the exact slug; account model mappings describe routing
 // and are not feature opt-ins. Wildcard keys such as "foo-*" are routing
-// patterns, not concrete Codex models. When the allowlist is enabled the
-// catalog is additionally restricted by FilterForListing (wildcard entries
-// expand against the catalog).
+// patterns, not concrete Codex models. Note (R3): the group allowlist no longer
+// restricts the model list (FilterForListing is a no-op); only the auto-mode
+// opt-in above still reads ModelAllowlistEnabled().
 func FilterCodexModelIDsForGroup(modelIDs []string, group *Group) []string {
 	explicitlyEnabled := make(map[string]struct{})
 	if group != nil && group.ModelAllowlistEnabled() {

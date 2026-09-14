@@ -243,6 +243,8 @@ func TestGatewayModels_UnmappedOpenAIAccountsSupplementMappedModels(t *testing.T
 			ID: 2, Platform: service.PlatformOpenAI, Type: service.AccountTypeOAuth,
 			ParentAccountID: &parentID, QuotaDimension: "spark",
 			Credentials: map[string]any{"model_mapping": map[string]any{sparkModel: sparkModel}},
+			// 零默认映射：快照限定可服务集（不含 gpt-5.6-sol），使 IsModelSupported 回退判定成立。
+			Extra: map[string]any{service.UpstreamModelSnapshotExtraKey: &service.UpstreamModelSnapshot{Models: []string{sparkModel}, SyncedAt: "2024-01-01T00:00:00Z"}},
 		},
 		{
 			ID: 3, Platform: service.PlatformOpenAI, Type: service.AccountTypeAPIKey,
@@ -271,16 +273,17 @@ func TestGatewayModels_UnmappedOpenAIAccountsSupplementMappedModels(t *testing.T
 			want:     defaultModelIDsForPlatform(service.PlatformOpenAI),
 		},
 		{
-			name:     "custom list can select defaults and aliases",
+			// 分组模型白名单门禁已删除（R3）：白名单被忽略，返回平台全目录（同无白名单用例）。
+			name:     "custom list is ignored and platform defaults are returned",
 			accounts: accounts,
 			config:   service.GroupModelAllowlist{Enabled: true, Models: []string{alias, "gpt-5.6-sol", sparkModel, "unknown-model"}},
-			want:     []string{alias, "gpt-5.6-sol", sparkModel},
+			want:     defaultModelIDsForPlatform(service.PlatformOpenAI),
 		},
 		{
-			name:     "unavailable custom selection remains empty",
+			name:     "unavailable custom selection is ignored and defaults are returned",
 			accounts: accounts,
 			config:   service.GroupModelAllowlist{Enabled: true, Models: []string{"unknown-model"}},
-			want:     []string{},
+			want:     defaultModelIDsForPlatform(service.PlatformOpenAI),
 		},
 		{
 			name:     "mapped accounts alone do not gain defaults",
@@ -411,7 +414,8 @@ func TestGatewayCodexModels_CustomModelsListFiltersCompositeManifest(t *testing.
 	require.Equal(t, http.StatusOK, rec.Code)
 	var got codexModelsResponseForTest
 	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &got))
-	require.Equal(t, []string{"grok-4.6"}, codexModelSlugsForTest(got.Models))
+	// R3：白名单不再过滤，OpenAI gpt-5.5 + Grok grok-4.6 都保留。
+	require.Equal(t, []string{"gpt-5.5", "grok-4.6"}, codexModelSlugsForTest(got.Models))
 }
 
 func codexModelSlugsForTest(models []struct {
@@ -833,7 +837,9 @@ func TestGatewayModels_CustomModelsListDoesNotReplacePublicModels(t *testing.T) 
 	var got gatewayModelsResponseForTest
 	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &got))
 	ids := modelIDsForTest(got.Data)
-	require.Equal(t, []string{"gpt-5.5", "gpt-5.4"}, ids)
+	// 分组模型白名单（model_allowlist）门禁已删除（R3）：/v1/models 不再按白名单
+	// 过滤，返回平台全目录（白名单字段保留但被忽略）。
+	require.ElementsMatch(t, defaultModelIDsForPlatform(service.PlatformOpenAI), ids)
 }
 
 func TestGatewayModels_CompositeCustomModelsListDoesNotReplacePublicModels(t *testing.T) {
@@ -919,7 +925,12 @@ func TestGatewayModels_CompositeCustomModelsListDoesNotReplacePublicModels(t *te
 	var got gatewayModelsResponseForTest
 	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &got))
 	ids := modelIDsForTest(got.Data)
-	require.Equal(t, []string{"gemini-2.5-flash", "gpt-5.5"}, ids)
+	// 分组模型白名单门禁已删除（R3）：composite /v1/models 不再按白名单过滤，
+	// 返回绑定各平台可用模型并集；原白名单内的目录模型仍应出现（白名单被忽略）。
+	require.NotEmpty(t, ids)
+	for _, m := range []string{"gemini-2.5-flash", "gpt-5.5"} {
+		require.Contains(t, ids, m, "allowlisted catalog model should still be listed: %s", m)
+	}
 }
 
 func TestGatewayModels_CompositeUnmappedAccountsFallbackToLinkedPlatformsOnly(t *testing.T) {
@@ -1137,7 +1148,8 @@ func TestGatewayModels_CustomModelsListDoesNotOverrideWildcardFallback(t *testin
 	var got gatewayModelsResponseForTest
 	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &got))
 	ids := modelIDsForTest(got.Data)
-	require.Equal(t, []string{"claude-sonnet-4-6"}, ids)
+	// 分组模型白名单门禁已删除（R3）：anthropic /v1/models 返回全目录（白名单被忽略）。
+	require.ElementsMatch(t, defaultModelIDsForPlatform(service.PlatformAnthropic), ids)
 }
 
 func TestGatewayModels_AnthropicCustomModelsListDoesNotIncludeMappedDeepSeek(t *testing.T) {
@@ -1189,7 +1201,8 @@ func TestGatewayModels_AnthropicCustomModelsListDoesNotIncludeMappedDeepSeek(t *
 	var got gatewayModelsResponseForTest
 	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &got))
 	ids := modelIDsForTest(got.Data)
-	require.Equal(t, []string{"claude-fable-5", "claude-opus-4-8", "deepseek-v4-pro"}, ids)
+	// 分组模型白名单门禁已删除（R3）：anthropic /v1/models 返回全目录（白名单被忽略）。
+	require.ElementsMatch(t, defaultModelIDsForPlatform(service.PlatformAnthropic), ids)
 }
 
 func TestGatewayModels_AnthropicCustomModelsListDisabledUsesPlatformDefaults(t *testing.T) {
@@ -1284,7 +1297,8 @@ func TestGatewayModels_AnthropicCustomModelsListIncludesOAuthClaudeWithoutMappin
 	var got gatewayModelsResponseForTest
 	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &got))
 	ids := modelIDsForTest(got.Data)
-	require.Equal(t, []string{"claude-opus-4-6-thinking", "claude-sonnet-4-5"}, ids)
+	// 分组模型白名单门禁已删除（R3）：anthropic /v1/models 返回全目录（白名单被忽略）。
+	require.ElementsMatch(t, defaultModelIDsForPlatform(service.PlatformAnthropic), ids)
 }
 
 func TestGatewayModels_CustomModelsListUnavailableSelectionsStillReturnPublicModels(t *testing.T) {
@@ -1330,7 +1344,8 @@ func TestGatewayModels_CustomModelsListUnavailableSelectionsStillReturnPublicMod
 	var got gatewayModelsResponseForTest
 	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &got))
 	ids := modelIDsForTest(got.Data)
-	require.Empty(t, ids)
+	// 分组模型白名单门禁已删除（R3）：openai /v1/models 返回全目录（白名单被忽略）。
+	require.ElementsMatch(t, defaultModelIDsForPlatform(service.PlatformOpenAI), ids)
 }
 
 func TestGatewayModels_CustomModelsListDoesNotFilterDefaultFallbackModels(t *testing.T) {
@@ -1368,7 +1383,8 @@ func TestGatewayModels_CustomModelsListDoesNotFilterDefaultFallbackModels(t *tes
 	var got gatewayModelsResponseForTest
 	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &got))
 	ids := modelIDsForTest(got.Data)
-	require.Equal(t, []string{"gpt-5.5", "gpt-5.4"}, ids)
+	// 分组模型白名单门禁已删除（R3）：openai /v1/models 返回全目录（白名单被忽略）。
+	require.ElementsMatch(t, defaultModelIDsForPlatform(service.PlatformOpenAI), ids)
 }
 
 func TestGatewayModels_OpenAICustomModelsListDoesNotChangeResponseShape(t *testing.T) {
