@@ -75,6 +75,14 @@ const usageColumns = computed<Column[]>(() => [
 
 const close = () => emit('update:modelValue', false)
 
+const showTTFT = computed(() => props.preset.sort === 'ttft_desc')
+const latencyLabel = computed(() => t(showTTFT.value ? 'admin.ops.ttftLabel' : 'admin.ops.requestDetails.table.duration'))
+
+function formatLatency(row: OpsRequestDetail): string {
+  const value = showTTFT.value ? row.first_token_ms : row.duration_ms
+  return typeof value === 'number' ? `${value} ms` : '-'
+}
+
 const rangeLabel = computed(() => {
   const minutes = parseTimeRangeMinutes(props.timeRange)
   if (minutes >= 60) return t('admin.ops.requestDetails.rangeHours', { n: Math.round(minutes / 60) })
@@ -323,6 +331,7 @@ const kindBadgeClass = (kind: string) => {
                     <span class="font-medium tabular-nums">{{ formatSeconds(row.duration_ms) }}</span>
                   </div>
                   <div class="flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-gray-600 dark:text-gray-300">
+                    <span>{{ latencyLabel }}: {{ formatLatency(row) }}</span>
                     <span>{{ row.status_code ?? '-' }}</span>
                   </div>
                   <div v-if="row.request_id" class="flex items-center gap-2">

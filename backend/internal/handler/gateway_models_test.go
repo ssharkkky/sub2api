@@ -899,6 +899,13 @@ func TestGatewayModels_CompositeCustomModelsListDoesNotReplacePublicModels(t *te
 							"model_mapping": map[string]any{"deepseek-custom": "deepseek-upstream"},
 						},
 					},
+					{
+						ID:       7,
+						Platform: service.PlatformMiniMax,
+						Credentials: map[string]any{
+							"model_mapping": map[string]any{"minimax-custom": "MiniMax-M3"},
+						},
+					},
 				},
 			},
 		},
@@ -913,7 +920,7 @@ func TestGatewayModels_CompositeCustomModelsListDoesNotReplacePublicModels(t *te
 			Platform: service.PlatformComposite,
 			ModelAllowlist: service.GroupModelAllowlist{
 				Enabled: true,
-				Models:  []string{"gemini-2.5-flash", "missing-model", "ag-custom-model", "gpt-5.5", "kimi-custom", "glm-custom", "deepseek-custom"},
+				Models:  []string{"gemini-2.5-flash", "missing-model", "ag-custom-model", "gpt-5.5", "kimi-custom", "glm-custom", "deepseek-custom", "minimax-custom"},
 			},
 		},
 	})
@@ -928,8 +935,8 @@ func TestGatewayModels_CompositeCustomModelsListDoesNotReplacePublicModels(t *te
 	// 分组模型白名单门禁已删除（R3）：composite /v1/models 不再按白名单过滤，
 	// 返回绑定各平台可用模型并集；原白名单内的目录模型仍应出现（白名单被忽略）。
 	require.NotEmpty(t, ids)
-	for _, m := range []string{"gemini-2.5-flash", "gpt-5.5"} {
-		require.Contains(t, ids, m, "allowlisted catalog model should still be listed: %s", m)
+	for _, m := range []string{"gemini-2.5-flash", "gpt-5.5", "minimax-custom"} {
+		require.Contains(t, ids, m, "model should be listed: %s", m)
 	}
 }
 
@@ -983,6 +990,7 @@ func TestGatewayModels_CompositeUnmappedCNAccountsContributeNoDefaults(t *testin
 					{ID: 2, Platform: service.PlatformKimi},
 					{ID: 3, Platform: service.PlatformZhipu},
 					{ID: 4, Platform: service.PlatformDeepseek},
+					{ID: 5, Platform: service.PlatformMiniMax},
 				},
 			},
 		},
@@ -1014,7 +1022,7 @@ func TestDefaultModelIDsForPlatform_CNProvidersKeepClaudeDefaults(t *testing.T) 
 	for _, model := range claude.DefaultModels {
 		want = append(want, model.ID)
 	}
-	for _, platform := range []string{service.PlatformKimi, service.PlatformZhipu, service.PlatformDeepseek} {
+	for _, platform := range []string{service.PlatformKimi, service.PlatformZhipu, service.PlatformDeepseek, service.PlatformMiniMax} {
 		got := defaultModelIDsForPlatform(platform)
 		for _, id := range want {
 			require.Contains(t, got, id, "platform=%s", platform)
@@ -1023,7 +1031,8 @@ func TestDefaultModelIDsForPlatform_CNProvidersKeepClaudeDefaults(t *testing.T) 
 }
 
 func TestDefaultCodexModelIDsForPlatform_DeepSeekUsesDeepSeekModels(t *testing.T) {
-	require.Equal(t, []string{"deepseek-v4-pro", "deepseek-v4-flash"}, defaultCodexModelIDsForPlatform(service.PlatformDeepseek))
+	require.Equal(t, []string{"deepseek-v4-pro", "deepseek-v4-flash", "deepseek-flash"}, defaultCodexModelIDsForPlatform(service.PlatformDeepseek))
+	require.Equal(t, []string{"MiniMax-M3", "MiniMax-M2.7", "MiniMax-M2.5"}, defaultCodexModelIDsForPlatform(service.PlatformMiniMax))
 	require.Equal(t, defaultModelIDsForPlatform(service.PlatformAnthropic), defaultCodexModelIDsForPlatform(service.PlatformAnthropic))
 }
 
@@ -1520,7 +1529,7 @@ func TestGatewayModels_RestrictedChannelDoesNotFallBackToDefaults(t *testing.T) 
 			},
 		}},
 		platforms: map[int64]string{groupID: service.PlatformAntigravity},
-	}, nil, nil, nil)
+	}, nil, nil, nil, nil)
 
 	h := &GatewayHandler{
 		gatewayService: service.NewGatewayService(
@@ -1561,7 +1570,7 @@ func TestGatewayModels_RestrictedChannelEmptyStorefrontStaysEmpty(t *testing.T) 
 			RestrictModels: true,
 		}},
 		platforms: map[int64]string{groupID: service.PlatformAntigravity},
-	}, nil, nil, nil)
+	}, nil, nil, nil, nil)
 
 	h := &GatewayHandler{
 		gatewayService: service.NewGatewayService(
@@ -1602,7 +1611,7 @@ func TestGatewayModels_CompositeRestrictedEmptyStorefrontStaysEmpty(t *testing.T
 			RestrictModels: true,
 		}},
 		platforms: map[int64]string{groupID: service.PlatformComposite},
-	}, nil, nil, nil)
+	}, nil, nil, nil, nil)
 
 	h := &GatewayHandler{
 		gatewayService: service.NewGatewayService(

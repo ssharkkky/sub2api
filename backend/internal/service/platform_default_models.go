@@ -29,6 +29,8 @@ func PlatformDefaultModelIDs(platform string) []string {
 			PlatformDefaultModelIDs(PlatformKimi),
 			PlatformDefaultModelIDs(PlatformZhipu),
 			PlatformDefaultModelIDs(PlatformDeepseek),
+			PlatformDefaultModelIDs(PlatformMiniMax),
+			PlatformDefaultModelIDs(PlatformOpenCodeGo),
 		)
 	}
 	return mergeUniqueModelIDs(packageDefaultModelIDs(platform), modelcatalog.PublicIDs(platform))
@@ -59,6 +61,8 @@ func packageDefaultModelIDs(platform string) []string {
 			ids = append(ids, model.ID)
 		}
 		return ids
+	case PlatformOpenCodeGo:
+		return DefaultOpenCodeGoModelIDs()
 	default:
 		ids := make([]string, 0, len(claude.DefaultModels))
 		for _, model := range claude.DefaultModels {

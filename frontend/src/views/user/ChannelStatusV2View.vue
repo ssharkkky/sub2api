@@ -278,6 +278,7 @@ import * as api from '@/api/channelMonitorV2'
 import type {
   HealthState,
   MonitorFilter,
+  MonitorMatrixGroupBy,
   MonitorRange,
   MonitorSnapshot,
   MonitorMatrixResponse,
@@ -304,7 +305,6 @@ const isAdmin = computed(() => authStore.isAdmin)
 const showThroughput = computed(() => isAdmin.value || !isChannelMonitorThroughputHidden())
 /** Admins always see ranking; users honor the hide-user-ranking system setting. */
 const showUserRanking = computed(() => isAdmin.value || !isChannelMonitorUserRankingHidden())
-const matrixGroupBy = 'platform_group' as const
 
 const ranges = computed(() => [
   { value: '90m' as MonitorRange, label: t('channelMonitorV2.ranges.90m') },
@@ -319,6 +319,7 @@ const filter = ref<MonitorFilter>({
   groupIds: [],
   models: [],
 })
+const matrixGroupBy = ref<MonitorMatrixGroupBy>(parseMatrixGroupBy(route.query.group_by))
 const snapshot = ref<MonitorSnapshot | null>(null)
 const matrix = ref<MonitorMatrixResponse | null>(null)
 const userRows = ref<MonitorUserRow[]>([])
@@ -343,6 +344,17 @@ const matrixRows = computed(() => {
 function parseRange(value: unknown): MonitorRange {
   return ['90m', '24h', '7d', '30d'].includes(String(value)) ? (value as MonitorRange) : '90m'
 }
+function parseMatrixGroupBy(value: unknown): MonitorMatrixGroupBy {
+  const allowed: MonitorMatrixGroupBy[] = [
+    'platform',
+    'platform_group',
+    'platform_model',
+    'platform_group_model',
+  ]
+  return allowed.includes(value as MonitorMatrixGroupBy)
+    ? (value as MonitorMatrixGroupBy)
+    : 'platform_group'
+}
 function syncQuery() {
   void router.replace({
     query: {
@@ -354,7 +366,7 @@ function syncQuery() {
 async function loadMetrics(signal?: AbortSignal, id = sequence) {
   const [nextSnapshot, nextMatrix] = await Promise.all([
     api.getSnapshot(filter.value, isAdmin.value, signal),
-    api.getMatrix(filter.value, matrixGroupBy, isAdmin.value, signal),
+    api.getMatrix(filter.value, matrixGroupBy.value, isAdmin.value, signal),
   ])
   if (id !== sequence) return
   snapshot.value = nextSnapshot
