@@ -1154,8 +1154,8 @@ func (h *GatewayHandler) Messages(c *gin.Context) {
 	}
 }
 
-// Models handles listing available models
-// GET /v1/models
+// Models lists visible models, or retrieves the exact list entry for a model path parameter.
+// GET /v1/models and /v1/models/:model (also exposed through root aliases)
 // Bound channels with RestrictModels own the user-facing shelf. Otherwise the
 // handler falls back to platform defaults merged with the fork catalog.
 // Group custom model lists are no longer a public shelf. Account
@@ -1281,10 +1281,7 @@ func writeGeminiModelsList(c *gin.Context, modelIDs []string, limits map[string]
 		}
 		models = append(models, geminicli.Model{ID: modelID, Type: "model", DisplayName: modelID})
 	}
-	c.JSON(http.StatusOK, withModelMetadata(gin.H{
-		"object": "list",
-		"data":   models,
-	}, limits))
+	writeModelCatalogue(c, models, limits)
 }
 
 // CodexModels returns the effective group model list using the manifest shape
@@ -1368,7 +1365,7 @@ func (h *GatewayHandler) codexCompositeAvailableModels(ctx context.Context, grou
 	seen := make(map[string]struct{})
 	models := make([]string, 0)
 	schedulablePlatforms := h.gatewayService.GetSchedulablePlatforms(ctx, groupID)
-	for _, platform := range []string{service.PlatformAnthropic, service.PlatformGemini, service.PlatformOpenAI, service.PlatformAntigravity, service.PlatformGrok, service.PlatformKimi, service.PlatformZhipu, service.PlatformDeepseek} {
+	for _, platform := range []string{service.PlatformAnthropic, service.PlatformGemini, service.PlatformOpenAI, service.PlatformAntigravity, service.PlatformGrok, service.PlatformKimi, service.PlatformZhipu, service.PlatformDeepseek, service.PlatformMiniMax, service.PlatformOpenCodeGo} {
 		var platformModels []string
 		if storefrontModels, ok := h.channelStorefrontModels(ctx, groupID, platform); ok {
 			platformModels = storefrontModels
@@ -1377,7 +1374,7 @@ func (h *GatewayHandler) codexCompositeAvailableModels(ctx context.Context, grou
 			if len(platformModels) == 0 {
 				// CN 供应商没有静态默认模型列表（defaultModelIDsForPlatform 的
 				// default 分支是 Claude 列表），composite 下只暴露账号映射键。
-				if _, ok := schedulablePlatforms[platform]; ok && !service.IsCNProvider(platform) {
+				if _, ok := schedulablePlatforms[platform]; ok && !service.IsMultiProtocolAPIKeyProvider(platform) {
 					platformModels = defaultModelIDsForPlatform(platform)
 				}
 			}
@@ -1411,14 +1408,14 @@ func (h *GatewayHandler) compositeAvailableModels(ctx context.Context, groupID *
 	seen := make(map[string]struct{})
 	models := make([]string, 0)
 	schedulablePlatforms := h.gatewayService.GetSchedulablePlatforms(ctx, groupID)
-	for _, platform := range []string{service.PlatformAnthropic, service.PlatformGemini, service.PlatformOpenAI, service.PlatformAntigravity, service.PlatformGrok, service.PlatformKimi, service.PlatformZhipu, service.PlatformDeepseek} {
+	for _, platform := range []string{service.PlatformAnthropic, service.PlatformGemini, service.PlatformOpenAI, service.PlatformAntigravity, service.PlatformGrok, service.PlatformKimi, service.PlatformZhipu, service.PlatformDeepseek, service.PlatformMiniMax, service.PlatformOpenCodeGo} {
 		platformModels, storefront := h.channelStorefrontModels(ctx, groupID, platform)
 		if !storefront {
-			platformModels = h.gatewayService.GetAvailableModels(ctx, groupID, platform)
+			platformModels = h.gatewayService.ListGroupAvailableModels(ctx, groupID, platform)
 			if len(platformModels) == 0 {
 				// CN 供应商没有静态默认模型列表（defaultModelIDsForPlatform 的
 				// default 分支是 Claude 列表），composite 下只暴露账号映射键。
-				if _, ok := schedulablePlatforms[platform]; ok && !service.IsCNProvider(platform) {
+				if _, ok := schedulablePlatforms[platform]; ok && !service.IsMultiProtocolAPIKeyProvider(platform) {
 					platformModels = defaultModelIDsForPlatform(platform)
 				}
 			}
@@ -1438,6 +1435,26 @@ func (h *GatewayHandler) compositeAvailableModels(ctx context.Context, groupID *
 	return models
 }
 
+// writeModelCatalogue 统一写模型目录：列表端点原样输出（含 per-model token 元数据）；
+// /v1/models/:model 端点（c.Param("model") 非空）委托上游 writeRetrievedModel 精确匹配，
+// 未命中由 writeRetrievedModel 返回 404 model_not_found。
+func writeModelCatalogue(c *gin.Context, models any, limits map[string]modelTokenLimits) {
+	body := withModelMetadata(gin.H{
+		"object": "list",
+		"data":   models,
+	}, limits)
+	if c.Param("model") == "" {
+		c.JSON(http.StatusOK, body)
+		return
+	}
+	encoded, err := json.Marshal(body)
+	if err != nil {
+		writeOpenAIModelsError(c, http.StatusInternalServerError, "api_error", "Failed to encode model catalogue")
+		return
+	}
+	writeRetrievedModel(c, encoded)
+}
+
 func writeModelsList(c *gin.Context, platform string, modelIDs []string, limits map[string]modelTokenLimits) {
 	if platform == service.PlatformGrok {
 		writeGrokModelsList(c, modelIDs, limits)
@@ -1452,10 +1469,7 @@ func writeModelsList(c *gin.Context, platform string, modelIDs []string, limits 
 			CreatedAt:   "2024-01-01T00:00:00Z",
 		})
 	}
-	c.JSON(http.StatusOK, withModelMetadata(gin.H{
-		"object": "list",
-		"data":   models,
-	}, limits))
+	writeModelCatalogue(c, models, limits)
 }
 
 type grokReasoningEffortOption struct {
@@ -1506,10 +1520,7 @@ func writeGrokModelsList(c *gin.Context, modelIDs []string, limits map[string]mo
 		models = append(models, item)
 	}
 
-	c.JSON(http.StatusOK, withModelMetadata(gin.H{
-		"object": "list",
-		"data":   models,
-	}, limits))
+	writeModelCatalogue(c, models, limits)
 }
 
 func grokModelSupportsConfigurableReasoning(modelID string) bool {
@@ -1542,20 +1553,21 @@ func writeOpenAIModelsList(c *gin.Context, modelIDs []string, limits map[string]
 			DisplayName: modelID,
 		})
 	}
-	c.JSON(http.StatusOK, withModelMetadata(gin.H{
-		"object": "list",
-		"data":   models,
-	}, limits))
+	writeModelCatalogue(c, models, limits)
 }
 
 // defaultCodexModelIDsForPlatform 保留上游的 DeepSeek 特例；其余平台（含 composite）
 // 统一委托 service 层，保持与 Models 接口一致（含 Kiro 与公共目录模型）。
 
 func defaultCodexModelIDsForPlatform(platform string) []string {
-	if platform == service.PlatformDeepseek {
-		return []string{"deepseek-v4-pro", "deepseek-v4-flash"}
+	switch platform {
+	case service.PlatformDeepseek:
+		return []string{"deepseek-v4-pro", "deepseek-v4-flash", "deepseek-flash"}
+	case service.PlatformMiniMax:
+		return []string{"MiniMax-M3", "MiniMax-M2.7", "MiniMax-M2.5"}
+	default:
+		return defaultModelIDsForPlatform(platform)
 	}
-	return defaultModelIDsForPlatform(platform)
 }
 
 // defaultModelIDsForPlatform 委托 service.PlatformDefaultModelIDs 统一取平台默认模型

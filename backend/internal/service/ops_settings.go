@@ -8,6 +8,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/Wei-Shaw/sub2api/internal/config"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/logger"
 )
 
@@ -436,7 +437,8 @@ func validateOpsAlertRuntimeSettings(cfg *OpsAlertRuntimeSettings) error {
 func defaultOpsAdvancedSettings() *OpsAdvancedSettings {
 	return &OpsAdvancedSettings{
 		DataRetention: OpsDataRetentionSettings{
-			CleanupEnabled:             false,
+			// 与上游对齐：数据清理默认启用（首次设置读取不会静默关闭已配置保留策略）
+			CleanupEnabled:             true,
 			CleanupSchedule:            opsCleanupDefaultSchedule,
 			ErrorLogRetentionDays:      30,
 			MinuteMetricsRetentionDays: 30,
@@ -456,6 +458,14 @@ func defaultOpsAdvancedSettings() *OpsAdvancedSettings {
 		AutoRefreshEnabled:              false,
 		AutoRefreshIntervalSec:          30,
 	}
+}
+
+func defaultOpsAdvancedSettingsForConfig(cfg *config.Config) *OpsAdvancedSettings {
+	defaults := defaultOpsAdvancedSettings()
+	if cfg != nil {
+		defaults.DataRetention.CleanupEnabled = cfg.Ops.Cleanup.Enabled
+	}
+	return defaults
 }
 
 func normalizeOpsAdvancedSettings(cfg *OpsAdvancedSettings) {
@@ -532,6 +542,7 @@ func (s *OpsService) OpsAdvancedSettingsSnapshot() OpsAdvancedSettings {
 		if snapshot := s.runtimeSettings.Load(); snapshot != nil {
 			return snapshot.advanced
 		}
+		return *defaultOpsAdvancedSettingsForConfig(s.cfg)
 	}
 	return *defaultOpsAdvancedSettings()
 }

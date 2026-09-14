@@ -169,7 +169,7 @@ describe('PaymentProviderDialog payment guide', () => {
     expect(payload.config.accountId).toBe('')
   })
 
-  it('serializes EasyPay custom methods and adds them to supported_types', async () => {
+  it.each(['epay', 'usdt.trc20'])('serializes EasyPay upstream type %s and adds the local type to supported_types', async (upstreamType) => {
     const provider = providerFactory({
       provider_key: 'easypay',
       name: 'EasyPay',
@@ -200,7 +200,7 @@ describe('PaymentProviderDialog payment guide', () => {
     }
 
     await ldcTypeInput.setValue('ldc')
-    await upstreamTypeInput.setValue('epay')
+    await upstreamTypeInput.setValue(upstreamType)
     await displayNameInput.setValue('LDC')
     await wrapper.find('form').trigger('submit.prevent')
 
@@ -208,7 +208,7 @@ describe('PaymentProviderDialog payment guide', () => {
       config: Record<string, string>
       supported_types: string[]
     }
-    expect(payload.config.customMethods).toBe('[{"type":"ldc","upstreamType":"epay","displayName":"LDC"}]')
+    expect(JSON.parse(payload.config.customMethods)).toEqual([{ type: 'ldc', upstreamType, displayName: 'LDC' }])
     expect(payload.supported_types).toEqual(['alipay', 'wxpay', 'ldc'])
   })
 
@@ -299,6 +299,48 @@ describe('PaymentProviderDialog payment guide', () => {
     await typeInput.setValue('alipay_hk')
     await upstreamTypeInput.setValue('hkpay')
     await displayNameInput.setValue('Hong Kong Alipay')
+    await wrapper.find('form').trigger('submit.prevent')
+
+    expect(wrapper.emitted('save')).toBeUndefined()
+  })
+
+  it.each([
+    ['alipay_hk', 'hkpay'],
+    ['usdt.trc20', 'usdt.trc20'],
+    ['usdt_trc20', 'usdt/trc20'],
+  ])('rejects invalid EasyPay mapping %s to %s', async (type, upstreamType) => {
+    const provider = providerFactory({
+      provider_key: 'easypay',
+      name: 'EasyPay',
+      config: {
+        pid: 'pid-1',
+        apiBase: 'https://pay.example.com',
+        notifyUrl: 'https://example.com/api/v1/payment/webhook/easypay',
+        returnUrl: 'https://example.com/payment/result',
+      },
+      supported_types: ['alipay', 'wxpay'],
+      payment_mode: 'qrcode',
+    })
+    const wrapper = mountDialog({ editing: provider })
+
+    ;(wrapper.vm as unknown as { loadProvider: (provider: ProviderInstance) => void }).loadProvider(provider)
+    await nextTick()
+
+    await wrapper.find('button.btn-sm').trigger('click')
+    await nextTick()
+
+    const inputs = wrapper.findAll('input[type="text"]')
+    const customTypeInputs = inputs.filter(input => (input.element as HTMLInputElement).placeholder === 'credit_card')
+    const typeInput = customTypeInputs[0]
+    const upstreamTypeInput = customTypeInputs[1]
+    const displayNameInput = inputs.find(input => (input.element as HTMLInputElement).placeholder === '信用卡')
+    if (!typeInput || !upstreamTypeInput || !displayNameInput) {
+      throw new Error('custom method inputs not found')
+    }
+
+    await typeInput.setValue(type)
+    await upstreamTypeInput.setValue(upstreamType)
+    await displayNameInput.setValue('Custom payment')
     await wrapper.find('form').trigger('submit.prevent')
 
     expect(wrapper.emitted('save')).toBeUndefined()

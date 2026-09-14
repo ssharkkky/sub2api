@@ -106,6 +106,7 @@ func (h *SettingHandler) GetPublicSettings(c *gin.Context) {
 		GoogleOAuthEnabled:                  settings.GoogleOAuthEnabled,
 		BackendModeEnabled:                  settings.BackendModeEnabled,
 		PaymentEnabled:                      settings.PaymentEnabled,
+		PaymentBalanceDisabled:              settings.PaymentBalanceDisabled,
 		Version:                             h.version,
 		ServerTimezone:                      timezone.Name(),
 		ServerUTCOffset:                     timezone.UTCOffset(),
@@ -123,6 +124,7 @@ func (h *SettingHandler) GetPublicSettings(c *gin.Context) {
 
 		AvailableChannelsEnabled: settings.AvailableChannelsEnabled,
 		ImagePlaygroundEnabled:   settings.ImagePlaygroundEnabled,
+		SubscriptionEnabled:      settings.SubscriptionEnabled,
 
 		ModelPlazaEnabled:       settings.ModelPlazaEnabled,
 		ModelPlazaRequireAuth:   settings.ModelPlazaRequireAuth,
@@ -146,7 +148,6 @@ func (h *SettingHandler) UnsubscribeNotificationEmail(c *gin.Context) {
 	token := strings.TrimSpace(c.Query("token"))
 	if token == "" {
 		response.BadRequest(c, "token is required")
-		return
 	}
 	result, err := h.notificationEmailService.Unsubscribe(c.Request.Context(), token)
 	if err != nil {

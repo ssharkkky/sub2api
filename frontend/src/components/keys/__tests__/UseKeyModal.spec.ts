@@ -644,6 +644,44 @@ describe('UseKeyModal', () => {
     expect(configToml).not.toContain('model_reasoning_effort')
   })
 
+  it.each(['anthropic', 'gemini', 'antigravity', 'kimi', 'zhipu', 'minimax'] as const)(
+    'offers Codex catalog configuration for the %s routed group',
+    async (platform) => {
+      const wrapper = mount(UseKeyModal, {
+        props: {
+          show: true,
+          apiKey: `sk-${platform}-test`,
+          baseUrl: 'https://example.com/v1',
+          platform
+        },
+        global: {
+          stubs: {
+            BaseDialog: {
+              template: '<div><slot /><slot name="footer" /></div>'
+            },
+            Icon: {
+              template: '<span />'
+            }
+          }
+        }
+      })
+
+      const codexTab = wrapper.findAll('button').find((button) =>
+        button.text().includes('keys.useKeyModal.cliTabs.codexCli')
+      )
+      expect(codexTab).toBeDefined()
+      await codexTab!.trigger('click')
+      await nextTick()
+
+      expect(wrapper.find('[data-testid="codex-model-catalog"]').exists()).toBe(true)
+      const config = wrapper.findAll('pre code')
+        .map((code) => code.text())
+        .find((content) => content.includes('[model_providers.sub2api]'))
+      expect(config).toContain('model_catalog_json = "~/.codex/codex-models.json"')
+      expect(config).toContain('base_url = "https://example.com/v1"')
+      expect(config).toContain('wire_api = "responses"')
+    }
+  )
   describe('media-only shelves and default selection', () => {
     it('emits no Grok default when the shelf has only media models', async () => {
       const wrapper = mountModal({ availableModels: ['grok-imagine-image'] })

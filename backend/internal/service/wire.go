@@ -907,8 +907,9 @@ func ProvideChannelService(
 	authCacheInvalidator APIKeyAuthCacheInvalidator,
 	pricingService *PricingService,
 	accountRepo AccountRepository,
+	cachePubSub ChannelCachePubSub,
 ) *ChannelService {
-	svc := NewChannelService(repo, groupRepo, authCacheInvalidator, pricingService)
+	svc := NewChannelService(repo, groupRepo, authCacheInvalidator, pricingService, cachePubSub)
 	svc.SetAccountRepository(accountRepo)
 	return svc
 }

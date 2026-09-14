@@ -136,7 +136,7 @@ func TestChannelUpdateRejectsSecondBrowserWithSameStaleRevision(t *testing.T) {
 		ServiceTierConfig: service.DefaultChannelServiceTierConfig(),
 		UpdatedAt:         revision,
 	}}
-	handler := NewChannelHandler(service.NewChannelService(repo, nil, nil, nil), nil, nil)
+	handler := NewChannelHandler(service.NewChannelService(repo, nil, nil, nil, nil), nil, nil)
 	router := gin.New()
 	router.PUT("/channels/:id", handler.Update)
 
@@ -176,7 +176,7 @@ func TestChannelUpdateAcceptsLegacyClientWithoutRevision(t *testing.T) {
 		ServiceTierConfig: service.DefaultChannelServiceTierConfig(),
 		UpdatedAt:         time.Date(2026, 7, 31, 12, 0, 0, 987654000, time.UTC),
 	}}
-	handler := NewChannelHandler(service.NewChannelService(repo, nil, nil, nil), nil, nil)
+	handler := NewChannelHandler(service.NewChannelService(repo, nil, nil, nil, nil), nil, nil)
 	router := gin.New()
 	router.PUT("/channels/:id", handler.Update)
 
@@ -651,7 +651,7 @@ func TestSyncPricingModels_ValidPlatform_EmptyService(t *testing.T) {
 	svc := service.NewPricingService(nil, nil)
 	router := setupSyncPricingModelsRouter(svc)
 
-	for _, platform := range []string{"anthropic", "openai", "gemini", "antigravity", "grok", "kimi", "zhipu", "deepseek"} {
+	for _, platform := range []string{"anthropic", "openai", "gemini", "antigravity", "grok", "kimi", "zhipu", "deepseek", "minimax"} {
 		req := httptest.NewRequest(http.MethodGet, "/channels/pricing/sync-models?platform="+platform, nil)
 		w := httptest.NewRecorder()
 		router.ServeHTTP(w, req)

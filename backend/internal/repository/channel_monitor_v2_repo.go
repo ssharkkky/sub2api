@@ -949,7 +949,7 @@ func (r *channelMonitorV2Repository) loadFacts(ctx context.Context, filter servi
 		} else {
 			args = append([]any{fmt.Sprintf("%d seconds", int(filter.Bucket.Seconds()))}, args...)
 			where = shiftSQLPlaceholders(where, 1)
-			bucketExpr = channelMonitorV2DateBinExpr("m")
+			bucketExpr = channelMonitorV2DateBinExpr("m.bucket_start")
 			group = bucketExpr + "," + group
 		}
 	}
@@ -991,7 +991,7 @@ func (r *channelMonitorV2Repository) loadHistograms(ctx context.Context, filter 
 			args = []any{fmt.Sprintf("%d seconds", int(filter.Bucket.Seconds()))}
 			args = append(args, oldArgs...)
 			where = shiftSQLPlaceholders(where, 1)
-			bucketExpr = channelMonitorV2DateBinExpr("h")
+			bucketExpr = channelMonitorV2DateBinExpr("h.bucket_start")
 			group = bucketExpr + "," + group
 		}
 	}
@@ -1109,12 +1109,6 @@ func channelMonitorV2HistoryCoverageComplete(coverageStart, filterStart time.Tim
 		return false
 	}
 	return !coverageStart.After(filterStart)
-}
-
-const channelMonitorV2DateBinOriginUTC = "TIMESTAMPTZ '1970-01-01 00:00:00+00'"
-
-func channelMonitorV2DateBinExpr(alias string) string {
-	return "date_bin($1::interval," + alias + ".bucket_start," + channelMonitorV2DateBinOriginUTC + ")"
 }
 
 func channelMonitorV2SourceBucketSeconds(filter service.ChannelMonitorV2Filter) int {
@@ -1464,7 +1458,7 @@ func (r *channelMonitorV2Repository) loadIgnoredErrorCounts(
 	if filter.Bucket > 0 && bucketSeconds == 0 {
 		args = append([]any{fmt.Sprintf("%d seconds", int(filter.Bucket.Seconds()))}, args...)
 		where = shiftSQLPlaceholders(where, 1)
-		bucketExpr = channelMonitorV2DateBinExpr("e")
+		bucketExpr = channelMonitorV2DateBinExpr("e.bucket_start")
 		groupBy = bucketExpr + ", e.platform, e.model"
 	}
 	args = append(args, pq.Array(cfg.IgnoredErrorCategories), service.ChannelMonitorV2TaxonomyVersion)
@@ -1560,7 +1554,7 @@ func (r *channelMonitorV2Repository) loadIgnoredErrorCountsByMatrixKey(
 	if filter.Bucket > 0 && bucketSeconds == 0 {
 		args = append([]any{fmt.Sprintf("%d seconds", int(filter.Bucket.Seconds()))}, args...)
 		where = shiftSQLPlaceholders(where, 1)
-		bucketExpr = channelMonitorV2DateBinExpr("e")
+		bucketExpr = channelMonitorV2DateBinExpr("e.bucket_start")
 		groupSQL = bucketExpr + ", e.platform, e.group_id, e.model"
 	}
 	args = append(args, pq.Array(cfg.IgnoredErrorCategories), service.ChannelMonitorV2TaxonomyVersion)

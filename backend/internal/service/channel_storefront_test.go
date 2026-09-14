@@ -89,7 +89,7 @@ func (f *storefrontAccountRepoStub) ListByGroup(_ context.Context, groupID int64
 
 func newStorefrontService(t *testing.T, byGroup map[int64][]Account) *ChannelService {
 	t.Helper()
-	svc := NewChannelService(nil, nil, nil, nil)
+	svc := NewChannelService(nil, nil, nil, nil, nil)
 	svc.SetAccountRepository(&storefrontAccountRepoStub{byGroup: byGroup})
 	return svc
 }
@@ -226,7 +226,7 @@ func TestListCatalogStorefrontModelsWithCoverage_ShadowAccountsExcluded(t *testi
 
 // 某个分组的 ListByGroup 报错不影响其他分组的范围判定。
 func TestListCatalogStorefrontModelsWithCoverage_ListByGroupErrorTolerated(t *testing.T) {
-	svc := NewChannelService(nil, nil, nil, nil)
+	svc := NewChannelService(nil, nil, nil, nil, nil)
 	svc.SetAccountRepository(&storefrontAccountRepoStub{
 		byGroup: map[int64][]Account{
 			3: {{ID: 2, Platform: PlatformAntigravity, Extra: ApplyUpstreamModelSnapshot(nil, []string{"gemini-3.6-flash"}, time.Unix(1, 0).UTC())}},

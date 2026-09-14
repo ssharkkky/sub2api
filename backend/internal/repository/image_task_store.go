@@ -57,7 +57,9 @@ func (s *imageTaskStore) ListForAdmin(ctx context.Context, offset int64, limit i
 	records := make([]*service.ImageTaskRecord, 0, limit)
 	cursor := offset
 	for len(records) < limit {
-		ids, err := s.rdb.ZRevRange(ctx, imageTaskAdminIndex, cursor, cursor+int64(limit*2)-1).Result()
+		ids, err := s.rdb.ZRangeArgs(ctx, redis.ZRangeArgs{
+			Key: imageTaskAdminIndex, Start: cursor, Stop: cursor + int64(limit*2) - 1, Rev: true,
+		}).Result()
 		if err != nil {
 			return nil, 0, err
 		}
@@ -190,7 +192,9 @@ func (s *imageTaskStore) ListByUser(ctx context.Context, userID int64, limit int
 	if scanLimit < 100 {
 		scanLimit = 100
 	}
-	ids, err := s.rdb.ZRevRange(ctx, imageTaskUserIndexKey(userID), 0, int64(scanLimit-1)).Result()
+	ids, err := s.rdb.ZRangeArgs(ctx, redis.ZRangeArgs{
+		Key: imageTaskUserIndexKey(userID), Start: 0, Stop: int64(scanLimit - 1), Rev: true,
+	}).Result()
 	if err != nil || len(ids) == 0 {
 		return []*service.ImageTaskRecord{}, err
 	}
@@ -348,8 +352,8 @@ func (s *imageTaskStore) ListDueCleanup(ctx context.Context, now time.Time, limi
 	if limit <= 0 {
 		limit = 100
 	}
-	ids, err := s.rdb.ZRangeByScore(ctx, imageTaskCleanupSchedule, &redis.ZRangeBy{
-		Min: "-inf", Max: strconv.FormatInt(now.Unix(), 10), Offset: 0, Count: int64(limit),
+	ids, err := s.rdb.ZRangeArgs(ctx, redis.ZRangeArgs{
+		Key: imageTaskCleanupSchedule, ByScore: true, Start: "-inf", Stop: strconv.FormatInt(now.Unix(), 10), Offset: 0, Count: int64(limit),
 	}).Result()
 	if err != nil {
 		return nil, err
@@ -636,8 +640,8 @@ func (s *imageTaskStore) backfillImageTaskCleanup(ctx context.Context, id string
 }
 
 func (s *imageTaskStore) pruneExpiredImageTaskAdminRecords(ctx context.Context, now time.Time) error {
-	ids, err := s.rdb.ZRangeByScore(ctx, imageTaskAdminExpiry, &redis.ZRangeBy{
-		Min: "-inf", Max: strconv.FormatInt(now.Unix(), 10), Offset: 0, Count: 500,
+	ids, err := s.rdb.ZRangeArgs(ctx, redis.ZRangeArgs{
+		Key: imageTaskAdminExpiry, ByScore: true, Start: "-inf", Stop: strconv.FormatInt(now.Unix(), 10), Offset: 0, Count: 500,
 	}).Result()
 	if err != nil {
 		return err

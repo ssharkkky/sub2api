@@ -144,8 +144,8 @@ func TestDisabledOpsJobNamesReflectsOptionalTaskSettings(t *testing.T) {
 	t.Parallel()
 
 	svc := &OpsService{}
+	// 数据清理默认启用（与上游对齐），仅聚合与计划报告默认关闭
 	require.ElementsMatch(t, []string{
-		opsCleanupJobName,
 		opsAggHourlyJobName,
 		opsAggDailyJobName,
 		opsScheduledReportJobName,
