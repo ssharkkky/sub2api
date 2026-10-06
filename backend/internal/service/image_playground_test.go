@@ -64,17 +64,12 @@ func (s imagePlaygroundFeatureGateStub) IsImagePlaygroundEnabled(context.Context
 }
 
 func imagePlaygroundGroup(id int64, platform string) Group {
-	models := []string{"gpt-image-*"}
-	if platform == PlatformGrok {
-		models = []string{"grok-imagine-*"}
-	}
 	return Group{
 		ID:                   id,
 		Name:                 platform,
 		Platform:             platform,
 		Status:               StatusActive,
 		AllowImageGeneration: true,
-		ModelAllowlist:       GroupModelAllowlist{Enabled: true, Models: models},
 	}
 }
 
@@ -114,19 +109,19 @@ func TestImagePlaygroundOptionsFiltersGroupsModelsAndAvailability(t *testing.T) 
 	require.Equal(t, ImagePlaygroundReasonAPIKeyRequired, options.Groups[1].UnavailableReason)
 }
 
-func TestImagePlaygroundOptionsExcludesMixedAndUnrestrictedGroups(t *testing.T) {
-	dedicated := imagePlaygroundGroup(1, PlatformOpenAI)
-	mixed := imagePlaygroundGroup(2, PlatformOpenAI)
-	mixed.ModelAllowlist.Models = []string{"gpt-image-2", "gpt-5.4"}
-	unrestricted := imagePlaygroundGroup(3, PlatformOpenAI)
-	unrestricted.ModelAllowlist = GroupModelAllowlist{}
+func TestImagePlaygroundOptionsIncludesGroupsWithoutAllowlist(t *testing.T) {
+	// R3 后分组白名单不再是工作台的准入条件：只要开启生图开关且平台匹配，
+	// 即使没有任何 allowlist 配置也应展示（此前专属分组因 enabled=false 被误删）。
+	first := imagePlaygroundGroup(1, PlatformOpenAI)
+	second := imagePlaygroundGroup(2, PlatformOpenAI)
+	third := imagePlaygroundGroup(3, PlatformOpenAI)
 	svc := &ImagePlaygroundService{
 		keys: &imagePlaygroundKeySourceStub{
-			groups: []Group{mixed, unrestricted, dedicated},
-			keys:   []APIKey{imagePlaygroundKey(10, 7, dedicated.ID)},
+			groups: []Group{second, third, first},
+			keys:   []APIKey{imagePlaygroundKey(10, 7, first.ID)},
 		},
 		models: &imagePlaygroundModelSourceStub{byGroup: map[int64][]string{
-			dedicated.ID: {"gpt-image-2"},
+			first.ID: {"gpt-image-2"},
 		}},
 		tasks: imagePlaygroundTaskGateStub(true),
 		flags: imagePlaygroundFeatureGateStub(true),
@@ -134,26 +129,7 @@ func TestImagePlaygroundOptionsExcludesMixedAndUnrestrictedGroups(t *testing.T) 
 
 	options, err := svc.Options(context.Background(), 7)
 	require.NoError(t, err)
-	require.Len(t, options.Groups, 1)
-	require.Equal(t, dedicated.ID, options.Groups[0].ID)
-}
-
-func TestImagePlaygroundOptionsExcludesEmptyCustomModelList(t *testing.T) {
-	empty := imagePlaygroundGroup(1, PlatformOpenAI)
-	empty.ModelAllowlist.Models = nil
-	svc := &ImagePlaygroundService{
-		keys: &imagePlaygroundKeySourceStub{
-			groups: []Group{empty},
-			keys:   []APIKey{imagePlaygroundKey(10, 7, empty.ID)},
-		},
-		models: &imagePlaygroundModelSourceStub{},
-		tasks:  imagePlaygroundTaskGateStub(true),
-		flags:  imagePlaygroundFeatureGateStub(true),
-	}
-
-	options, err := svc.Options(context.Background(), 7)
-	require.NoError(t, err)
-	require.Empty(t, options.Groups)
+	require.Len(t, options.Groups, 3)
 }
 
 func TestImagePlaygroundOptionsDoesNotInventModelsWithoutSchedulableAccounts(t *testing.T) {
@@ -279,8 +255,9 @@ func TestImagePlaygroundDisabledRejectsOptionsAndKeyResolution(t *testing.T) {
 	require.ErrorIs(t, err, ErrImagePlaygroundDisabled)
 }
 
-func TestImagePlaygroundValidateModelHonorsCustomModelList(t *testing.T) {
+func TestImagePlaygroundValidateModelIgnoresAllowlist(t *testing.T) {
 	group := imagePlaygroundGroup(1, PlatformOpenAI)
+	// 即使残留 allowlist 配置也不再参与过滤：网关与工作台统一以渠道定价为准。
 	group.ModelAllowlist = GroupModelAllowlist{Enabled: true, Models: []string{"gpt-image-2"}}
 	svc := &ImagePlaygroundService{
 		models: &imagePlaygroundModelSourceStub{byGroup: map[int64][]string{
@@ -289,7 +266,7 @@ func TestImagePlaygroundValidateModelHonorsCustomModelList(t *testing.T) {
 	}
 
 	require.NoError(t, svc.ValidateModel(context.Background(), &group, "gpt-image-2"))
-	require.ErrorIs(t, svc.ValidateModel(context.Background(), &group, "gpt-image-1"), ErrImagePlaygroundModelNotAvailable)
+	require.NoError(t, svc.ValidateModel(context.Background(), &group, "gpt-image-1"))
 	require.ErrorIs(t, svc.ValidateModel(context.Background(), &group, "gpt-5"), ErrImagePlaygroundModelNotAvailable)
 }
 
