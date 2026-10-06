@@ -329,7 +329,7 @@ func (s *ImagePlaygroundService) modelsForGroup(ctx context.Context, group *Grou
 	models := make([]ImagePlaygroundModelOption, 0, len(raw))
 	for _, model := range raw {
 		model = strings.TrimSpace(model)
-		if !isImagePlaygroundModel(group.Platform, model) || !groupAllowsPlaygroundModel(group, model) {
+		if !isImagePlaygroundModel(group.Platform, model) {
 			continue
 		}
 		if eligibility, ok := s.models.(imagePlaygroundModelEligibilitySource); ok &&
@@ -460,41 +460,7 @@ func isImagePlaygroundGroup(group *Group) bool {
 	if group.Platform != PlatformOpenAI && group.Platform != PlatformGrok {
 		return false
 	}
-	return isDedicatedImagePlaygroundGroup(group)
-}
-
-// Image Playground intentionally accepts only groups explicitly restricted to
-// image models. This keeps dashboard-generated traffic out of general-purpose
-// chat groups and gives administrators one unambiguous place to set pricing.
-func isDedicatedImagePlaygroundGroup(group *Group) bool {
-	if group == nil || !group.ModelAllowlistEnabled() || len(group.ModelAllowlist.Models) == 0 {
-		return false
-	}
-	for _, model := range group.ModelAllowlist.Models {
-		if !isImagePlaygroundModelPattern(group.Platform, model) {
-			return false
-		}
-	}
 	return true
-}
-
-func isImagePlaygroundModelPattern(platform, pattern string) bool {
-	pattern = strings.ToLower(strings.TrimSpace(pattern))
-	if pattern == "" {
-		return false
-	}
-	if strings.HasSuffix(pattern, "*") {
-		prefix := strings.TrimSuffix(pattern, "*")
-		switch platform {
-		case PlatformOpenAI:
-			return strings.HasPrefix(prefix, "gpt-image-")
-		case PlatformGrok:
-			return prefix == "grok-imagine-" || strings.HasPrefix(prefix, "grok-imagine-image")
-		default:
-			return false
-		}
-	}
-	return isImagePlaygroundModel(platform, pattern)
 }
 
 func isImagePlaygroundModel(platform, model string) bool {
@@ -506,19 +472,6 @@ func isImagePlaygroundModel(platform, model string) bool {
 	default:
 		return false
 	}
-}
-
-func groupAllowsPlaygroundModel(group *Group, model string) bool {
-	if group == nil || !group.ModelAllowlistEnabled() || len(group.ModelAllowlist.Models) == 0 {
-		return true
-	}
-	for _, allowed := range group.ModelAllowlist.Models {
-		allowed = strings.TrimSpace(allowed)
-		if allowed == model || (strings.HasSuffix(allowed, "*") && strings.HasPrefix(model, strings.TrimSuffix(allowed, "*"))) {
-			return true
-		}
-	}
-	return false
 }
 
 func defaultImagePlaygroundModels(platform string) []string {
